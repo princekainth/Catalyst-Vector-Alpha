@@ -1,0 +1,97 @@
+[
+  {
+    "cycle_number": 1,
+    "event_type": "Initial_Scan_Detected",
+    "payload": {
+      "source_ip": "10.0.0.5",
+      "activity": "port_scan",
+      "urgency": "low",
+      "change_factor": 0.1,
+      "direction": "neutral_impact"
+    },
+    "target_agents": "all"
+  },
+  {
+    "cycle_number": 3,
+    "event_type": "Suspicious_Login_Attempt",
+    "payload": {
+      "username": "admin",
+      "location": "external",
+      "urgency": "medium",
+      "change_factor": 0.3,
+      "direction": "negative_impact"
+    },
+    "target_agents": ["ProtoAgent_Observer_instance_1", "ProtoAgent_Planner_instance_1"]
+  },
+  {
+    "cycle_number": 6,
+    "event_type": "Potential_Vulnerability_Exploit",
+    "payload": {
+      "vulnerability_id": "CVE-2023-XXXX",
+      "target_system": "Web_Server_A",
+      "urgency": "high",
+      "change_factor": 0.6,
+      "direction": "negative_impact"
+    },
+    "target_agents": ["ProtoAgent_Observer_instance_1", "ProtoAgent_Optimizer_instance_1", "ProtoAgent_Planner_instance_1"]
+  },
+  {
+    "cycle_number": 11,
+    "event_type": "Critical_Breach_Detected",
+    "payload": {
+      "threat_level": "critical",
+      "impact": "initial_access",
+      "source_ip": "192.168.1.100",
+      "urgency": "critical",
+      "change_factor": 1.0,
+      "direction": "negative_impact"
+    },
+    "target_agents": "all"
+  },
+  {
+    "cycle_number": 12,
+    "event_type": "Data_Exfiltration_Detected",
+    "payload": {
+      "data_volume_gb": 50,
+      "destination": "unknown_server",
+      "urgency": "critical",
+      "change_factor": 0.9,
+      "direction": "negative_impact"
+    },
+    "target_agents": ["ProtoAgent_Observer_instance_1", "ProtoAgent_Optimizer_instance_1", "ProtoAgent_Collector_instance_1", "ProtoAgent_Planner_instance_1"]
+  },
+  {
+    "cycle_number": 15,
+    "event_type": "System_Anomaly_Response",
+    "payload": {
+      "anomaly_type": "Unexpected Process",
+      "process_id": "PID:12345",
+      "urgency": "medium",
+      "change_factor": 0.4,
+      "direction": "neutral_impact"
+    },
+    "target_agents": "all"
+  },
+  {
+    "cycle_number": 20,
+    "event_type": "Containment_Response_Required",
+    "payload": {
+      "message": "Attack persistence mechanisms detected. Requires active containment.",
+      "urgency": "critical",
+      "change_factor": 0.7,
+      "direction": "negative_impact"
+    },
+    "target_agents": "all"
+  },
+  {
+    "cycle_number": 25,
+    "event_type": "Post_Breach_Cleanup_Initiated",
+    "payload": {
+      "details": "Remediation efforts beginning.",
+      "urgency": "low",
+      "change_factor": 0.1,
+      "direction": "positive_impact"
+    },
+    "target_agents": "all"
+  }
+]

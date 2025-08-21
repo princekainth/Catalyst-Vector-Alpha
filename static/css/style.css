@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Catalyst Vector Alpha Dashboard</title>
+    <!-- Tailwind CSS CDN - Always include for Tailwind functionality -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Google Fonts - Inter for general UI, Fira Code for monospace logs -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500;600&display=swap" rel="stylesheet">
+    <!-- HTMX for dynamic content updates without full page reloads -->
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <script src="https://unpkg.com/htmx.org/dist/ext/json-enc.js"></script>
+
+    <style>
+        /* Custom Tailwind Configuration (Optional, but useful for specific colors) */
+        /* This block extends Tailwind's default theme with custom colors from your original CSS.
+           This allows you to use classes like `bg-dark-blue-purple` or `text-light-cyan`. */
+        :root {
+            --color-dark-blue-purple: #1a1a2e;
+            --color-even-darker-header: #0f0f1d;
+            --color-card-background: #2e2e4a;
+            --color-light-grey-text: #e0e0e0;
+            --color-light-cyan: #8be9fd;
+            --color-subtle-border: #4a4a6e;
+            --color-yellowish: #f1fa8c;
+            --color-purple-heading: #bd93f9;
+            --color-request-item-bg: #3b3b5b;
+            --color-request-item-border: #5a5a7d;
+            --color-input-border: #6272a4;
+            --color-input-bg: #44475a;
+            --color-input-text: #f8f8f2;
+            --color-button-bg: #6272a4;
+            --color-button-hover: #50618b;
+            --color-log-bg: #1e1e2e;
+            --color-log-text: #c0c0c0;
+            --color-log-debug: #8be9fd;
+            --color-log-info: #50fa7b;
+            --color-log-warning: #ffb86c;
+            --color-log-error: #ff5555;
+            --color-log-critical: #ff0000;
+        }
+
+        /* Applying custom colors via CSS variables for Tailwind JIT compilation */
+        /* This is a common pattern to use custom colors with Tailwind's utility classes */
+        .bg-dark-blue-purple { background-color: var(--color-dark-blue-purple); }
+        .bg-even-darker-header { background-color: var(--color-even-darker-header); }
+        .bg-card-background { background-color: var(--color-card-background); }
+        .text-light-grey { color: var(--color-light-grey-text); }
+        .text-light-cyan { color: var(--color-light-cyan); }
+        .border-subtle { border-color: var(--color-subtle-border); }
+        .text-yellowish { color: var(--color-yellowish); }
+        .text-purple-heading { color: var(--color-purple-heading); }
+        .bg-request-item { background-color: var(--color-request-item-bg); }
+        .border-request-item { border-color: var(--color-request-item-border); }
+        .hover-bg-request-item-hover { background-color: #4a4a6e; } /* Specific hover color */
+        .hover-border-light-cyan { border-color: var(--color-light-cyan); } /* Specific hover color */
+        .border-input { border-color: var(--color-input-border); }
+        .bg-input { background-color: var(--color-input-bg); }
+        .text-input { color: var(--color-input-text); }
+        .bg-button { background-color: var(--color-button-bg); }
+        .hover-bg-button-hover { background-color: var(--color-button-hover); }
+        .bg-log-display { background-color: var(--color-log-bg); }
+        .text-log-display { color: var(--color-log-text); }
+
+        /* Log Level Colors (Directly applied as classes) */
+        .log-level-debug { color: var(--color-log-debug); }
+        .log-level-info { color: var(--color-log-info); }
+        .log-level-warning { color: var(--color-log-warning); }
+        .log-level-error { color: var(--color-log-error); }
+        .log-level-critical { color: var(--color-log-critical); font-weight: bold; }
+
+        /* Urgency Colors */
+        .urgency-low { color: #50fa7b; } /* Green */
+        .urgency-medium { color: #ffb86c; } /* Orange */
+        .urgency-high { color: #ff79c6; } /* Pink */
+        .urgency-critical { color: #ff5555; font-weight: bold; } /* Red */
+
+        /* Agent Card specific styles (using Tailwind classes directly in HTML) */
+        /* Add any custom classes here if they can't be expressed purely in Tailwind utilities */
+    </style>
+</head>
+<body class="p-6 bg-dark-blue-purple text-light-grey leading-relaxed">
+    <header class="text-center py-6 shadow-lg mb-8 bg-even-darker-header text-white">
+        <h1 class="text-4xl font-bold tracking-wide">Catalyst Vector Alpha: System Overview</h1>
+    </header>
+
+    <main class="max-w-7xl mx-auto px-4">
+        <div class="dashboard-grid">
+            <!-- System Status Card -->
+            <section id="system-status-card" class="card"
+                     hx-get="/api/status"
+                     hx-trigger="load, every 3s"
+                     hx-swap="outerHTML">
+                <h2 class="text-2xl font-semibold mb-4 text-light-cyan border-b-2 border-subtle pb-2.5">System Status</h2>
+                <div id="system-status-content">
+                    <p class="text-gray-400">Loading system status...</p>
+                </div>
+            </section>
+
+            <!-- Active Agents Card -->
+            <section id="agents-status-card" class="card md:col-span-2 lg:col-span-2">
+                <h2 class="text-2xl font-semibold mb-4 text-light-cyan border-b-2 border-subtle pb-2.5">Active Agents</h2>
+                <div id="agent-list"
+                     hx-get="/api/agents"
+                     hx-trigger="load, every 3s"
+                     hx-swap="outerHTML">
+                    <p class="text-gray-400">Loading agent data...</p>
+                </div>
+            </section>
+
+            <!-- Human Intervention Panel -->
+            <section id="human-intervention-panel" class="card col-span-full">
+                <h2 class="text-2xl font-semibold mb-4 text-light-cyan border-b-2 border-subtle pb-2.5">Human Intervention Required</h2>
+                <div id="pending-intervention-list"
+                     hx-get="/api/pending_interventions"
+                     hx-trigger="load, every 2s"
+                     hx-swap="innerHTML">
+                    <p class="text-gray-400">Loading pending intervention requests...</p>
+                </div>
+
+                <h3 class="text-xl font-semibold mt-6 mb-4 text-purple-heading">Inject Manual Directive / Respond to Request</h3>
+                <form id="inject-directive-form"
+                      hx-post="/api/inject_directive"
+                      hx-ext="json-enc"
+                      hx-trigger="submit"
+                      hx-target="#inject-status"
+                      hx-swap="innerHTML"
+                      class="bg-request-item rounded-lg p-5 mt-5 shadow-inner">
+                    <div class="mb-4">
+                        <label for="directive-type" class="block text-sm font-medium text-light-grey mb-1">Directive Type:</label>
+                        <input type="text" id="directive-type" name="type" value="HUMAN_RESPONSE" required
+                               class="w-full p-2 rounded-md bg-input border border-input text-input focus:ring focus:ring-blue-500 focus:border-blue-500">
+                    </div>
+                    <div class="mb-4">
+                        <label for="request-id" class="block text-sm font-medium text-light-grey mb-1">Request ID (for HUMAN_RESPONSE):</label>
+                        <input type="text" id="request-id" name="payload.request_id" placeholder="e.g., HUMANREQ-planner_request_..." required
+                               class="w-full p-2 rounded-md bg-input border border-input text-input focus:ring focus:ring-blue-500 focus:border-blue-500">
+                    </div>
+                    <div class="mb-4">
+                        <label for="response-data" class="block text-sm font-medium text-light-grey mb-1">Response Data (JSON string for HUMAN_RESPONSE):</label>
+                        <textarea id="response-data" name="payload.response_data" rows="5" placeholder='{"decision_type": "approve", "guidance": "Focus on threat containment"}' required
+                                  class="w-full p-2 rounded-md bg-input border border-input text-input resize-y focus:ring focus:ring-blue-500 focus:border-blue-500"></textarea>
+                    </div>
+                    <button type="submit" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 px-5 rounded-lg shadow-md transition duration-300 ease-in-out">
+                        Inject Directive
+                    </button>
+                    <div id="inject-status" class="text-sm mt-2"></div>
+                </form>
+
+                <button id="add-manual-directive-button" class="bg-green-600 hover:bg-green-700 text-white font-bold py-2.5 px-5 rounded-lg shadow-md transition duration-300 ease-in-out mt-4">
+                    Inject Custom Directive (Advanced)
+                </button>
+            </section>
+
+            <!-- Live Logs Card -->
+            <section id="live-logs-card" class="card col-span-full">
+                <h2 class="text-2xl font-semibold mb-4 text-light-cyan border-b-2 border-subtle pb-2.5">Live Logs</h2>
+                <div id="log-output" class="log-display bg-log-display border border-subtle rounded-md p-4 h-72 overflow-y-auto whitespace-pre-wrap font-['Fira_Code'] text-sm text-log-display">
+                    <p class="text-gray-400">Waiting for live logs...</p>
+                </div>
+            </section>
+        </div>
+    </main>
+
+    <footer class="text-center mt-8 text-gray-500 text-sm">
+        <p>&copy; 2025 Catalyst Vector Alpha. All rights reserved.</p>
+    </footer>
+
+    <script>
+        // JavaScript for dynamic content rendering and live log streaming
+
+        // --- HTMX Callbacks for dynamic content rendering ---
+        // These functions will be called by HTMX after it fetches new data
+        // and before it swaps the content. We intercept to format the JSON.
+
+        document.body.addEventListener('htmx:beforeSwap', function(event) {
+            if (event.detail.target.id === 'system-status-card') {
+                const data = JSON.parse(event.detail.xhr.responseText);
+                event.detail.target.innerHTML = `
+                    <h2 class="text-2xl font-semibold mb-4 text-light-cyan border-b-2 border-subtle pb-2.5">System Status</h2>
+                    <div class="space-y-2 text-gray-300">
+                        <p><strong>Running:</strong> <span class="${data.is_running ? 'text-green-400' : 'text-red-400'}">${data.is_running ? 'Yes' : 'No'}</span></p>
+                        <p><strong>Current Cycle:</strong> ${data.current_cycle}</p>
+                        <p><strong>Active Agents:</strong> ${data.active_agents.length} (${data.active_agents.join(', ') || 'None'})</p>
+                        <p><strong>System Paused:</strong> <span class="${data.system_paused ? 'text-yellow-400' : 'text-green-400'}">${data.system_paused ? 'Yes' : 'No'}</span></p>
+                        <p><strong>Human Intervention Needed:</strong> <span class="${data.intervention_needed ? 'text-red-400' : 'text-green-400'}">${data.intervention_needed ? 'Yes' : 'No'} (${data.num_pending_interventions} pending)</span></p>
+                        <p><strong>Cyber Attack Phase:</strong> ${data.cyber_attack_phase}</p>
+                        <p><strong>Attack Severity:</strong> <span class="${data.attack_severity > 0.5 ? 'text-red-400' : (data.attack_severity > 0.1 ? 'text-yellow-400' : 'text-green-400')}">${(data.attack_severity * 100).toFixed(1)}%</span></p>
+                        <p><strong>CPU Usage:</strong> <span class="${data.resource_usage.cpu_percent > 80 ? 'text-red-400' : (data.resource_usage.cpu_percent > 50 ? 'text-yellow-400' : 'text-green-400')}">${data.resource_usage.cpu_percent.toFixed(1)}%</span></p>
+                        <p><strong>Memory Usage:</strong> <span class="${data.resource_usage.memory_percent > 80 ? 'text-red-400' : (data.resource_usage.memory_percent > 50 ? 'text-yellow-400' : 'text-green-400')}">${data.resource_usage.memory_percent.toFixed(1)}%</span></p>
+                    </div>
+                `;
+                event.preventDefault(); // Prevent HTMX from doing its default swap
+            } else if (event.detail.target.id === 'agent-list') {
+                const agents = JSON.parse(event.detail.xhr.responseText);
+                let agentsHtml = '';
+                if (agents.length === 0) {
+                    agentsHtml = '<p class="text-gray-400">No active agents.</p>';
+                } else {
+                    agents.forEach(agent => {
+                        const healthClass = `agent-card-health-${agent.health_status}`;
+                        agentsHtml += `
+                            <div class="bg-gray-700 rounded-md p-4 mb-4 border border-gray-600">
+                                <div class="flex justify-between items-center mb-2">
+                                    <h3 class="text-lg font-semibold text-white">${agent.name} <span class="text-gray-400 text-base">(${agent.role})</span></h3>
+                                    <span class="${healthClass} font-bold">${agent.health_status.toUpperCase()}</span>
+                                </div>
+                                <p class="text-gray-300 text-sm"><strong>Intent:</strong> ${agent.current_intent}</p>
+                                <p class="text-gray-300 text-sm"><strong>Location:</strong> ${agent.location}</p>
+                                <p class="text-gray-300 text-sm"><strong>Performance:</strong> ${agent.task_performance}</p>
+                                <p class="text-gray-300 text-sm"><strong>Loop/Stagnation:</strong> ${agent.loop_info}</p>
+                                <p class="text-gray-300 text-sm"><strong>Adaptation:</strong> ${agent.adaptation_enabled}</p>
+                                <p class="text-gray-300 text-sm"><strong>Last Memory:</strong> ${agent.last_memory_summary}</p>
+                                <p class="text-gray-300 text-sm"><strong>Reflection:</strong> ${agent.reflection_brief}</p>
+                            </div>
+                        `;
+                    });
+                }
+                event.detail.target.innerHTML = agentsHtml;
+                event.preventDefault(); // Prevent HTMX default swap
+            }
+        });
+
+
+        // JavaScript for live log streaming via Server-Sent Events (SSE)
+        const logOutput = document.getElementById('log-output');
+        const eventSource = new EventSource('/api/live_logs');
+
+        eventSource.onmessage = function(event) {
+            try {
+                const logEntry = JSON.parse(event.data);
+                const logLine = document.createElement('p');
+
+                // Determine log level class for styling
+                let levelClass = logEntry.level ? logEntry.level.toLowerCase() : 'info';
+                logLine.className = `log-level-${levelClass}`;
+
+                // Construct log message content
+                let displayMessage = '';
+                if (logEntry.event_type) {
+                    // For structured logs with event_type and description
+                    displayMessage = `[${logEntry.timestamp}] [${logEntry.source || 'System'}] [${logEntry.event_type}] ${logEntry.description}`;
+                    if (logEntry.details && Object.keys(logEntry.details).length > 0) {
+                        // Attempt to display key details concisely
+                        const detailParts = Object.entries(logEntry.details).map(([key, value]) => {
+                            if (typeof value === 'object' && value !== null) {
+                                return `${key}: ${JSON.stringify(value).substring(0, 50)}${JSON.stringify(value).length > 50 ? '...' : ''}`;
+                            }
+                            return `${key}: ${String(value).substring(0, 50)}${String(value).length > 50 ? '...' : ''}`;
+                        });
+                        displayMessage += ` (${detailParts.join(', ')})`;
+                    }
+                } else {
+                    // For unstructured or simpler logs, use the raw message
+                    displayMessage = logEntry.message;
+                }
+                
+                logLine.textContent = displayMessage;
+                logOutput.appendChild(logLine);
+                // Auto-scroll to bottom to show latest logs
+                logOutput.scrollTop = logOutput.scrollHeight;
+
+            } catch (e) {
+                console.error("Error parsing or displaying log entry:", e, event.data);
+                const errorLine = document.createElement('p');
+                errorLine.className = 'log-level-error';
+                errorLine.textContent = `[ERROR] Failed to parse log: ${event.data.substring(0, 100)}... Error: ${e.message}`;
+                logOutput.appendChild(errorLine);
+                logOutput.scrollTop = logOutput.scrollHeight;
+            }
+        };
+
+        eventSource.onerror = function(err) {
+            console.error("EventSource connection failed:", err);
+            // Optionally display a message in the log area
+            const errorLine = document.createElement('p');
+            errorLine.className = 'log-level-critical';
+            errorLine.textContent = `[CRITICAL] Live log stream disconnected. Check backend server.`;
+            logOutput.appendChild(errorLine);
+            logOutput.scrollTop = logOutput.scrollHeight;
+            eventSource.close();
+        };
+
+        // JavaScript function to populate the "Inject Directive" form for human response
+        function populateInterventionForm(requestId, message, urgency, requesterAgent) {
+            document.getElementById('request-id').value = requestId;
+            document.getElementById('directive-type').value = 'HUMAN_RESPONSE'; // Ensure type is correct for response
+            
+            // Construct a suggested response, pretty-printed JSON
+            document.getElementById('response-data').value = JSON.stringify({
+                "decision_type": "approve", // Default to approve
+                "guidance": `Acknowledging ${requesterAgent}'s ${urgency.toLowerCase()} request: ${message.substring(0, Math.min(message.length, 80))}... (Please provide specific guidance here)`
+            }, null, 2); // `null, 2` makes the JSON output pretty-printed
+        }
+
+        // Optional: Clear form status message after a few seconds
+        document.getElementById('inject-directive-form').addEventListener('htmx:afterRequest', function(event) {
+            const statusDiv = document.getElementById('inject-status');
+            if (event.detail.successful) {
+                statusDiv.textContent = "Directive injected successfully!";
+                statusDiv.classList.add('text-green-400');
+                statusDiv.classList.remove('text-red-400');
+                // Optionally clear the form or a specific request if successfully responded
+                // document.getElementById('inject-directive-form').reset();
+            } else {
+                statusDiv.textContent = `Error: ${event.detail.xhr.responseText || 'Unknown error'}`;
+                statusDiv.classList.add('text-red-400');
+                statusDiv.classList.remove('text-green-400');
+            }
+            setTimeout(() => {
+                statusDiv.textContent = "";
+            }, 8000); // Clear message after 8 seconds
+        });
+
+        // Event listener for the "Inject Custom Directive" button
+        document.getElementById('add-manual-directive-button').addEventListener('click', function() {
+            const form = document.getElementById('inject-directive-form');
+            const directiveType = prompt("Enter Directive Type (e.g., AGENT_PERFORM_TASK, INJECT_EVENT, INITIATE_PLANNING_CYCLE):");
+            if (directiveType) {
+                const rawPayload = prompt("Enter full directive payload as JSON (e.g., {'agent_name': 'ProtoAgent_Observer_instance_1', 'task_description': 'Gather system info'}):");
+                try {
+                    const payloadObj = JSON.parse(rawPayload);
+                    // Set the directive type input field
+                    form.elements['type'].value = directiveType;
+                    // Clear request ID fields as this is a new directive, not a response
+                    form.elements['payload.request_id'].value = ''; 
+                    // Set the response data field with the custom payload (stringified)
+                    form.elements['payload.response_data'].value = JSON.stringify(payloadObj, null, 2);
+                    
+                    alert('Form prepared with custom directive. Click "Inject Directive" to send.');
+                } catch (e) {
+                    alert('Invalid JSON payload. Please try again.');
+                }
+            }
+        });
+
+    </script>
+</body>
+</html>

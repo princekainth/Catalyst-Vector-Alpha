@@ -17,16 +17,30 @@ directives:
       - consensus_mechanism
       - task_description
       - description
+    properties:
+      swarm_name: { type: "string" }
+      initial_goal: { type: "string" }
+      initial_members: { type: "array", items: { type: "string" } }
+      consensus_mechanism: { type: "string" }
+      task_description: { type: "string" }
+      description: { type: "string" }
   SPAWN_AGENT_INSTANCE:
     required:
       - eidos_name
       - instance_name
     optional:
       - initial_task
+    properties:
+      eidos_name: { type: "string" }
+      instance_name: { type: "string" }
+      initial_task: { type: "string" }
   ADD_AGENT_TO_SWARM:
     required:
       - agent_name
       - swarm_name
+    properties:
+      agent_name: { type: "string" }
+      swarm_name: { type: "string" }
   ASSERT_GRADIENT_TRAJECTORY:
     required:
       - target_type
@@ -124,8 +138,24 @@ directives:
       - event_type
       - payload
     optional:
-      - target_agents # If omitted, all active agents perceive it
+      - target_agents
     properties:
       event_type: { type: "string" }
-      payload: { type: "object" } # Use object for flexible data
+      payload: { type: "object", required: ["change_factor", "urgency", "direction"] }
       target_agents: { type: ["string", "array"], items: { type: "string" } }
+  REQUEST_HUMAN_INPUT:
+    required:
+        - message
+    optional:
+        - cycle_id
+        - urgency
+        - target_agent
+        - human_request_counter
+        - requester_agent
+    properties:
+        message: { type: "string" }
+        cycle_id: { type: "string" }
+        urgency: { type: "string", enum: ["low", "medium", "high", "critical"] }
+        target_agent: { type: "string" }
+        human_request_counter: { type: "integer", minimum: 0 }
+        requester_agent: { type: "string" }
