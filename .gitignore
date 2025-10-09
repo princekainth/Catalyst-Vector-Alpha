@@ -15,4 +15,7 @@ persistence_data/
 
 # Logs
 logs/
-*.log
+*.log.venv/
+venv/
+__pycache__/
+*.pyc
