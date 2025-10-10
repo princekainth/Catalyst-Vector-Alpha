@@ -24,3 +24,13 @@ venv/
 results/*/*.json
 __pycache__/
 *.pyc
+.venv/
+venv/
+results/*/*.json
+__pycache__/
+*.pyc
+*.log
+output/
+snapshots/
+*.db
+.env
