@@ -19,3 +19,8 @@ logs/
 venv/
 __pycache__/
 *.pyc
+.venv/
+venv/
+results/*/*.json
+__pycache__/
+*.pyc
