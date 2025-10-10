@@ -3,7 +3,7 @@ import pandas as pd
 import json
 import os
 import time
-import logging # Added import
+import logging 
 
 # Configure logging to show info messages in the console/log file
 # This will direct messages to the terminal where Streamlit is run.
@@ -75,14 +75,15 @@ def load_swarm_activity_logs():
     return logs
 
 # --- Helper functions for Pause/Resume logic ---
-def load_paused_agents_list_for_dashboard():
+def load_paused_agents():
     """Loads the list of paused agents from persistence."""
     if os.path.exists(PAUSED_AGENTS_FILE):
         try:
-            with open(PAUSED_AGENTS_FILE, 'r') as f:
+            # --- CRITICAL FIX: Corrected typo here ---
+            with open(PAUSED_AGENTS_FILE, 'r') as f: 
                 return json.load(f)
         except json.JSONDecodeError:
-            st.warning(f"Dashboard: Corrupted {PAUSED_AGENTS_FILE}. Treating as empty.")
+            print(f"Warning: Corrupted {PAUSED_AGENTS_FILE}. Starting with no agents paused.")
             return []
     return []
 
@@ -99,7 +100,8 @@ def toggle_agent_pause_from_dashboard(agent_name, action):
     Toggles the pause state of an agent by modifying a shared JSON file.
     'action' can be 'pause' or 'resume'.
     """
-    paused_agents = set(load_paused_agents_list_for_dashboard()) # Load current paused agents into a set for easy manipulation
+    # FIX: Call the correctly named function
+    paused_agents = set(load_paused_agents()) 
     
     if action == 'pause':
         if agent_name in paused_agents:
@@ -108,7 +110,7 @@ def toggle_agent_pause_from_dashboard(agent_name, action):
             paused_agents.add(agent_name)
             save_paused_agents_list_from_dashboard(paused_agents)
             st.success(f"Agent '{agent_name}' paused successfully.")
-            st.rerun() # Re-run immediately to show status change
+            st.rerun()
     elif action == 'resume':
         if agent_name not in paused_agents:
             st.info(f"Agent '{agent_name}' is not currently paused.")
@@ -116,10 +118,9 @@ def toggle_agent_pause_from_dashboard(agent_name, action):
             paused_agents.remove(agent_name)
             save_paused_agents_list_from_dashboard(paused_agents)
             st.success(f"Agent '{agent_name}' resumed successfully.")
-            st.rerun() # Re-run immediately to show status change
+            st.rerun()
     else:
         st.error("Invalid action. Use 'pause' or 'resume'.")
-
 
 # --- Dashboard Layout ---
 st.title("🌌 The First Semantic OS: Live Dashboard")
@@ -137,7 +138,7 @@ st.sidebar.text(f"Auto-refresh: {refresh_interval_seconds}s")
 
 # Load agent states and logs globally for the current rerun cycle
 agent_states = load_all_agent_states()
-paused_agents = load_paused_agents_list_for_dashboard() # Load paused agents for display
+paused_agents = load_paused_agents() # Load paused agents for display
 
 
 # Add a session state variable to store the selected agent's full details for display

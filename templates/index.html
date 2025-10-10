@@ -3,693 +3,472 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Catalyst Vector Alpha | CVA</title>
-
-  <!-- Tailwind CSS -->
+  <title>Catalyst Supervisor Dashboard</title>
   <script src="https://cdn.tailwindcss.com"></script>
-
-  <!-- Google Fonts & Font Awesome -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
-
-  <!-- Toastify.js for Notifications -->
-  <link rel="stylesheet" type="text/css" href="https://cdn.jsdelivr.net/npm/toastify-js/src/toastify.min.css" />
-  <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/toastify-js"></script>
-
-  <!-- Chart.js for Resource Usage Visualization -->
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet" />
   <style>
-    body { font-family: 'Inter', sans-serif; background-color: #030712; color: #d1d5db; }
-    .font-mono { font-family: 'Fira Code', monospace; }
-    ::-webkit-scrollbar { width: 8px; }
-    ::-webkit-scrollbar-track { background: #111827; }
-    ::-webkit-scrollbar-thumb { background: #374151; border-radius: 4px; }
-    .modal { background-color: rgba(17, 24, 39, 0.8); backdrop-filter: blur(12px); }
-    .modal-content { animation: fadeIn 0.3s ease-out; }
-    @keyframes fadeIn { from { opacity: 0; transform: translateY(-20px) scale(0.98); } to { opacity: 1; transform: translateY(0) scale(1); } }
-    .agent-sidebar-link.active { background-color: #1d4ed8; color: white; }
-    .status-dot { animation: pulse 2s infinite; }
-    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
-    .stat-bar-bg { background-color: #374151; }
-    .stat-bar-fill { transition: width 0.5s ease-in-out; }
-    .memory-item { cursor: pointer; }
-    .memory-item:hover { background-color: rgba(255, 255, 255, 0.05); }
-    .json-key { color: #60a5fa; }
-    .json-string { color: #34d399; }
-    .json-number { color: #f59e0b; }
-    .json-boolean { color: #f472b6; }
-    .json-null { color: #6b7280; }
-    .loading-btn { opacity: 0.7; cursor: not-allowed; }
+    body { font-family: 'Inter', sans-serif; background: linear-gradient(135deg,#0f172a 0%,#1e3a8a 100%); color:#e5e7eb; }
+    .font-mono{ font-family:'Fira Code', monospace; }
+    #activity-list::-webkit-scrollbar, #plan-list::-webkit-scrollbar{ width:6px; }
+    #activity-list::-webkit-scrollbar-thumb, #plan-list::-webkit-scrollbar-thumb{ background:#60a5fa; border-radius:3px; }
+    .user-bubble{ background:#3b82f6; color:#fff; align-self:flex-end; margin-left:auto; }
+    .ai-bubble{ background:#1f2937; color:#d1d5db; align-self:flex-start; }
+    .alert-bubble{ background:#ef4444; color:#fff; align-self:flex-start; }
+    .bubble{ box-shadow:0 4px 12px rgba(0,0,0,.2); }
+    .panel{ transition:opacity .2s ease; }
+    .hidden{ display:none; }
+    .spinner{ border:2px solid #3b82f6; border-top-color:transparent; border-radius:50%; width:1.25rem; height:1.25rem; animation:spin 1s linear infinite; }
+    @keyframes spin{ to{transform:rotate(360deg)} }
+    #toast-container{ position:fixed; bottom:1rem; right:1rem; z-index:50; display:flex; flex-direction:column; gap:.5rem; }
+    .toast{ background:#10b981; color:#fff; padding:.5rem .9rem; border-radius:.5rem; box-shadow:0 4px 12px rgba(0,0,0,.3); }
+    .connection-status { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:8px; }
+    .connected { background-color:#10b981; }
+    .disconnected { background-color:#ef4444; }
+    .simulation-mode { background-color:#f59e0b; }
+    .plan-step{ border-left:3px solid #60a5fa; padding-left:8px; margin:4px 0; }
+    .btn{ display:inline-block; padding:.5rem .75rem; border-radius:.5rem; background:#2563eb; color:#fff; }
+    .btn:hover{ background:#1d4ed8; }
+    code.small { background:#0b1220; padding:2px 6px; border-radius:6px; }
   </style>
 </head>
-<body class="flex h-screen overflow-hidden text-sm">
-  <!-- Left Sidebar -->
-  <aside class="w-64 bg-[#0a0f1b] p-4 flex flex-col h-full border-r border-gray-800 shrink-0">
-    <div class="flex items-center mb-6 shrink-0">
-      <i class="fas fa-atom text-blue-500 text-2xl mr-3"></i>
-      <h1 class="text-xl font-bold text-white">Catalyst Vector</h1>
-    </div>
-    <a href="#" id="show-all-agents" class="flex items-center p-2 text-sm text-gray-200 bg-gray-700/50 hover:bg-gray-700 rounded-lg transition-colors mb-4" aria-label="Show all agents">
-      <i class="fas fa-border-all w-8 text-center text-gray-400"></i>
-      <span>Show All Agents</span>
-    </a>
-    <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Agents</h2>
-    <div id="agents-sidebar" class="flex-grow overflow-y-auto pr-2 space-y-1"></div>
-  </aside>
+<body class="flex flex-col h-screen">
+  <div id="toast-container"></div>
 
-  <!-- Center Column -->
-  <main class="flex-1 flex flex-col bg-gray-900 h-full border-r border-gray-800">
-    <header class="bg-gray-900/70 backdrop-blur-sm border-b border-gray-800 p-4 flex justify-between items-center shrink-0">
-      <h2 id="agent-detail-title" class="text-xl font-semibold text-white">Select an Agent</h2>
-    </header>
-    <div id="agent-detail-container" class="flex-grow p-6 overflow-y-auto"></div>
+  <header class="bg-gray-900/90 backdrop-blur-sm text-center p-4 border-b border-gray-800 shadow-lg flex-shrink-0">
+    <h1 class="text-2xl font-bold text-white flex items-center justify-center">
+      <span id="connection-indicator" class="connection-status simulation-mode"></span>
+      Catalyst Vector Alpha Dashboard
+    </h1>
+    <div class="flex justify-center space-x-4 mt-2">
+      <button id="toggle-activity-panel" class="text-sm text-blue-400 hover:text-white transition-colors">Live Activity</button>
+      <button id="toggle-plans-panel" class="text-sm text-gray-400 hover:text-white transition-colors">Active Plans</button>
+      <button id="toggle-health-panel" class="text-sm text-gray-400 hover:text-white transition-colors">System Health</button>
+      <button id="toggle-insight-panel" class="text-sm text-gray-400 hover:text-white transition-colors">Latest Insight</button>
+    </div>
+  </header>
+
+  <div id="panel-container" class="relative">
+    <!-- Live Activity Panel -->
+    <div id="activity-panel" class="panel bg-gray-800/90 p-4 border-b border-gray-700 w-full">
+      <h2 class="text-lg font-semibold text-white">Live Activity Stream</h2>
+      <ul id="activity-list" class="space-y-2 mt-2 font-mono text-xs overflow-y-auto h-48 bg-gray-900/50 p-2 rounded-md">
+        <li class="flex justify-center items-center h-full text-gray-500">Awaiting system events...</li>
+      </ul>
+    </div>
+
+    <!-- Active Plans Panel -->
+    <div id="plans-panel" class="panel bg-gray-800/90 p-4 border-b border-gray-700 hidden w-full">
+      <h2 class="text-lg font-semibold text-white">Active Plans & Pending Mission</h2>
+
+      <!-- Pending Mission card (pulls /api/pending; approves via /api/approve) -->
+      <div id="pending-card" class="bg-gray-900/50 p-3 rounded-md mb-3">
+        <div id="pending-body" class="text-sm text-gray-300">
+          <span class="text-gray-400">Checking for pending mission…</span>
+        </div>
+      </div>
+
+      <div id="plans-container" class="mt-3">
+        <ul id="plan-list" class="space-y-2 overflow-y-auto h-48 bg-gray-900/50 p-2 rounded-md">
+          <li class="text-gray-500 text-center">No active plans</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- System Health Panel -->
+    <div id="health-panel" class="panel bg-gray-800/90 p-4 border-b border-gray-700 hidden w-full">
+      <div id="health-loader" class="flex justify-center items-center h-24">
+        <div class="spinner"></div>
+      </div>
+      <div id="health-content" class="hidden">
+        <canvas id="system-health-chart" class="w-full h-32"></canvas>
+        <div class="mt-4 grid grid-cols-2 gap-4 text-sm">
+          <div class="bg-gray-900/50 p-3 rounded">
+            <div class="text-gray-400">Current CPU</div>
+            <div id="current-cpu" class="text-xl font-bold text-blue-400">--</div>
+          </div>
+          <div class="bg-gray-900/50 p-3 rounded">
+            <div class="text-gray-400">Current Memory</div>
+            <div id="current-memory" class="text-xl font-bold text-green-400">--</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Insight Panel -->
+    <div id="insight-panel" class="panel bg-gray-800/90 p-4 border-b border-gray-700 hidden w-full">
+      <h2 class="text-lg font-semibold text-white">Latest Agent Insight</h2>
+      <div id="insight-box" class="bg-gray-900/50 p-3 rounded text-sm text-gray-300 mt-2">
+        <span class="text-gray-500">Loading latest insight…</span>
+      </div>
+    </div>
+  </div>
+
+  <main id="chat-container" class="flex-1 overflow-y-auto p-6 flex flex-col space-y-4">
+    <div class="ai-bubble bubble w-fit max-w-lg rounded-xl p-3">
+      <p>Catalyst Vector Alpha system online. Multi-agent coordination active and ready for directives.</p>
+    </div>
   </main>
 
-  <!-- Right Sidebar -->
-  <aside class="w-96 bg-[#0a0f1b] p-4 flex flex-col h-full shrink-0">
-    <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">System Overview</h2>
-    <div id="status-container" class="bg-gray-800/50 rounded-lg p-4 mb-6">
-      <canvas id="resource-chart" class="mt-4"></canvas>
+  <footer class="bg-gray-900/90 p-4 border-t border-gray-800 flex-shrink-0">
+    <div class="max-w-3xl mx-auto flex items-end bg-gray-800 rounded-xl p-2 shadow-inner">
+      <textarea id="user-input" class="flex-1 bg-transparent text-gray-200 focus:outline-none resize-none px-3 sm:text-lg" placeholder="Issue a directive to the swarm..." rows="1"></textarea>
+      <button id="send-btn" class="bg-blue-600 text-white rounded-lg w-12 h-12 flex items-center justify-center ml-2 hover:bg-blue-500 transition-colors disabled:bg-gray-600 flex-shrink-0" aria-label="Send Message">
+        <svg id="send-icon" xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M12 5l7 7-7 7"/></svg>
+        <div id="send-spinner" class="spinner hidden"></div>
+      </button>
     </div>
-
-    <div id="system-control-container" class="mb-6"></div>
-
-    <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">Human Intervention</h2>
-    <div id="intervention-container" class="mb-6"></div>
-
-    <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">Live System Log</h2>
-    <div id="live-log-container" class="flex-grow overflow-y-auto bg-gray-900/50 rounded-lg p-3 font-mono text-xs space-y-2"></div>
-  </aside>
-
-  <!-- Response Modal -->
-  <div id="response-modal" class="modal fixed inset-0 z-50 flex items-center justify-center" style="display:none;" role="dialog" aria-labelledby="response-modal-title">
-    <div class="modal-content bg-gray-800 border border-gray-700 rounded-xl p-6 max-w-2xl w-full shadow-xl">
-      <div class="flex justify-between items-center mb-4">
-        <h3 id="response-modal-title" class="text-lg font-semibold text-white">Agent Response</h3>
-        <button id="close-response-modal" class="text-gray-400 hover:text-white" aria-label="Close response modal"><i class="fas fa-times"></i></button>
-      </div>
-      <div id="response-modal-body" class="text-gray-200 text-sm"></div>
-    </div>
-  </div>
-
-  <!-- Memory Modal -->
-  <div id="memory-modal" class="modal fixed inset-0 z-50 flex items-center justify-center" style="display:none;" role="dialog" aria-labelledby="memory-modal-title">
-    <div class="modal-content bg-gray-800 border border-gray-700 rounded-xl p-6 max-w-2xl w-full shadow-xl">
-      <div class="flex justify-between items-center mb-4">
-        <h3 id="memory-modal-title" class="text-lg font-semibold text-white">Memory</h3>
-        <button id="close-memory-modal" class="text-gray-400 hover:text-white" aria-label="Close memory modal"><i class="fas fa-times"></i></button>
-      </div>
-      <div id="memory-modal-body" class="text-gray-200 text-sm space-y-2 font-mono"></div>
-    </div>
-  </div>
+  </footer>
 
   <script>
-    // ---------- Helpers ----------
-    const API_KEY = 'your-secure-key-here'; // Set to match CATALYST_API_KEY in app.py
-    const safeToast = (opts) => { try { Toastify(opts).showToast(); } catch (_) {} };
+  const UI = {
+    el: {},
+    chart: null,
+    connectionStatus: 'simulation', // 'connected' | 'disconnected' | 'simulation'
 
-    function formatDuration(totalSeconds) {
-      const s = Math.max(0, parseInt(totalSeconds || 0, 10));
-      const h = Math.floor(s / 3600);
-      const m = Math.floor((s % 3600) / 60);
-      const sec = s % 60;
-      if (h) return `${h}h ${m}m ${sec}s`;
-      if (m) return `${m}m ${sec}s`;
-      return `${sec}s`;
-    }
+    init() {
+      this.cache();
+      this.bind();
+      this.initChart();
+      this.detectConnection();
+      this.togglePanel('activity'); // default
+      this.pollers();
+    },
 
-    function percentFromMetric(val) {
-      if (val == null) return null;
-      if (typeof val === 'number') {
-        if (val <= 1) return Math.max(0, Math.min(100, Math.round(val * 100)));
-        return Math.max(0, Math.min(100, Math.round(val)));
-      }
-      if (typeof val === 'object') {
-        const v = val.value ?? val.current ?? null;
-        const m = val.max ?? val.target ?? null;
-        if (typeof v === 'number' && typeof m === 'number' && m > 0) {
-          return Math.max(0, Math.min(100, Math.round((v / m) * 100)));
-        }
-        if (typeof val.percent === 'number') {
-          return Math.max(0, Math.min(100, Math.round(val.percent)));
-        }
-      }
-      return null;
-    }
-
-    function debounce(func, wait) {
-      let timeout;
-      return function (...args) {
-        clearTimeout(timeout);
-        timeout = setTimeout(() => func.apply(this, args), wait);
+    cache() {
+      this.el = {
+        connectionIndicator: document.getElementById('connection-indicator'),
+        activityPanel: document.getElementById('activity-panel'),
+        plansPanel: document.getElementById('plans-panel'),
+        healthPanel: document.getElementById('health-panel'),
+        insightPanel: document.getElementById('insight-panel'),
+        toggleActivityBtn: document.getElementById('toggle-activity-panel'),
+        togglePlansBtn: document.getElementById('toggle-plans-panel'),
+        toggleHealthBtn: document.getElementById('toggle-health-panel'),
+        toggleInsightBtn: document.getElementById('toggle-insight-panel'),
+        activityList: document.getElementById('activity-list'),
+        planList: document.getElementById('plan-list'),
+        pendingBody: document.getElementById('pending-body'),
+        healthLoader: document.getElementById('health-loader'),
+        healthContent: document.getElementById('health-content'),
+        chartCanvas: document.getElementById('system-health-chart'),
+        currentCpu: document.getElementById('current-cpu'),
+        currentMemory: document.getElementById('current-memory'),
+        insightBox: document.getElementById('insight-box'),
+        userInput: document.getElementById('user-input'),
+        sendBtn: document.getElementById('send-btn'),
+        sendIcon: document.getElementById('send-icon'),
+        sendSpinner: document.getElementById('send-spinner'),
+        chatContainer: document.getElementById('chat-container'),
+        toastContainer: document.getElementById('toast-container'),
       };
-    }
+    },
 
-    function setButtonLoading(btnId, isLoading) {
-      const btn = document.getElementById(btnId);
-      if (!btn) return;
-      if (isLoading) {
-        btn.classList.add('loading-btn');
-        btn.disabled = true;
-        const icon = btn.querySelector('i');
-        if (icon) {
-          icon.className = 'fas fa-spinner fa-spin mr-2';
-        }
-      } else {
-        btn.classList.remove('loading-btn');
-        btn.disabled = false;
-        const icon = btn.querySelector('i');
-        if (icon) {
-          if (btnId === 'resume-btn') icon.className = 'fas fa-play mr-2';
-          if (btnId === 'pause-btn') icon.className = 'fas fa-pause mr-2';
-          if (btnId === 'send-intent-btn') icon.className = 'fas fa-paper-plane';
-          if (btnId === 'submit-response-btn') icon.className = '';
-        }
-      }
-    }
+    bind() {
+      this.el.toggleActivityBtn.onclick = () => this.togglePanel('activity');
+      this.el.togglePlansBtn.onclick = () => this.togglePanel('plans');
+      this.el.toggleHealthBtn.onclick = () => this.togglePanel('health');
+      this.el.toggleInsightBtn.onclick = () => this.togglePanel('insight');
 
-    function renderPerfBars(perf) {
-      if (!perf || typeof perf !== 'object' || !Object.keys(perf).length) {
-        return '<div class="text-gray-400 text-sm">No performance metrics.</div>';
-      }
-      const rows = Object.entries(perf).map(([k, v]) => {
-        const pct = percentFromMetric(v);
-        let rightLabel = '';
-        if (typeof v === 'object') {
-          const cur = v.value ?? v.current;
-          const max = v.max ?? v.target;
-          if (typeof cur === 'number' && typeof max === 'number') rightLabel = `${cur} / ${max}`;
-          else if (typeof v.percent === 'number') rightLabel = `${Math.round(v.percent)}%`;
-        } else if (typeof v === 'number' && pct !== null) {
-          rightLabel = `${pct}%`;
-        }
-        return `
-          <div>
-            <div class="flex justify-between text-xs mb-1">
-              <span class="text-gray-300">${k.replace(/_/g,' ')}</span>
-              <span class="text-gray-400">${rightLabel}</span>
-            </div>
-            <div class="w-full h-2 rounded stat-bar-bg">
-              <div class="h-2 rounded bg-indigo-500 stat-bar-fill" style="width:${pct ?? 0}%"></div>
-            </div>
-          </div>
-        `;
-      }).join('');
-      return `<div class="space-y-3">${rows}</div>`;
-    }
+      this.el.sendBtn.addEventListener('click', () => this.sendMessage());
+      this.el.userInput.addEventListener('keydown', e => {
+        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); this.sendMessage(); }
+      });
+      this.el.userInput.addEventListener('input', () => this.autoResizeTextarea());
+    },
 
-    function renderKeyValues(obj) {
-      if (!obj || typeof obj !== 'object' || !Object.keys(obj).length) {
-        return '<div class="text-gray-400 text-sm">No metrics.</div>';
-      }
-      const formatValue = (val, depth = 0) => {
-        if (val === null) return '<span class="json-null">null</span>';
-        if (typeof val === 'string') return `<span class="json-string">"${val}"</span>`;
-        if (typeof val === 'number') return `<span class="json-number">${val}</span>`;
-        if (typeof val === 'boolean') return `<span class="json-boolean">${val}</span>`;
-        if (Array.isArray(val)) {
-          return `[${val.map(v => formatValue(v, depth + 1)).join(', ')}]`;
-        }
-        if (typeof val === 'object') {
-          const indent = '  '.repeat(depth + 1);
-          const entries = Object.entries(val).map(([k, v]) => {
-            return `<div style="margin-left: ${depth * 1.5}em;"><span class="json-key">"${k}"</span>: ${formatValue(v, depth + 1)}</div>`;
-          }).join('');
-          return `<div>{${entries}}</div>`;
-        }
-        return String(val);
-      };
-      return `
-        <div class="text-xs text-gray-300 space-y-1">
-          ${Object.entries(obj).map(([k, v]) => `
-            <div class="flex justify-between">
-              <span class="json-key">${k}</span>
-              <span class="text-gray-200">${formatValue(v)}</span>
-            </div>`).join('')}
-        </div>`;
-    }
-
-    function renderMemories(items) {
-      if (!Array.isArray(items) || !items.length) {
-        return '<div class="text-gray-400 text-sm">No recent memories.</div>';
-      }
-      return `
-        <div class="space-y-3">
-          ${items.map((it, idx) => {
-            const title = it.title || it.type || it.event || 'Memory';
-            const outcome = it.outcome || it.status || '';
-            const summary = it.summary || it.description || it.text || '';
-            const ts = it.timestamp || it.time || '';
-            return `
-              <div class="bg-gray-900/50 border border-gray-700 rounded p-3 memory-item" data-idx="${idx}">
-                <div class="flex items-center justify-between mb-1">
-                  <div class="text-gray-200 text-sm font-medium">${title}</div>
-                  <div class="text-xs text-gray-500">${ts}</div>
-                </div>
-                ${outcome ? `<div class="text-xs text-green-400 mb-1">${outcome}</div>` : ''}
-                <div class="text-xs text-gray-300 whitespace-pre-wrap">${summary}</div>
-              </div>`;
-          }).join('')}
-        </div>`;
-    }
-
-    // ---------- App ----------
-    const DashboardApp = {
-      state: {
-        currentAgent: null,
-        agents: [],
-        statusTimer: null,
-        interventionTimer: null,
-      },
-
-      elements: {
-        systemControlContainer: document.getElementById('system-control-container'),
-        agentsSidebar: document.getElementById('agents-sidebar'),
-        agentDetailContainer: document.getElementById('agent-detail-container'),
-        agentDetailTitle: document.getElementById('agent-detail-title'),
-        statusContainer: document.getElementById('status-container'),
-        liveLogContainer: document.getElementById('live-log-container'),
-        interventionContainer: document.getElementById('intervention-container'),
-        showAllAgentsBtn: document.getElementById('show-all-agents'),
-        responseModal: document.getElementById('response-modal'),
-        responseModalBody: document.getElementById('response-modal-body'),
-        closeResponseModal: document.getElementById('close-response-modal'),
-        memoryModal: document.getElementById('memory-modal'),
-        memoryModalBody: document.getElementById('memory-modal-body'),
-        closeMemoryModal: document.getElementById('close-memory-modal'),
-      },
-
-      init() {
-        this.bindEvents();
-        this.bootstrap();
-      },
-
-      bindEvents() {
-        this.elements.showAllAgentsBtn?.addEventListener('click', (e) => {
-          e.preventDefault();
-          this.renderAgentsList(this.state.agents);
-          this.state.currentAgent = null;
-          this.elements.agentDetailTitle.textContent = 'Select an Agent';
-          this.elements.agentDetailContainer.innerHTML = '';
-        });
-        this.elements.closeResponseModal?.addEventListener('click', () => this.hideResponseModal());
-        this.elements.closeMemoryModal?.addEventListener('click', () => this.hideMemoryModal());
-      },
-
-      async bootstrap() {
-        await Promise.all([
-          this.fetchStatus(),
-          this.fetchAgents.bind(this)(),
-          this.fetchInterventions()
-        ]);
-        this.initLiveLogs();
-        clearInterval(this.state.statusTimer);
-        this.state.statusTimer = setInterval(() => this.fetchStatus(), 10000);
-        clearInterval(this.state.interventionTimer);
-        this.state.interventionTimer = setInterval(() => this.fetchInterventions(), 10000);
-      },
-
-      // ---- API Calls ----
-      async fetchWithAuth(url, options = {}) {
-        return fetch(url, {
-          ...options,
-          headers: { ...options.headers, 'X-API-Key': API_KEY }
-        });
-      },
-
-      async fetchStatus() {
-        try {
-          const res = await this.fetchWithAuth('/api/status');
-          if (!res.ok) throw new Error('HTTP ' + res.status);
-          const data = await res.json();
-          this.renderStatus(data);
-        } catch (err) {
-          this.renderStatus({ system_paused: true, uptime: 0, agents_online: 0 });
-          console.warn('Status error:', err);
-        }
-      },
-
-      fetchAgents: async function() {
-        try {
-          const res = await this.fetchWithAuth('/api/agents');
-          if (!res.ok) {
-            const errorData = await res.json().catch(() => ({ message: `HTTP ${res.status}` }));
-            throw new Error(errorData.message || `HTTP ${res.status}`);
-          }
-          const data = await res.json();
-          this.state.agents = Array.isArray(data) ? data : (data.agents || []);
-          if (!this.state.agents.length) {
-            this.elements.agentsSidebar.innerHTML = '<div class="text-xs text-yellow-400">No agents available.</div>';
-          } else {
-            this.renderAgentsList(this.state.agents);
-            if (typeof this.selectAgent === 'function' && this.state.agents.length) {
-              this.selectAgent(this.state.agents[0].name || this.state.agents[0]);
-            } else {
-              console.warn('selectAgent is not a function or no agents to select');
-              this.elements.agentDetailTitle.textContent = 'No Agents Available';
-              this.elements.agentDetailContainer.innerHTML = '<div class="text-xs text-yellow-400">No agents to display.</div>';
-            }
-          }
-        } catch (err) {
-          this.elements.agentsSidebar.innerHTML = `<div class="text-xs text-red-400">Failed to load agents: ${err.message}</div>`;
-          console.warn('Agents error:', err);
-        }
-      },
-
-      async fetchAgentDetail(agentName) {
-        const res = await this.fetchWithAuth(`/api/agent/${encodeURIComponent(agentName)}`);
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        return res.json();
-      },
-
-      async fetchInterventions() {
-        try {
-          const res = await this.fetchWithAuth('/api/pending_interventions');
-          if (!res.ok) throw new Error('HTTP ' + res.status);
-          const data = await res.json();
-          this.renderInterventions(Array.isArray(data) ? data : []);
-        } catch (err) {
-          console.warn('Interventions error:', err);
-          this.renderInterventions([]);
-        }
-      },
-
-      initLiveLogs() {
-        const source = new EventSource('/api/live_logs');
-        source.onmessage = (event) => {
-          try {
-            const log = JSON.parse(event.data);
-            this.renderLogs([log], true);
-          } catch (err) {
-            console.warn('Log parse error:', err);
-          }
-        };
-        source.onerror = () => console.warn('SSE error');
-      },
-
-      // ---- Actions ----
-      async controlSystem(action) {
-        const btnId = action === 'pause' ? 'pause-btn' : 'resume-btn';
-        setButtonLoading(btnId, true);
-        try {
-          const res = await this.fetchWithAuth(`/api/system/${action}`, { method: 'POST' });
-          const data = await res.json().catch(() => ({ message: 'Action sent.' }));
-          safeToast({ text: data.message || 'Action sent', className: 'info', style: { background: '#2563eb' } });
-          this.fetchStatus();
-        } catch (err) {
-          safeToast({ text: 'Failed to control system', className: 'error', style: { background: '#ef4444' } });
-        } finally {
-          setButtonLoading(btnId, false);
-        }
-      },
-
-      async overrideIntent() {
-        const input = document.getElementById('intent-override-input');
-        const newIntent = input?.value || '';
-        if (!newIntent.trim() || !this.state.currentAgent) return;
-        setButtonLoading('send-intent-btn', true);
-        try {
-          const res = await this.fetchWithAuth(`/api/agent/${encodeURIComponent(this.state.currentAgent)}/intent`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ intent: newIntent })
-          });
-          const data = await res.json().catch(() => ({ message: 'Intent override sent.' }));
-          safeToast({ text: data.message || 'Intent override sent', className: 'info', style: { background: '#10b981' } });
-          setTimeout(() => this.selectAgent(this.state.currentAgent), 600);
-        } catch (err) {
-          safeToast({ text: 'Failed to override intent', className: 'error', style: { background: '#ef4444' } });
-        } finally {
-          setButtonLoading('send-intent-btn', false);
-        }
-      },
-
-      async selectAgent(agentName) {
-        this.state.currentAgent = agentName;
-        this.highlightActiveAgent(agentName);
-        this.elements.agentDetailTitle.textContent = agentName;
-        try {
-          const agent = await this.fetchAgentDetail(agentName);
-          this.renderAgentDetail(agent);
-        } catch (err) {
-          const fallback = (this.state.agents || []).find(a => (a.name || a) === agentName) || { name: agentName };
-          this.renderAgentDetail(fallback);
-        }
-      },
-
-      async submitInterventionResponse(requestId, response) {
-        setButtonLoading('submit-response-btn', true);
-        try {
-          const res = await this.fetchWithAuth('/api/inject_directive', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ type: 'HUMAN_RESPONSE', payload: { request_id: requestId, response } })
-          });
-          const data = await res.json();
-          safeToast({ text: data.message || 'Response sent', style: { background: '#10b981' } });
-          this.hideResponseModal();
-          this.fetchInterventions();
-        } catch (err) {
-          safeToast({ text: 'Failed to submit response', style: { background: '#ef4444' } });
-        } finally {
-          setButtonLoading('submit-response-btn', false);
-        }
-      },
-
-      // ---- Renderers ----
-      renderStatus(status) {
-        const isPaused = !!status.system_paused;
-        const uptime = status.uptime || 0;
-        const agentsOnline = status.agents_online || (this.state.agents?.length || 0);
-        const cpu = status.resource_usage?.cpu_percent;
-        const mem = status.resource_usage?.memory_percent;
-
-        this.elements.statusContainer.innerHTML = `
-          <div class="flex items-center justify-between">
-            <div class="flex items-center space-x-2">
-              <span class="w-2.5 h-2.5 rounded-full ${isPaused ? 'bg-yellow-400' : 'bg-green-400'} status-dot"></span>
-              <span class="text-sm ${isPaused ? 'text-yellow-300' : 'text-green-300'}">${isPaused ? 'Paused' : 'Running'}</span>
-            </div>
-            <div class="text-xs text-gray-400">Uptime: ${formatDuration(uptime)}</div>
-          </div>
-          <div class="mt-3 text-xs text-gray-300">Agents online: ${agentsOnline}</div>
-          ${ (cpu != null && mem != null) ? `<div class="mt-2 text-xs text-gray-400">CPU / Memory: ${cpu}% / ${mem}%</div>` : '' }
-          <canvas id="resource-chart" class="mt-4"></canvas>
-        `;
-        this.renderSystemControls(isPaused);
-        this.renderResourceChart(status.resource_usage || {});
-      },
-
-      renderResourceChart(usage) {
-        const ctx = document.getElementById('resource-chart')?.getContext('2d');
-        if (!ctx) return;
-        new Chart(ctx, {
-          type: 'bar',
-          data: {
-            labels: ['CPU', 'Memory'],
-            datasets: [{
-              label: 'Resource Usage (%)',
-              data: [usage.cpu_percent || 0, usage.memory_percent || 0],
-              backgroundColor: ['#4f46e5', '#10b981'],
-              borderColor: ['#4f46e5', '#10b981'],
-              borderWidth: 1
-            }]
-          },
-          options: {
-            responsive: true,
-            scales: { y: { beginAtZero: true, max: 100 } },
-            plugins: { legend: { display: false } }
-          }
-        });
-      },
-
-      renderSystemControls(isPaused) {
-        let controlHtml = '';
-        if (isPaused) {
-          controlHtml = `<button id="resume-btn" class="w-full text-center bg-green-600 hover:bg-green-500 text-white font-bold py-2 px-3 rounded text-sm transition-colors" aria-label="Resume system"><i class="fas fa-play mr-2"></i>Resume System</button>`;
+    detectConnection: async function() {
+      try {
+        const r = await fetch('/api/health');
+        if (!r.ok) throw new Error();
+        const j = await r.json();
+        if (j?.data?.loop_alive) {
+          this.connectionStatus = 'connected';
+          this.toast('Connected to CVA');
         } else {
-          controlHtml = `<button id="pause-btn" class="w-full text-center bg-yellow-600 hover:bg-yellow-500 text-white font-bold py-2 px-3 rounded text-sm transition-colors" aria-label="Pause system"><i class="fas fa-pause mr-2"></i>Pause System</button>`;
+          this.connectionStatus = 'simulation';
+          this.toast('Simulation mode (loop not alive)');
         }
-        this.elements.systemControlContainer.innerHTML = controlHtml;
-        document.getElementById('resume-btn')?.addEventListener('click', () => this.controlSystem('unpause'));
-        document.getElementById('pause-btn')?.addEventListener('click', () => this.controlSystem('pause'));
-      },
+      } catch {
+        this.connectionStatus = 'simulation';
+        this.toast('Simulation mode (no backend)');
+      }
+      this.updateConnectionIndicator();
+    },
 
-      renderAgentsList(agents) {
-        const list = (agents || []).map(a => {
-          const name = a.name || a;
-          const status = a.status || 'unknown';
-          const role = a.role || '';
-          return `
-            <button data-agent="${name}" class="agent-sidebar-link w-full text-left flex items-center p-2 text-sm rounded-lg transition-colors hover:bg-gray-700/60" aria-label="Select agent ${name}">
-              <span class="w-2.5 h-2.5 rounded-full mr-2 ${status === 'running' ? 'bg-green-400' : status === 'paused' ? 'bg-yellow-400' : 'bg-gray-500'}"></span>
-              <div class="flex-1">
-                <div class="text-gray-200 truncate">${name}</div>
-                ${role ? `<div class="text-[10px] text-gray-400 truncate">${role}</div>` : ''}
-              </div>
-            </button>`;
-        }).join('');
-        this.elements.agentsSidebar.innerHTML = list || '<div class="text-xs text-gray-400">No agents found.</div>';
-        this.elements.agentsSidebar.querySelectorAll('.agent-sidebar-link').forEach(btn => {
-          btn.addEventListener('click', () => this.selectAgent(btn.getAttribute('data-agent')));
-        });
-      },
+    updateConnectionIndicator() {
+      const s = this.connectionStatus === 'connected' ? 'connected' :
+                this.connectionStatus === 'disconnected' ? 'disconnected' : 'simulation-mode';
+      this.el.connectionIndicator.className = `connection-status ${s}`;
+    },
 
-      highlightActiveAgent(agentName) {
-        this.elements.agentsSidebar.querySelectorAll('.agent-sidebar-link').forEach(btn => {
-          const active = btn.getAttribute('data-agent') === agentName;
-          btn.classList.toggle('active', active);
-        });
-      },
+    togglePanel(name) {
+      const map = { activity: 'activityPanel', plans: 'plansPanel', health: 'healthPanel', insight: 'insightPanel' };
+      Object.values(map).forEach(k => this.el[k].classList.add('hidden'));
+      this.el[map[name]].classList.remove('hidden');
+      if (name === 'health') this.updateSystemHealth(true);
+      if (name === 'plans') { this.fetchPending(); this.fetchPlans(); }
+      if (name === 'insight') this.fetchInsight();
+    },
 
-      renderAgentDetail(agent) {
-        const name = agent.name || this.state.currentAgent || 'Agent';
-        const role = agent.role || agent.type || '—';
-        const status = agent.status || 'unknown';
-        const intent = (agent.intent && (agent.intent.current || agent.intent)) || '—';
-        const metrics = agent.metrics || {};
-        const capabilities = agent.capabilities || [];
-        const perf = agent.performance_metrics || agent.performance || agent.perf_metrics || {};
-        const memories = agent.recent_memories || agent.memories || agent.memory_log || [];
+    pollers() {
+      setInterval(() => this.updateEvents(), 2000);
+      setInterval(() => this.updateSystemHealth(), 5000);
+      setInterval(() => this.fetchPlans(), 5000);
+      setInterval(() => this.fetchPending(), 5000);
+    },
 
-        const overrideFormHtml = `
-          <div class="bg-gray-800/60 border border-gray-700 rounded-lg p-4">
-            <h3 class="text-sm font-semibold text-gray-300 uppercase tracking-wider mb-2">Override Intent</h3>
-            <div class="flex space-x-2">
-              <input type="text" id="intent-override-input" class="flex-grow bg-gray-900 border border-gray-700 rounded-md p-2 text-gray-200 focus:ring-2 focus:ring-blue-500 focus:outline-none" placeholder="Enter new intent..." aria-label="New intent" />
-              <button id="send-intent-btn" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-md font-semibold transition-colors shrink-0" aria-label="Send intent override">
-                <i class="fas fa-paper-plane"></i>
-              </button>
+    // -------- Activity/events ----------
+    async updateEvents() {
+      try {
+        const r = await fetch('/api/event_stream');
+        if (!r.ok) throw new Error();
+        const events = await r.json();
+        this.renderEvents(Array.isArray(events) ? events.slice(-20) : []);
+      } catch {
+        this.connectionStatus = 'disconnected';
+        this.updateConnectionIndicator();
+      }
+    },
+
+    renderEvents(events) {
+      if (!events.length) {
+        this.el.activityList.innerHTML = '<li class="text-gray-500 text-center">No events yet</li>';
+        return;
+      }
+      this.el.activityList.innerHTML = '';
+      events.forEach(ev => {
+        const li = document.createElement('li');
+        li.innerHTML =
+          `<span class="font-mono text-xs text-gray-400">[${new Date(ev.timestamp).toLocaleTimeString()}]</span>
+           <span class="text-blue-300 ml-2">${ev.type || 'log'}</span>:
+           <span class="text-gray-300">${ev.description || ''}</span>`;
+        this.el.activityList.appendChild(li);
+      });
+      this.el.activityList.scrollTop = this.el.activityList.scrollHeight;
+    },
+
+    // -------- Plans + Approvals ----------
+    async fetchPlans() {
+      try {
+        const r = await fetch('/api/catalyst/plans');
+        if (!r.ok) throw new Error();
+        const j = await r.json();
+        const plans = Array.isArray(j?.data) ? j.data : [];
+        this.renderPlans(plans);
+      } catch {
+        this.el.planList.innerHTML = '<li class="text-gray-500 text-center">Unable to load plans</li>';
+      }
+    },
+
+    renderPlans(plans) {
+      const list = this.el.planList;
+      if (!plans.length) {
+        list.innerHTML = '<li class="text-gray-500 text-center">No active plans</li>';
+        return;
+      }
+      list.innerHTML = '';
+      plans.forEach(p => {
+        const li = document.createElement('li');
+        li.className = 'plan-step bg-gray-900/30 p-2 rounded text-sm';
+        li.innerHTML = `
+          <div class="flex justify-between items-center">
+            <span class="font-mono text-blue-300">${p.task_id || 'unknown-id'}</span>
+            <span class="text-xs text-gray-400">${p.status}</span>
+          </div>
+          <div class="text-sm text-gray-300 mt-1">
+            Action: <code class="small">${p.action}</code> — 
+            <code class="small">${p.namespace || 'default'}/${p.deployment}</code> → 
+            <code class="small">${p.replicas}</code>
+          </div>`;
+        list.appendChild(li);
+      });
+    },
+
+    async fetchPending() {
+      try {
+        const r = await fetch('/api/pending');
+        if (!r.ok) throw new Error();
+        const j = await r.json();
+        const p = j?.pending;
+        if (!p) {
+          this.el.pendingBody.innerHTML = '<span class="text-gray-500">No pending mission.</span>';
+          return;
+        }
+        const created = p.created_at ? new Date(p.created_at * 1000).toLocaleString() : (p.ts ? new Date(p.ts * 1000).toLocaleString() : '-');
+        this.el.pendingBody.innerHTML = `
+          <div class="text-sm space-y-1">
+            <div><strong>Action:</strong> <code class="small">${p.action}</code></div>
+            <div><strong>Params:</strong> <code class="small">${(p.namespace||'default')}/${p.deployment}</code> → <code class="small">${p.replicas}</code></div>
+            <div><strong>Approval Token:</strong> <code class="small">${p.approval_token || '—'}</code></div>
+            <div><strong>Status:</strong> ${p.status || 'awaiting_approval'}</div>
+            <div><strong>Created:</strong> ${created}</div>
+            <div class="pt-2">
+              <button id="approve-btn" class="btn">Approve & Execute</button>
+              <span id="approve-status" class="text-gray-400 ml-2"></span>
             </div>
           </div>`;
+        document.getElementById('approve-btn').onclick = () => this.approvePending(p);
+      } catch {
+        this.el.pendingBody.innerHTML = '<span class="text-red-400">Failed to load pending mission.</span>';
+      }
+    },
 
-        this.elements.agentDetailContainer.innerHTML = `
-          <div class="space-y-6">
-            <div class="flex items-center justify-between">
-              <div>
-                <div class="text-xs text-gray-400">${role}</div>
-                <div class="text-2xl font-semibold text-white">${name}</div>
-              </div>
-              <div class="text-sm">
-                <span class="px-2 py-1 rounded-full ${status === 'running' ? 'bg-green-600/30 text-green-300' : status === 'paused' ? 'bg-yellow-600/30 text-yellow-300' : 'bg-gray-600/30 text-gray-300'}">${status}</span>
-              </div>
-            </div>
-
-            ${overrideFormHtml}
-
-            <div class="bg-gray-800/60 border border-gray-700 rounded-lg p-4">
-              <h4 class="text-sm font-semibold text-gray-300 mb-2">Current Intent</h4>
-              <div class="text-gray-200 text-sm whitespace-pre-wrap">${intent}</div>
-            </div>
-
-            <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-              <div class="bg-gray-800/60 border border-gray-700 rounded-lg p-4">
-                <h4 class="text-sm font-semibold text-gray-300 mb-2">Performance Metrics</h4>
-                ${renderPerfBars(perf)}
-              </div>
-              <div class="bg-gray-800/60 border border-gray-700 rounded-lg p-4">
-                <h4 class="text-sm font-semibold text-gray-300 mb-2">Metrics</h4>
-                ${renderKeyValues(metrics)}
-              </div>
-            </div>
-
-            <div class="bg-gray-800/60 border border-gray-700 rounded-lg p-4">
-              <h4 class="text-sm font-semibold text-gray-300 mb-2">Capabilities</h4>
-              ${capabilities.length
-                ? `<ul class="list-disc pl-5 text-sm text-gray-200">${capabilities.map(c => `<li>${c}</li>`).join('')}</ul>`
-                : '<div class="text-gray-400 text-sm">—</div>'
-              }
-            </div>
-
-            <div class="bg-gray-800/60 border border-gray-700 rounded-lg p-4">
-              <h4 class="text-sm font-semibold text-gray-300 mb-2">Recent Memories</h4>
-              ${renderMemories(memories)}
-            </div>
-          </div>
-        `;
-
-        const intentInput = document.getElementById('intent-override-input');
-        const intentBtn = document.getElementById('send-intent-btn');
-        if (intentInput && intentBtn) {
-          intentBtn.disabled = !intentInput.value.trim();
-          intentInput.addEventListener('input', debounce(() => {
-            intentBtn.disabled = !intentInput.value.trim();
-          }, 300));
-          intentBtn.addEventListener('click', () => this.overrideIntent());
-        }
-        this.elements.agentDetailContainer.querySelectorAll('.memory-item').forEach(item => {
-          item.addEventListener('click', () => {
-            const idx = item.getAttribute('data-idx');
-            const memory = (agent.recent_memories || agent.memories || agent.memory_log || [])[idx];
-            if (memory) {
-              this.showMemoryModal(renderKeyValues(memory));
-            }
-          });
+    async approvePending(p) {
+      const status = document.getElementById('approve-status');
+      status.textContent = 'Approving…';
+      try {
+        const body = { approval_token: p.approval_token, task_id: p.task_id };
+        const r = await fetch('/api/approve', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
         });
-      },
+        const j = await r.json();
+        if (!r.ok || !j.ok) throw new Error(j?.error || j?.detail?.error || 'Approval failed');
+        status.textContent = 'Approved ✅';
+        this.toast(`Scaled ${p.deployment} to ${p.replicas}`);
+        setTimeout(() => { this.fetchPending(); this.fetchPlans(); }, 800);
+      } catch (e) {
+        status.textContent = 'Failed';
+        this.toast(e.message || 'Approval failed', true);
+      }
+    },
 
-      renderLogs(logs, append = false) {
-        if (!Array.isArray(logs)) return;
-        const html = logs.map(l => {
-          const ts = l.timestamp || l.time || '';
-          const lvl = l.level || l.severity || 'INFO';
-          const msg = l.message || l.msg || (typeof l === 'string' ? l : JSON.stringify(l));
-          return `<div class="flex space-x-2"><span class="text-gray-500">${ts}</span><span class="text-gray-400">[${lvl}]</span><span class="text-gray-200 flex-1">${msg}</span></div>`;
-        }).join('');
-        if (append) {
-          this.elements.liveLogContainer.innerHTML += html;
-        } else {
-          this.elements.liveLogContainer.innerHTML = html;
+    // -------- System health ----------
+    initChart() {
+      const ctx = document.getElementById('system-health-chart').getContext('2d');
+      this.chart = new Chart(ctx, {
+        type: 'line',
+        data: { labels: [], datasets: [
+          { label: 'CPU %', data: [], borderColor: '#60a5fa', backgroundColor: 'rgba(96,165,250,0.1)', tension: 0.3 },
+          { label: 'Memory %', data: [], borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.1)', tension: 0.3 }
+        ]},
+        options: {
+          responsive: true, animation: false, interaction: { intersect: false, mode: 'index' },
+          scales: {
+            y: { min: 0, max: 100, ticks: { color: '#9ca3af' }, grid: { color: 'rgba(156,163,175,0.1)' } },
+            x: { ticks: { color: '#9ca3af' }, grid: { color: 'rgba(156,163,175,0.1)' } }
+          },
+          plugins: { legend: { labels: { color: '#e5e7eb' } } }
         }
-        this.elements.liveLogContainer.scrollTop = this.elements.liveLogContainer.scrollHeight;
-      },
+      });
+    },
 
-      renderInterventions(interventions) {
-        this.elements.interventionContainer.innerHTML = interventions.length ? interventions.map(i => `
-          <div class="bg-gray-900/50 border border-gray-700 rounded p-3 mb-2">
-            <div class="text-sm text-gray-200">${i.request_id || 'Request'}</div>
-            <div class="text-xs text-gray-400">${i.description || i.message || 'Pending human response'}</div>
-            <button data-id="${i.request_id}" class="mt-2 px-3 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-xs respond-btn" aria-label="Respond to intervention ${i.request_id}">Respond</button>
-          </div>
-        `).join('') : '<div class="text-xs text-gray-400">No pending interventions.</div>';
-        this.elements.interventionContainer.querySelectorAll('.respond-btn').forEach(btn => {
-          btn.addEventListener('click', () => {
-            const id = btn.getAttribute('data-id');
-            this.showResponseModal(id);
-          });
+    async updateSystemHealth(initial=false) {
+      try {
+        const r = await fetch('/api/system_metrics');
+        if (!r.ok) throw new Error();
+        const j = await r.json();
+        const d = j?.data || {};
+        const cpu = +d.cpu || 0, memory = +d.memory || 0, ts = Date.now();
+        this.el.healthLoader.classList.add('hidden');
+        this.el.healthContent.classList.remove('hidden');
+        this.el.currentCpu.textContent = `${cpu.toFixed(1)}%`;
+        this.el.currentMemory.textContent = `${memory.toFixed(1)}%`;
+
+        const L = this.chart.data.labels, cpuD = this.chart.data.datasets[0].data, memD = this.chart.data.datasets[1].data;
+        L.push(new Date(ts).toLocaleTimeString()); cpuD.push(cpu); memD.push(memory);
+        if (L.length > 30) { L.shift(); cpuD.shift(); memD.shift(); }
+        this.chart.update('none');
+      } catch {
+        if (!initial) this.toast('System metrics unavailable', true);
+      }
+    },
+
+    // -------- Insight ----------
+    async fetchInsight() {
+      try {
+        const r = await fetch('/api/latest_insight');
+        if (!r.ok) throw new Error();
+        const j = await r.json();
+        const text = j?.data?.insight || 'No recent insights available.';
+        this.el.insightBox.textContent = text;
+      } catch {
+        this.el.insightBox.textContent = 'Unable to fetch latest insight.';
+      }
+    },
+
+    // -------- Command handling ----------
+    async sendMessage() {
+      const msg = this.el.userInput.value.trim();
+      if (!msg) return;
+      this.addMessage(msg, 'user');
+      this.el.userInput.value = ''; this.autoResizeTextarea();
+
+      if (this.connectionStatus !== 'connected') {
+        this.addMessage('Simulation: command accepted.', 'ai');
+        return;
+      }
+
+      try {
+        this.setSending(true);
+        const r = await fetch('/api/command', {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ command: msg })
         });
-      },
+        const j = await r.json();
+        if (!r.ok) throw new Error(j?.error || 'Dispatch failed');
+        const taskId = j.task_id;
+        this.addMessage('Command dispatched to swarm. Monitoring execution…', 'ai');
+        if (taskId) this.pollTask(taskId);
+      } catch (e) {
+        this.addMessage(`Command error: ${e.message}`, 'alert');
+      } finally {
+        this.setSending(false);
+      }
+    },
 
-      showResponseModal(requestId) {
-        this.elements.responseModalBody.innerHTML = `
-          <div class="text-gray-200 text-sm mb-4">Enter response for ${requestId}</div>
-          <textarea id="response-input" class="w-full bg-gray-900 border border-gray-700 rounded p-2 text-gray-200" rows="4" placeholder="Enter your response..." aria-label="Intervention response"></textarea>
-          <button id="submit-response-btn" class="mt-3 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded font-semibold" aria-label="Submit response">Submit</button>
-        `;
-        this.elements.responseModal.style.display = 'flex';
-        const responseInput = document.getElementById('response-input');
-        const submitBtn = document.getElementById('submit-response-btn');
-        if (responseInput && submitBtn) {
-          submitBtn.disabled = !responseInput.value.trim();
-          responseInput.addEventListener('input', debounce(() => {
-            submitBtn.disabled = !responseInput.value.trim();
-          }, 300));
-          submitBtn.addEventListener('click', () => {
-            const response = responseInput.value;
-            if (response.trim()) {
-              this.submitInterventionResponse(requestId, response);
-            }
-          });
-        }
-      },
+    async pollTask(taskId, retries=30) {
+      const delay = ms => new Promise(r => setTimeout(r, ms));
+      for (let i=0;i<retries;i++) {
+        try {
+          const r = await fetch(`/api/catalyst/task_status/${taskId}`);
+          if (!r.ok) throw new Error();
+          const j = await r.json();
+          if (j.status === 'completed' || j.status === 'failed') {
+            const m = j.result?.summary || `Task ${j.status}.`;
+            this.addMessage(m, j.status === 'failed' ? 'alert' : 'ai');
+            return;
+          }
+        } catch {}
+        await delay(2000);
+      }
+      this.addMessage('Task monitoring timeout. Check logs.', 'alert');
+    },
 
-      hideResponseModal() { this.elements.responseModal.style.display = 'none'; },
-      showMemoryModal(html) { this.elements.memoryModalBody.innerHTML = html || ''; this.elements.memoryModal.style.display = 'flex'; },
-      hideMemoryModal() { this.elements.memoryModal.style.display = 'none'; },
-    };
+    // -------- Small utils ----------
+    autoResizeTextarea() {
+      const el = this.el.userInput;
+      el.style.height = 'auto';
+      el.style.height = Math.min(el.scrollHeight, 200) + 'px';
+    },
+    addMessage(text, kind='ai') {
+      const div = document.createElement('div');
+      div.className = `${kind==='user'?'user-bubble':kind==='alert'?'alert-bubble':'ai-bubble'} bubble w-fit max-w-lg rounded-xl p-3`;
+      div.innerText = text;
+      this.el.chatContainer.appendChild(div);
+      this.el.chatContainer.scrollTop = this.el.chatContainer.scrollHeight;
+    },
+    setSending(on) {
+      this.el.sendBtn.disabled = on;
+      this.el.sendIcon.classList.toggle('hidden', on);
+      this.el.sendSpinner.classList.toggle('hidden', !on);
+    },
+    toast(msg, isError=false) {
+      const d = document.createElement('div');
+      d.className = 'toast';
+      d.style.background = isError ? '#ef4444' : '#10b981';
+      d.textContent = msg;
+      this.el.toastContainer.appendChild(d);
+      setTimeout(()=>d.remove(), 3000);
+    }
+  };
 
-    document.addEventListener('DOMContentLoaded', () => DashboardApp.init());
+  document.addEventListener('DOMContentLoaded', () => UI.init());
   </script>
 </body>
 </html>

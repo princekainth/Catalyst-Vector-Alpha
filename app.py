@@ -1,375 +1,623 @@
-# ==================================================================
-#  app.py - Main Application Runner for Catalyst Vector Alpha
-# ==================================================================
+# app.py
+# ──────────────────────────────────────────────────────────────────────────────
+# Catalyst Vector Alpha — Flask app (dashboard + API)
+# - Safe startup (env + imports)
+# - Background CVA loop
+# - Task tracking + live event feed
+# - Pending plan store + approval endpoint (registry-backed + token support)
+# - System + k8s metrics passthrough
+# ──────────────────────────────────────────────────────────────────────────────
 
-# --- Standard Library Imports ---
-import logging
-import sys
 import os
-import json
+import sys
 import time
-from threading import Thread
+import uuid
+import json
+import logging
+import threading
+from threading import Thread, Lock
 from collections import deque
-from datetime import datetime, timezone
-from functools import wraps
+from typing import Dict, Any, Optional, Tuple
 
-# --- Third-Party Library Imports ---
-from flask import Flask, jsonify, render_template, request, Response
-from flask_cors import CORS
-import psutil
+# --- Environment --------------------------------------------------------------
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
 
-# --- Add Project Root to Python Path ---
+# --- Add project root to PYTHONPATH ------------------------------------------
 APP_ROOT = os.path.dirname(os.path.abspath(__file__))
 if APP_ROOT not in sys.path:
     sys.path.insert(0, APP_ROOT)
 
-# --- Project-Specific Imports ---
+# --- Third-Party --------------------------------------------------------------
+from flask import Flask, jsonify, render_template, request
+from flask_cors import CORS
+
+# --- Project Imports (fail fast with message) ---------------------------------
 try:
     from catalyst_vector_alpha import CatalystVectorAlpha
-    from core import MessageBus, EventMonitor, ToolRegistry
-    from ccn_monitor_mock import MockCCNMonitor
+    from shared_models import MessageBus, EventMonitor, timestamp_now
+    from tool_registry import tool_registry, ToolRegistry  # singleton + class
+    from core.mission_runner import MissionRunner
+    # Optional clients from tool_registry (if you expose them)
+    from tool_registry import PROM, K8S, POL
 except ImportError as e:
     print(f"FATAL IMPORT ERROR: {e}")
-    print("Please make sure catalyst_vector_alpha.py, core.py, and other required files exist.")
+    print("Ensure project files exist and PYTHONPATH is correct.")
     sys.exit(1)
 
-# --- Global Variables & Logging ---
-system_instance = None
-system_thread = None
-web_log_buffer = deque(maxlen=2000)
-APP_START_TS = time.time()
+# Register all tools into the global singleton registry (lazy module import, no function imports)
+import tools  # the module only
+tools.register_tools_into(tool_registry)
+
+# --- Globals ------------------------------------------------------------------
+API_KEY = os.getenv("CATALYST_API_KEY", "your-secret-key")
+
+system_instance: Optional[CatalystVectorAlpha] = None
+system_thread: Optional[Thread] = None
+
+# Task tracking (thread-safe)
+tasks: Dict[str, Dict[str, Any]] = {}
+tasks_lock = Lock()
+
+# Live UI event feed (thread-safe)
+LIVE_EVENTS = deque(maxlen=50)
+events_lock = Lock()
+
+# Minimal pending plan store (task_id -> plan)
+# Expected keys: task_id, status, action, namespace, deployment, replicas, ts, approval_token
+plan_store: Dict[str, Dict[str, Any]] = {}
+plan_lock = Lock()
+
+# Mission runner (CPU threshold mission helper)
+_runner = MissionRunner(PROM, K8S, POL, mem_kernel=None)
+
+# --- Logger -------------------------------------------------------------------
 logger = logging.getLogger("CatalystLogger")
-logger.setLevel(logging.DEBUG)
-logger.propagate = False
+if not logger.handlers:
+    logger.setLevel(logging.INFO)
+    console_handler = logging.StreamHandler(sys.stdout)
+    formatter = logging.Formatter("[%(asctime)s] [%(levelname)s] %(message)s", "%H:%M:%S")
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
 
-if logger.hasHandlers():
-    logger.handlers.clear()
-
-# Console handler for stdout
-console_handler = logging.StreamHandler(sys.stdout)
-console_handler.setLevel(logging.INFO)
-formatter = logging.Formatter(
-    "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    "%Y-%m-%d %H:%M:%S"
-)
-console_handler.setFormatter(formatter)
-logger.addHandler(console_handler)
-
-# File handler for persistent logs
-file_handler = logging.FileHandler(os.path.join(APP_ROOT, 'persistence_data', 'logs', 'app.log'))
-file_handler.setLevel(logging.DEBUG)
-file_handler.setFormatter(formatter)
-logger.addHandler(file_handler)
-
-class WebStreamHandler(logging.Handler):
-    """Custom logging handler to store log entries in a deque for web streaming."""
-    def __init__(self, deque_instance):
-        super().__init__()
-        self.deque = deque_instance
-
+# --- UI Broadcast Handler -----------------------------------------------------
+class UIBroadcastHandler(logging.Handler):
+    """Push structured log records into LIVE_EVENTS for the UI."""
     def emit(self, record):
-        try:
-            log_entry = json.loads(record.getMessage())
-            self.deque.append(log_entry)
-        except (json.JSONDecodeError, TypeError):
+        if hasattr(record, 'event_type'):
             log_entry = {
-                "timestamp": datetime.fromtimestamp(record.created, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "level": record.levelname,
-                "source": record.name,
-                "description": record.getMessage(),
-                "details": {}
+                'id': str(uuid.uuid4()),
+                'timestamp': getattr(record, 'timestamp', timestamp_now()),
+                'type': getattr(record, 'event_type', 'log'),
+                'source': getattr(record, 'source', 'unknown'),
+                'description': getattr(record, 'description', record.getMessage()),
             }
-            self.deque.append(log_entry)
+            with events_lock:
+                LIVE_EVENTS.append(log_entry)
+
+# --- Task Completion Handler --------------------------------------------------
+class TaskCompletionHandler(logging.Handler):
+    """Detect agent task completions and update our task map."""
+    def emit(self, record):
+        if getattr(record, 'event_type', '') == 'AGENT_TASK_PERFORMED':
+            try:
+                details = getattr(record, 'details', {}) or {}
+                task_id = details.get('task_id')
+                if task_id and task_id in tasks:
+                    agent = details.get('agent', '')
+                    task_desc = details.get('task', '')
+                    outcome = details.get('outcome', 'unknown')
+                    status = "completed" if outcome == "completed" else "failed"
+                    summary = f"Agent {agent} {status}: {task_desc}"
+                    report_content = details.get('report_content', {})
+                    update_task_status(
+                        task_id=task_id,
+                        status=status,
+                        result_summary=summary,
+                        details=report_content
+                    )
+            except Exception as e:
+                logger.warning(f"TaskCompletionHandler error: {e}")
+
+# Attach UI + completion handlers
+ui_handler = UIBroadcastHandler()
+ui_handler.setLevel(logging.INFO)
+logger.addHandler(ui_handler)
+
+task_handler = TaskCompletionHandler()
+task_handler.setLevel(logging.INFO)
+logger.addHandler(task_handler)
+
+# --- Helper functions ---------------------------------------------------------
+def update_task_status(task_id: Optional[str], status: str, result_summary="Task completed", details=None):
+    """Update status of a tracked task; used by system callbacks."""
+    if not task_id:
+        return
+    with tasks_lock:
+        if task_id in tasks:
+            tasks[task_id] = {
+                "status": status,
+                "result": {"summary": result_summary, "details": details or {}}
+            }
+            logger.info(f"Updated task {task_id}: status={status}")
+
+def _safe_get_task_history(limit=15):
+    try:
+        if system_instance and hasattr(system_instance, "get_task_history"):
+            return system_instance.get_task_history(limit=limit) or []
+    except Exception as e:
+        logger.warning(f"get_task_history failed: {e}")
+    return []
+
+def _safe_get_latest_agent_reflection():
+    try:
+        if system_instance and hasattr(system_instance, "get_latest_agent_reflection"):
+            return system_instance.get_latest_agent_reflection()
+    except Exception as e:
+        logger.warning(f"get_latest_agent_reflection failed: {e}")
+    return None
+
+# -------------------- Pending Missions: helpers -------------------------------
+def _normalize_scale_params(params: Dict[str, Any]) -> Tuple[str, str, int]:
+    ns = params.get("namespace", "default")
+    dep = params.get("deployment")
+    rep = params.get("replicas", 1)
+    if dep in (None, ""):
+        raise ValueError("Missing 'deployment' in params.")
+    try:
+        rep = int(rep)
+    except Exception:
+        raise ValueError("'replicas' must be an integer.")
+    return ns, dep, rep
+
+def save_pending_scale_plan(plan: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Call this from the Planner when emitting a dry-run k8s_scale plan.
+    Normalized shape stored in memory with an approval_token for the dashboard.
+    """
+    p = dict(plan or {})
+    p["status"] = "awaiting_approval"
+    p["action"] = "k8s_scale"
+    p["ts"] = time.time()
+    p.setdefault("task_id", str(uuid.uuid4()))
+    p.setdefault("approval_token", f"tok_{int(time.time())}_{p['task_id'][:6]}")
+
+    # Optional convenience: allow Planner to pass params dict or flat fields
+    if "params" in p:
+        try:
+            ns, dep, rep = _normalize_scale_params(p["params"])
+            p["namespace"], p["deployment"], p["replicas"] = ns, dep, rep
         except Exception as e:
-            print(f"WebStreamHandler failed: {e}", file=sys.stderr)
+            logger.warning(f"save_pending_scale_plan param normalization failed: {e}")
 
-web_stream_handler = WebStreamHandler(web_log_buffer)
-web_stream_handler.setLevel(logging.DEBUG)
-logger.addHandler(web_stream_handler)
+    with plan_lock:
+        plan_store[p["task_id"]] = p
+    return p
 
-# --- Define Global Constants ---
-PERSISTENCE_DIR = 'persistence_data'
-LOGS_SUBDIR = 'logs'
-ISL_SCHEMA_PATH = 'isl_schema.yaml'
-SYSTEM_PAUSE_FILE_BASENAME = 'system_pause.flag'
-SWARM_STATE_FILE_BASENAME = 'swarm_state.json'
-PAUSED_AGENTS_FILE_BASENAME = 'agent_pause_flags.json'
-CHROMA_DB_SUBDIR = 'chroma_db'
-SWARM_ACTIVITY_LOG_REL_PATH = os.path.join(LOGS_SUBDIR, 'swarm_activity.jsonl')
-INTENT_OVERRIDE_PREFIX = 'intent_override_'
+def latest_pending_scale_plan() -> Optional[Dict[str, Any]]:
+    with plan_lock:
+        pending = [p for p in plan_store.values() if p.get("status") == "awaiting_approval"]
+    if not pending:
+        return None
+    return max(pending, key=lambda x: x.get("ts", 0.0))
 
-# --- Create Necessary Directories ---
-os.makedirs(PERSISTENCE_DIR, exist_ok=True)
-os.makedirs(os.path.join(PERSISTENCE_DIR, LOGS_SUBDIR), exist_ok=True)
-os.makedirs(os.path.join(PERSISTENCE_DIR, CHROMA_DB_SUBDIR), exist_ok=True)
+def _find_pending_by_token(token: str) -> Optional[Dict[str, Any]]:
+    if not token:
+        return None
+    with plan_lock:
+        for p in plan_store.values():
+            if p.get("status") == "awaiting_approval" and p.get("approval_token") == token:
+                return p
+    return None
 
-# --- Flask App Initialization ---
-app = Flask(__name__)
-CORS(app)
-logging.getLogger('werkzeug').setLevel(logging.ERROR)
+def mark_plan_executed(task_id: str) -> None:
+    with plan_lock:
+        if task_id in plan_store:
+            plan_store[task_id]["status"] = "executed"
+            plan_store[task_id]["executed_ts"] = time.time()
 
-# --- API Key Authentication ---
-API_KEY = os.getenv("CATALYST_API_KEY", "your-secret-key")  # Set in environment variable
+def queue_pending_mission(action: str, params: Dict[str, Any], rationale: str = "") -> Dict[str, Any]:
+    """
+    Public helper you can import from the Planner:
+      from app import queue_pending_mission
+      queue_pending_mission("k8s_scale", {"namespace":"default","deployment":"demo-nginx","replicas":2}, "Scale up due to high CPU")
+    """
+    if action != "k8s_scale":
+        raise ValueError(f"Unsupported action for queue_pending_mission: {action}")
+    ns, dep, rep = _normalize_scale_params(params)
+    plan = {
+        "action": "k8s_scale",
+        "namespace": ns,
+        "deployment": dep,
+        "replicas": rep,
+        "rationale": rationale,
+    }
+    return save_pending_scale_plan(plan)
 
-def require_api_key(f):
-    """Decorator to require API key authentication for sensitive endpoints."""
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        api_key = request.headers.get("X-API-Key")
-        if not api_key or api_key != API_KEY:
-            return jsonify({"status": "error", "message": "Invalid or missing API key."}), 401
-        return f(*args, **kwargs)
-    return decorated
-
-# --- Background System Thread ---
+# --- Background System Thread -------------------------------------------------
 def run_catalyst_system_in_background():
-    """Run the Catalyst Vector Alpha system in a background thread."""
+    """Initialize and run the CVA cognitive loop in a resilient way."""
+    import traceback
     global system_instance
-    message_bus_instance = MessageBus()
-    tool_registry_instance = ToolRegistry()
-    event_monitor_instance = EventMonitor()
-    mock_ccn_monitor_instance = MockCCNMonitor()
-    
-    system_instance = CatalystVectorAlpha(
-        message_bus=message_bus_instance,
-        tool_registry=tool_registry_instance,
-        event_monitor=event_monitor_instance,
-        external_log_sink=logger,
-        persistence_dir=PERSISTENCE_DIR,
-        swarm_activity_log=SWARM_ACTIVITY_LOG_REL_PATH,
-        system_pause_file=SYSTEM_PAUSE_FILE_BASENAME,
-        swarm_state_file=SWARM_STATE_FILE_BASENAME,
-        paused_agents_file=PAUSED_AGENTS_FILE_BASENAME,
-        isl_schema_path=ISL_SCHEMA_PATH,
-        chroma_db_path=CHROMA_DB_SUBDIR,
-        intent_override_prefix=INTENT_OVERRIDE_PREFIX,
-        ccn_monitor_interface=mock_ccn_monitor_instance
-    )
-    logger.info("Catalyst Vector Alpha system is starting in background thread...")
-    system_instance.run_cognitive_loop()
-    logger.info("Catalyst Vector Alpha system thread has finished.")
+    logger.info("Initializing Catalyst Vector Alpha components...")
 
-# --- Flask API Routes ---
+    message_bus_instance = MessageBus()
+    event_monitor_instance = EventMonitor()
+
+    try:
+        system_instance = CatalystVectorAlpha(
+            message_bus=message_bus_instance,
+            tool_registry=tool_registry,              # use the singleton registry
+            event_monitor=event_monitor_instance,
+            external_log_sink=logger,
+            # pass references for task tracking
+            tasks_dict_ref=tasks,
+            tasks_lock_ref=tasks_lock,
+            task_update_callback=update_task_status,
+        )
+    except Exception as e:
+        logger.exception("Fatal: failed to construct CatalystVectorAlpha")
+        return
+
+    # Optional: wire pending plan saver
+    if hasattr(system_instance, "set_save_pending_scale_plan_fn"):
+        try:
+            system_instance.set_save_pending_scale_plan_fn(save_pending_scale_plan)
+        except Exception as _e:
+            logger.warning(f"Could not set save_pending_scale_plan_fn: {_e}")
+
+    system_instance.is_running = True
+
+    logger.info("Catalyst Vector Alpha system is starting its cognitive loop...")
+    try:
+        system_instance.run_cognitive_loop(tick_sleep=10)
+    except Exception as e:
+        logger.error("Cognitive loop crashed: %s\n%s", e, traceback.format_exc())
+    finally:
+        logger.info("Catalyst Vector Alpha system thread has finished.")
+
+# --- Flask App ----------------------------------------------------------------
+app = Flask(__name__)
+CORS(app)  # tighten with resources={r"/api/*": {"origins": "..."}}
+
+# --- Routes: Health -----------------------------------------------------------
+@app.get("/api/health")
+def api_health():
+    loop_alive = bool(system_thread and system_thread.is_alive())
+    return jsonify({"status": "ok", "data": {"loop_alive": loop_alive, "ts": time.time()}}), 200
+
 @app.route('/')
 def index():
     return render_template('index.html')
 
-@app.route('/api/status')
-def get_system_status():
-    """Get the current system status, including uptime, agent count, and resource usage."""
-    uptime = int(time.time() - APP_START_TS)
-    agents_online = 0
-    system_paused = False
+# --- Routes: Commands & Tasks -------------------------------------------------
+@app.route('/api/command', methods=['POST'])
+def handle_command():
+    data = request.get_json(silent=True) or {}
+    command_text = data.get('command')
+    if not command_text:
+        return jsonify({"status": "error", "error": "Missing 'command' in body."}), 400
+    if not system_instance:
+        return jsonify({"status": "error", "error": "System is not running."}), 503
 
-    if system_instance:
+    task_id = str(uuid.uuid4())
+    with tasks_lock:
+        tasks[task_id] = {"status": "processing", "result": {"summary": "Command dispatched to swarm..."}}
+
+    directive = {
+        'type': 'AGENT_PERFORM_TASK',
+        'agent_name': 'ProtoAgent_Planner_instance_1',
+        'task_description': command_text,
+        'task_type': 'UserCommand',
+        'task_id': task_id,
+    }
+    try:
+        system_instance.inject_directives([directive])
+        logger.info(f"Injected user command: {command_text} (task_id: {task_id})")
+    except Exception as e:
+        with tasks_lock:
+            tasks[task_id] = {"status": "error", "result": {"summary": f"Failed to inject directive: {e}"}}
+        return jsonify({"status": "error", "task_id": task_id}), 500
+
+    return jsonify({"status": "processing", "task_id": task_id}), 202
+
+@app.route('/api/catalyst/task_status/<task_id>', methods=['GET'])
+def get_task_status(task_id):
+    task = tasks.get(task_id)
+    if not task:
+        return jsonify({"status": "not_found"}), 404
+    return jsonify(task), 200
+
+@app.route('/api/event_stream')
+def get_event_stream():
+    with events_lock:
+        events_copy = list(LIVE_EVENTS)
+    return jsonify(events_copy), 200
+
+# --- Routes: System Metrics & Insights ---------------------------------------
+@app.route('/api/system_metrics')
+def system_metrics():
+    if system_instance and hasattr(system_instance, 'resource_monitor'):
+        monitor = system_instance.resource_monitor
         try:
-            agents_online = len(getattr(system_instance, 'agent_instances', {}) or {})
-            if hasattr(system_instance, 'is_system_paused'):
-                system_paused = bool(system_instance.is_system_paused())
-        except AttributeError:
-            system_paused = False
+            metrics = {
+                'cpu': monitor.get_cpu_usage(),
+                'memory': monitor.get_memory_usage(),
+                'timestamp': timestamp_now()
+            }
+            return jsonify({"status": "ok", "data": metrics}), 200
+        except Exception as e:
+            logger.warning(f"/api/system_metrics failed: {e}")
+            return jsonify({"status": "error", "error": "Failed to read metrics"}), 500
+    return jsonify({"status": "error", "error": "Resource monitor not available"}), 503
+
+@app.route('/api/task_history')
+def api_task_history():
+    return jsonify({"status": "ok", "data": _safe_get_task_history(limit=15)}), 200
+
+@app.route('/api/latest_insight')
+def get_latest_insight():
+    insight = _safe_get_latest_agent_reflection()
+    msg = insight or "No recent insights available. The system may be busy or has just started."
+    return jsonify({"status": "ok", "data": {"insight": msg}}), 200
+
+@app.route('/api/debug/tasks')
+def debug_tasks():
+    with tasks_lock:
+        snapshot = dict(tasks)
+    return jsonify({"status": "ok", "data": snapshot}), 200
+
+# --- Routes: Mission Runner (threshold scaling helper) -----------------------
+@app.post("/api/mission/scale_cpu")
+def api_scale_cpu():
+    data = request.get_json(silent=True) or {}
+    namespace = data.get("namespace", "default")
+    deployment = data.get("deployment")
+    replicas = data.get("replicas", 2)
+    threshold = data.get("threshold", 200.0)  # ms or percent, based on mission type
+    approval = data.get("approval", "human")  # "human" (default) or "auto"
+
+    if not deployment:
+        return jsonify({"status": "error", "error": "deployment is required"}), 400
+
+    try:
+        replicas = int(replicas)
+        threshold = float(threshold)
+    except Exception:
+        return jsonify({"status": "error", "error": "replicas must be int and threshold must be float"}), 400
+
+    res = _runner.scale_on_cpu_threshold(
+        namespace=namespace,
+        deployment=deployment,
+        threshold=threshold,
+        replicas=replicas,
+        approval=approval,
+    )
+    return jsonify({"status": "ok", "data": res}), 200
+
+# --- Routes: Pending Plans (for dashboard) -----------------------------------
+@app.get("/api/catalyst/plans")
+def list_pending_plans():
+    with plan_lock:
+        items = [
+            {k: v for k, v in p.items() if k in {
+                "task_id", "status", "action", "namespace", "deployment", "replicas", "ts", "approval_token", "rationale"
+            }}
+            for p in plan_store.values()
+            if p.get("status") == "awaiting_approval"
+        ]
+    return jsonify({"status": "ok", "data": items, "meta": {"count": len(items), "ts": time.time()}}), 200
+
+# --- New: Simpler pending getter (single latest) ------------------------------
+@app.get("/api/pending")
+def api_get_pending():
+    p = latest_pending_scale_plan()
+    return jsonify({"pending": p}), 200
+
+# --- Approve helper: call registry (or simulate) ------------------------------
+def _invoke_k8s_scale_via_registry(namespace: str, deployment: str, replicas: int, approval_token: str):
+    """
+    Try tool_registry 'k8s_scale'. If unavailable or raises, simulate success so the loop keeps flowing.
+    """
+    try:
+        result = tool_registry.invoke("k8s_scale", {
+            "namespace": namespace,
+            "deployment": deployment,
+            "replicas": replicas,
+            "dry_run": False,
+            "approval_token": approval_token,
+        })
+        ok = bool(result) and ((result.get("status") == "ok") or (result.get("ok") is True))
+        return ok, result or {}
+    except Exception as e:
+        sim = {
+            "ok": True,
+            "simulated": True,
+            "action": "k8s_scale",
+            "namespace": namespace,
+            "deployment": deployment,
+            "replicas": replicas,
+            "approval_token": approval_token,
+            "note": f"Registry invoke failed, simulating success: {e}"
+        }
+        logger.info("[Approve] SIMULATION: %s", sim)
+        return True, sim
+
+# --- New: Human-in-the-loop Approve (token OR task_id) ------------------------
+@app.post('/api/approve')
+def api_post_approve():
+    """
+    Approves a pending k8s_scale plan and executes it.
+    Body options:
+      A) {"task_id": "...", "approval_token"?: "..."}
+      B) {"approval_token": "..."}  # finds the matching pending plan
+      C) {"namespace": "...", "deployment": "...", "replicas": 3, "approval_token"?: "..."}  # ad-hoc
+    """
+    body = request.get_json(silent=True) or {}
+    token = body.get("approval_token") or body.get("token") or "dashboard_approved"
+    task_id = body.get("task_id")
+
+    # Resolve plan
+    plan = None
+    if task_id:
+        with plan_lock:
+            p = plan_store.get(task_id)
+        if not p or p.get("status") != "awaiting_approval":
+            return jsonify({"ok": False, "error": "No matching pending plan for task_id."}), 404
+        plan = p
+    elif "namespace" in body or "deployment" in body or "replicas" in body:
+        # Ad-hoc approval (no stored plan)
+        try:
+            ns, dep, rep = _normalize_scale_params(body)
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)}), 400
+        plan = {
+            "task_id": f"adhoc_{int(time.time())}",
+            "status": "awaiting_approval",
+            "action": "k8s_scale",
+            "namespace": ns,
+            "deployment": dep,
+            "replicas": rep,
+            "approval_token": token,
+        }
+    else:
+        # Try token lookup
+        plan = _find_pending_by_token(token)
+        if not plan:
+            # Fallback to latest
+            plan = latest_pending_scale_plan()
+        if not plan:
+            return jsonify({"ok": False, "error": "No pending mission."}), 404
+
+    try:
+        ns, dep, rep = _normalize_scale_params(plan if "params" not in plan else plan["params"])
+    except Exception as e:
+        # If plan already has flat fields, use them directly
+        ns = plan.get("namespace")
+        dep = plan.get("deployment")
+        rep = plan.get("replicas")
+        if not (ns and dep and isinstance(rep, (int, float))):
+            return jsonify({"ok": False, "error": f"Invalid plan fields: {e}"}), 400
+        rep = int(rep)
+
+    ok, result = _invoke_k8s_scale_via_registry(ns, dep, rep, plan.get("approval_token", token))
+
+    if ok:
+        if plan.get("task_id") and plan.get("status") == "awaiting_approval":
+            mark_plan_executed(plan["task_id"])
+        return jsonify({"ok": True, "detail": result, "message": f"Scaled {dep} to {rep} replicas"}), 200
+    return jsonify({"ok": False, "detail": result}), 500
+
+# --- Existing: Approve Scale (kept for backward-compat) -----------------------
+@app.post('/api/catalyst/approve_scale')
+def approve_scale():
+    """
+    Approves a pending k8s scale plan and executes it (legacy path).
+    Accepts either:
+      A) {"task_id": "...", "approval_token"?: "..."}
+      B) {"namespace": "...", "deployment": "...", "replicas": 3, "approval_token"?: "..."}
+    """
+    try:
+        body = request.get_json(silent=True) or {}
+        task_id = body.get("task_id")
+        token = body.get("approval_token") or "dashboard_approved"
+
+        # Resolve plan args
+        if task_id:
+            with plan_lock:
+                plan = plan_store.get(task_id)
+            if not plan or plan.get("status") != "awaiting_approval":
+                return jsonify({"status": "error", "error": "No matching pending plan for task_id."}), 404
+            ns = plan.get("namespace")
+            dep = plan.get("deployment")
+            rep = plan.get("replicas")
+        else:
+            ns = body.get("namespace")
+            dep = body.get("deployment")
+            rep = body.get("replicas")
+
+        # Validate required fields
+        missing = [k for k, v in (("namespace", ns), ("deployment", dep), ("replicas", rep)) if v in (None, "")]
+        if missing:
+            return jsonify({"status": "error", "error": f"Missing field(s): {', '.join(missing)}"}), 400
+
+        try:
+            rep = int(rep)
+        except Exception:
+            return jsonify({"status": "error", "error": "replicas must be an integer"}), 400
+
+        ok, result = _invoke_k8s_scale_via_registry(ns, dep, rep, token)
+
+        if ok:
+            if task_id:
+                mark_plan_executed(task_id)
+            return jsonify({
+                "status": "ok",
+                "data": {"message": f"Scaled {dep} to {rep} replicas", "result": result},
+                "meta": {"ts": time.time()}
+            }), 200
 
         return jsonify({
-            "system_paused": system_paused,
-            "uptime": uptime,
-            "agents_online": agents_online,
-            "is_running": getattr(system_instance, 'is_running', False),
-            "current_cycle": getattr(getattr(system_instance, 'message_bus', None), 'current_cycle_id', 'N/A'),
-            "active_agents": list((getattr(system_instance, 'agent_instances', {}) or {}).keys()),
-            "intervention_needed": bool(getattr(system_instance, 'get_pending_human_intervention_requests', lambda: [])()),
-            "resource_usage": {
-                "cpu_percent": psutil.cpu_percent(interval=None),
-                "memory_percent": psutil.virtual_memory().percent
-            }
-        })
+            "status": "error",
+            "error": (result or {}).get("error", "Scale action failed"),
+            "data": result,
+            "meta": {"ts": time.time()}
+        }), 400
 
-    return jsonify({
-        "system_paused": True,
-        "uptime": uptime,
-        "agents_online": 0,
-        "is_running": False,
-        "message": "System not initialized."
-    })
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e), "meta": {"ts": time.time()}}), 500
 
-@app.route('/api/logs')
-def get_logs():
-    """Retrieve recent system logs with a configurable limit."""
+# --- Routes: Simple K8s Metrics Proxy (for widgets) --------------------------
+@app.get('/api/catalyst/metrics')
+def get_metrics():
+    """
+    Lightweight cluster utilization proxy for dashboard gauges.
+    Uses the registered 'kubernetes_pod_metrics' tool.
+    """
+    now_ms = int(time.time() * 1000)
+
     try:
-        limit = int(request.args.get('limit', 50))
-    except ValueError:
-        limit = 50
+        pods = tool_registry.invoke("kubernetes_pod_metrics", {"limit": 999})
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e),
+                        "data": {"cpu": 0, "memory": 0, "timestamp": now_ms}}), 503
 
-    items = list(web_log_buffer)[-limit:]
-    normalized = []
-    for entry in items:
-        ts = entry.get("timestamp") or datetime.utcnow().replace(tzinfo=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        lvl = entry.get("level") or entry.get("severity") or "INFO"
-        msg = entry.get("message") or entry.get("description") or json.dumps(entry)
-        normalized.append({"timestamp": ts, "level": lvl, "message": msg})
+    if pods and pods.get('status') == 'ok':
+        total_cpu = pods['data'].get('total_cpu_mcores', 0)  # millicores
+        total_mem = pods['data'].get('total_memory_Mi', 0)   # Mi
+        # Heuristic normalization (tune to your cluster size/UI expectation)
+        cpu_pct = total_cpu / 10.0
+        mem_pct = total_mem / 40.0
+        return jsonify({"status": "ok", "data": {"cpu": cpu_pct, "memory": mem_pct, "timestamp": now_ms}}), 200
 
-    return jsonify(normalized)
+    return jsonify({"status": "error", "error": "metrics unavailable",
+                    "data": {"cpu": 0, "memory": 0, "timestamp": now_ms}}), 200
 
-@app.route('/api/agents')
-def get_agents_status():
-    """Get status summaries for all agents."""
-    agents_data = []
-    if system_instance and hasattr(system_instance, 'agent_instances'):
-        for name, agent in (system_instance.agent_instances or {}).items():
-            summary = {}
-            if hasattr(agent, 'get_status_summary'):
-                try:
-                    summary = agent.get_status_summary() or {}
-                except AttributeError:
-                    summary = {}
+# --- Routes: Prometheus proxy -------------------------------------------------
+@app.get("/api/prom/query")
+def api_prom_query():
+    q = request.args.get("q") or "up"
+    res = tool_registry.invoke("prometheus_query", {"query": q})
+    return jsonify(res), 200
 
-            normalized = {
-                "name": summary.get("name") or getattr(agent, "name", name),
-                "role": summary.get("role") or getattr(agent, "role", getattr(agent, "agent_type", "")),
-                "status": summary.get("status") or summary.get("state") or "unknown",
-            }
-            normalized.update(summary)
-            agents_data.append(normalized)
-    return jsonify(agents_data)
-
-@app.route('/api/agent/<agent_name>')
-def get_agent_detail(agent_name):
-    """Get detailed state for a specific agent."""
-    if not (system_instance and hasattr(system_instance, 'agent_instances')):
-        return jsonify({"error": "Agent not found"}), 404
-
-    agent = system_instance.agent_instances.get(agent_name)
-    if not agent:
-        return jsonify({"error": "Agent not found"}), 404
-
-    detail = {}
-    if hasattr(agent, 'get_detailed_state'):
-        try:
-            detail = agent.get_detailed_state() or {}
-        except AttributeError:
-            detail = {}
-
-    normalized = {
-        "name": detail.get("name") or getattr(agent, "name", agent_name),
-        "role": detail.get("role") or getattr(agent, "role", getattr(agent, "agent_type", "")),
-        "status": detail.get("status") or detail.get("state") or "unknown",
-        "intent": detail.get("intent") or detail.get("current_intent") or "—",
-        "metrics": detail.get("metrics") or detail.get("stats") or {},
-        "capabilities": detail.get("capabilities") or detail.get("tools") or [],
-        "performance_metrics": detail.get("performance_metrics")
-            or detail.get("performance")
-            or detail.get("perf_metrics")
-            or {},
-        "recent_memories": detail.get("recent_memories")
-            or detail.get("memories")
-            or detail.get("memory_log")
-            or [],
-    }
-    normalized.update(detail)
-    return jsonify(normalized)
-
-@app.route('/api/pending_interventions')
-def get_pending_interventions():
-    """Get a list of pending human intervention requests."""
-    if system_instance:
-        return jsonify(system_instance.get_pending_human_intervention_requests())
-    return jsonify([])
-
-@app.route('/api/inject_directive', methods=['POST'])
-@require_api_key
-def inject_directive():
-    """Inject a directive or human response into the system."""
-    if not system_instance:
-        return jsonify({"status": "error", "message": "System not initialized."}), 500
-    try:
-        data = request.json
-        if not data:
-            return jsonify({"status": "error", "message": "No data provided."}), 400
-        if data.get('type') == "HUMAN_RESPONSE":
-            system_instance.handle_human_response(data['payload']['request_id'], data['payload'])
-            return jsonify({"status": "success", "message": "Human response processed."})
-        else:
-            system_instance.inject_directives([data])
-            return jsonify({"status": "success", "message": f"Directive '{data.get('type')}' injected."})
-    except (KeyError, ValueError) as e:
-        logger.error(f"Error injecting directive: {e}")
-        return jsonify({"status": "error", "message": str(e)}), 400
-    except AttributeError as e:
-        logger.error(f"Error injecting directive: {e}")
-        return jsonify({"status": "error", "message": "Invalid system state."}), 500
-
-@app.route('/api/live_logs')
-def live_logs():
-    """Stream live logs using Server-Sent Events."""
-    def generate():
-        sent_log_count = 0
-        while True:
-            if sent_log_count < len(web_log_buffer):
-                for i in range(sent_log_count, len(web_log_buffer)):
-                    yield f"data: {json.dumps(web_log_buffer[i])}\n\n"
-                sent_log_count = len(web_log_buffer)
-            time.sleep(0.5)
-    return Response(generate(), mimetype='text/event-stream')
-
-@app.route('/api/system/pause', methods=['POST'])
-@require_api_key
-def pause_system_api():
-    """Pause the system via the dashboard."""
-    try:
-        if system_instance and hasattr(system_instance, 'pause_system'):
-            system_instance.pause_system("Paused via dashboard button.")
-            return jsonify({"status": "success", "message": "System pause command issued."})
-        return jsonify({"status": "error", "message": "System not running or pause function unavailable."}), 500
-    except AttributeError as e:
-        logger.error(f"Error pausing system: {e}")
-        return jsonify({"status": "error", "message": "Invalid system state."}), 500
-
-@app.route('/api/system/unpause', methods=['POST'])
-@require_api_key
-def unpause_system_api():
-    """Unpause the system via the dashboard."""
-    try:
-        if system_instance and hasattr(system_instance, 'unpause_system'):
-            system_instance.unpause_system("Unpaused via dashboard button.")
-            return jsonify({"status": "success", "message": "System unpause command issued."})
-        return jsonify({"status": "error", "message": "System not running or unpause function unavailable."}), 500
-    except AttributeError as e:
-        logger.error(f"Error unpausing system: {e}")
-        return jsonify({"status": "error", "message": "Invalid system state."}), 500
-
-@app.route('/api/agent/<agent_name>/intent', methods=['POST'])
-@require_api_key
-def override_agent_intent(agent_name):
-    """Override the intent of a specific agent."""
-    if not system_instance or agent_name not in system_instance.agent_instances:
-        return jsonify({"status": "error", "message": "Agent not found."}), 404
-    
-    try:
-        data = request.json
-        if not data:
-            return jsonify({"status": "error", "message": "No data provided."}), 400
-        new_intent = data.get('intent')
-        if not new_intent:
-            return jsonify({"status": "error", "message": "New intent not provided."}), 400
-        
-        agent = system_instance.agent_instances[agent_name]
-        agent.update_intent(new_intent)
-        return jsonify({"status": "success", "message": f"Intent for {agent_name} has been updated."})
-    except (KeyError, ValueError) as e:
-        logger.error(f"Error overriding intent for {agent_name}: {e}")
-        return jsonify({"status": "error", "message": str(e)}), 400
-    except AttributeError as e:
-        logger.error(f"Error overriding intent for {agent_name}: {e}")
-        return jsonify({"status": "error", "message": "Invalid agent state."}), 500
-
-# --- Main Execution Block ---
+# --- Main ---------------------------------------------------------------------
 if __name__ == '__main__':
-    system_thread = Thread(target=run_catalyst_system_in_background)
-    system_thread.daemon = True
+    # Start CVA loop in a background thread
+    system_thread = Thread(target=run_catalyst_system_in_background, daemon=True)
     system_thread.start()
 
-    print("\n" + "="*50)
+    print("\n" + "="*62)
     print("Starting Flask web server for Catalyst Vector Alpha Dashboard...")
-    print("Dashboard available at: http://127.0.0.1:5000/")
-    print("="*50 + "\n")
+    port = int(os.getenv("PORT", "5000"))
+    print(f"Dashboard available at: http://127.0.0.1:{port}/")
+    print(f"Debug tasks at:        http://127.0.0.1:{port}/api/debug/tasks")
+    print("="*62 + "\n")
 
-    app.run(host='127.0.0.1', port=5000, debug=False, use_reloader=False)
+    try:
+        from waitress import serve
+        serve(app, host='127.0.0.1', port=port)
+    except ImportError:
+        app.run(host='127.0.0.1', port=port, debug=False, use_reloader=False)

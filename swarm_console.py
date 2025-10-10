@@ -1,292 +1,561 @@
-import os
+# swarm_console.py
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import io
 import json
-import glob
+import os
 import sys
 import time
-import datetime
+import tempfile
+from dataclasses import dataclass
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-# --- Constants (ensure these match your main project) ---
-PERSISTENCE_DIR = 'persistence_data'
-SWARM_STATE_FILE = os.path.join(PERSISTENCE_DIR, 'swarm_state.json')
-PAUSED_AGENTS_FILE = os.path.join(PERSISTENCE_DIR, 'paused_agents.json')
+# --------------------------------------------------------------------
+# Paths & constants (align with your project)
+# --------------------------------------------------------------------
+PERSISTENCE_DIR = os.getenv("PERSISTENCE_DIR", "persistence_data")
+SWARM_STATE_FILE = os.path.join(PERSISTENCE_DIR, "swarm_state.json")
+PAUSED_AGENTS_FILE = os.path.join(PERSISTENCE_DIR, "paused_agents.json")
+SWARM_ACTIVITY_LOG = os.path.join(PERSISTENCE_DIR, "swarm_activity.jsonl")
 
-# Ensure persistence directory exists
 os.makedirs(PERSISTENCE_DIR, exist_ok=True)
 
-# --- Helper functions for persistence of paused state ---
-def load_paused_agents():
-    """Loads the list of paused agents from persistence."""
-    if os.path.exists(PAUSED_AGENTS_FILE):
+# --------------------------------------------------------------------
+# Small utilities: robust JSON IO, human prints
+# --------------------------------------------------------------------
+def _read_json(path: str, default: Any) -> Any:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return default
+    except json.JSONDecodeError:
+        # tolerate corruptions; never block console
+        return default
+    except Exception:
+        return default
+
+def _write_json_atomic(path: str, data: Any) -> None:
+    # write to tmp in same dir, then atomic replace
+    d = os.path.dirname(path) or "."
+    fd, tmp = tempfile.mkstemp(prefix=".tmp-", dir=d)
+    try:
+        with io.open(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        os.replace(tmp, path)
+    except Exception:
+        # best-effort: try regular write as fallback
         try:
-            # --- CRITICAL FIX: Corrected typo 'PAUSED_AGUSED_AGENTS_FILE' to 'PAUSED_AGENTS_FILE' ---
-            with open(PAUSED_AGENTS_FILE, 'r') as f:
-                return json.load(f)
-        except json.JSONDecodeError:
-            print(f"Warning: Corrupted {PAUSED_AGENTS_FILE}. Starting with no agents paused.")
-            return []
-    return []
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+        except Exception:
+            pass
+    finally:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except Exception:
+            pass
 
-def save_paused_agents(paused_agents_list):
-    """Saves the list of paused agents to persistence."""
-    with open(PAUSED_AGENTS_FILE, 'w') as f:
-        json.dump(list(paused_agents_list), f, indent=2)
+def _now_iso() -> str:
+    return dt.datetime.now(dt.timezone.utc).isoformat()
 
-# --- Existing loading functions ---
-def get_agent_state_filepath(agent_name):
+def _agent_state_path(agent_name: str) -> str:
     return os.path.join(PERSISTENCE_DIR, f"agent_state_{agent_name}.json")
 
-def load_agent_state(agent_name):
-    file_path = get_agent_state_filepath(agent_name)
-    if not os.path.exists(file_path):
-        print(f"Error: Agent state file for '{agent_name}' not found at '{file_path}'.")
-        return None
-    try:
-        with open(file_path, 'r') as f:
-            return json.load(f)
-    except json.JSONDecodeError:
-        print(f"Error: Invalid JSON format in '{file_path}'.")
-        return None
-    except Exception as e:
-        print(f"Error loading state for '{agent_name}': {e}")
-        return None
+def _list_agent_names() -> List[str]:
+    names: List[str] = []
+    for fn in os.listdir(PERSISTENCE_DIR):
+        if fn.startswith("agent_state_") and fn.endswith(".json"):
+            names.append(fn[len("agent_state_"):-len(".json")])
+    names.sort()
+    return names
 
-def load_swarm_state():
+# --------------------------------------------------------------------
+# Persistence helpers
+# --------------------------------------------------------------------
+def load_paused_agents() -> List[str]:
+    data = _read_json(PAUSED_AGENTS_FILE, default=[])
+    return data if isinstance(data, list) else []
+
+def save_paused_agents(paused: Iterable[str]) -> None:
+    unique_sorted = sorted(set(paused))
+    _write_json_atomic(PAUSED_AGENTS_FILE, unique_sorted)
+
+def load_agent_state(agent_name: str) -> Optional[Dict[str, Any]]:
+    path = _agent_state_path(agent_name)
+    if not os.path.exists(path):
+        return None
+    data = _read_json(path, default=None)
+    return data if isinstance(data, dict) else None
+
+def load_swarm_state() -> Optional[Dict[str, Any]]:
     if not os.path.exists(SWARM_STATE_FILE):
-        print(f"Error: Swarm state file not found at '{SWARM_STATE_FILE}'.")
         return None
-    try:
-        with open(SWARM_STATE_FILE, 'r') as f:
-            return json.load(f)
-    except json.JSONDecodeError:
-        print(f"Error: Invalid JSON format in '{SWARM_STATE_FILE}'.")
-        return None
-    except Exception as e:
-        print(f"Error loading swarm state: {e}")
-        return None
+    data = _read_json(SWARM_STATE_FILE, default=None)
+    return data if isinstance(data, dict) else None
 
-# --- Existing interrogation functions ---
-def list_agents():
+# --------------------------------------------------------------------
+# Console core actions
+# --------------------------------------------------------------------
+def action_list_agents(json_mode: bool) -> int:
+    names = _list_agent_names()
+    paused = set(load_paused_agents())
+
+    if json_mode:
+        payload = [{"name": n, "status": "PAUSED" if n in paused else "ACTIVE"} for n in names]
+        print(json.dumps(payload, indent=2))
+        return 0
+
     print("\n--- Active Agents ---")
-    agent_files = [f for f in os.listdir(PERSISTENCE_DIR) if f.startswith('agent_state_') and f.endswith('.json')]
-    if not agent_files:
-        print("No active agents found in persistence_data. Run catalyst_vector_alpha.py first.")
-        return []
-    
-    agent_names = []
-    paused_agents = load_paused_agents()
-    for f in agent_files:
-        agent_name = os.path.basename(f).replace('agent_state_', '').replace('.json', '')
-        status_indicator = "[PAUSED]" if agent_name in paused_agents else "[ACTIVE]"
-        print(f"- {agent_name} {status_indicator}")
-        agent_names.append(agent_name)
-    return agent_names
+    if not names:
+        print("No active agents found in persistence_data. Start your orchestrator first.")
+        return 0
+    for n in names:
+        tag = "[PAUSED]" if n in paused else "[ACTIVE]"
+        print(f"- {n} {tag}")
+    return 0
 
-def get_agent_status(agent_name):
-    state = load_agent_state(agent_name)
-    if state:
-        print(f"\n--- Status for Agent: {agent_name} ---")
-        print(f"  Role: {state.get('eidos_spec', {}).get('role', 'N/A')}")
-        print(f"  Current Intent: {state.get('current_intent', 'N/A')}")
-        print(f"  Location: {state.get('location', 'N/A')}")
-        print(f"  Swarm Membership: {', '.join(state.get('swarm_membership', [])) if state.get('swarm_membership') else 'None'}")
-        
-        gradient = state.get('sovereign_gradient')
-        if gradient:
-            print(f"  Sovereign Gradient:")
-            print(f"    Vector: {gradient.get('autonomy_vector', 'N/A')}")
-            print(f"    Ethical Constraints: {', '.join(gradient.get('ethical_constraints', []))}")
-        else:
-            print("  Sovereign Gradient: Not set")
-        
-        paused_agents = load_paused_agents()
-        print(f"  Console Status: {'PAUSED' if agent_name in paused_agents else 'RUNNING'}")
-        print("-----------------------------------")
+def _print_agent_status_human(agent_name: str, state: Dict[str, Any]) -> None:
+    print(f"\n--- Status for Agent: {agent_name} ---")
+    role = state.get("eidos_spec", {}).get("role", "N/A")
+    print(f"  Role: {role}")
+    print(f"  Current Intent: {state.get('current_intent', 'N/A')}")
+    print(f"  Location: {state.get('location', 'N/A')}")
+    membership = state.get("swarm_membership") or []
+    print(f"  Swarm Membership: {', '.join(membership) if membership else 'None'}")
+
+    grad = state.get("sovereign_gradient")
+    if grad:
+        print("  Sovereign Gradient:")
+        print(f"    Vector: {grad.get('autonomy_vector', 'N/A')}")
+        ec = grad.get("ethical_constraints") or []
+        print(f"    Ethical Constraints: {', '.join(ec) if ec else 'None'}")
     else:
-        print(f"Agent '{agent_name}' not found or could not be loaded.")
+        print("  Sovereign Gradient: Not set")
 
-def get_agent_memory(agent_name):
-    state = load_agent_state(agent_name)
-    if state:
-        memories = state.get('memetic_kernel', {}).get('memories', [])
-        if not memories:
-            print(f"\n--- Memories for Agent: {agent_name} ---")
+    paused = set(load_paused_agents())
+    print(f"  Console Status: {'PAUSED' if agent_name in paused else 'RUNNING'}")
+    print("-----------------------------------")
+
+def action_get_status(target: str, json_mode: bool) -> int:
+    # agent?
+    if os.path.exists(_agent_state_path(target)):
+        st = load_agent_state(target)
+        if not st:
+            print(f"Error: Could not load state for agent '{target}'.")
+            return 1
+        if json_mode:
+            out = {"entity": "agent", "name": target, "state": st}
+            print(json.dumps(out, indent=2))
+        else:
+            _print_agent_status_human(target, st)
+        return 0
+
+    # swarm?
+    if target == "AlphaEcoSwarm":
+        st = load_swarm_state()
+        if not st:
+            print(f"Error: Swarm state not found at '{SWARM_STATE_FILE}'.")
+            return 1
+        if json_mode:
+            out = {"entity": "swarm", "name": st.get("name", "AlphaEcoSwarm"), "state": st}
+            print(json.dumps(out, indent=2))
+        else:
+            print(f"\n--- Status for Swarm: {st.get('name', 'AlphaEcoSwarm')} ---")
+            print(f"  Goal: {st.get('goal', 'N/A')}")
+            members = st.get("members") or []
+            print(f"  Members: {', '.join(members) if members else 'None'}")
+            print(f"  Consensus Mechanism: {st.get('consensus_mechanism', 'N/A')}")
+            print(f"  Description: {st.get('description', 'N/A')}")
+            grad = st.get("sovereign_gradient")
+            if grad:
+                print("  Sovereign Gradient:")
+                print(f"    Vector: {grad.get('autonomy_vector', 'N/A')}")
+                ec = grad.get("ethical_constraints") or []
+                print(f"    Ethical Constraints: {', '.join(ec) if ec else 'None'}")
+                print(f"    Override Threshold: {grad.get('override_threshold', 'N/A')}")
+            else:
+                print("  Sovereign Gradient: Not set")
+            print("-----------------------------------")
+        return 0
+
+    print(f"Error: '{target}' is not an agent or the supported swarm 'AlphaEcoSwarm'.")
+    return 1
+
+def action_get_memory(target: str, json_mode: bool) -> int:
+    if os.path.exists(_agent_state_path(target)):
+        st = load_agent_state(target) or {}
+        mems = st.get("memetic_kernel", {}).get("memories") or []
+        if json_mode:
+            print(json.dumps({"entity": "agent", "name": target, "memories": mems[-20:]}, indent=2))
+            return 0
+
+        print(f"\n--- Recent Memories for Agent: {target} ---")
+        if not mems:
             print("  No memories recorded yet.")
             print("----------------------------------")
-            return
-
-        print(f"\n--- Recent Memories for Agent: {agent_name} ---")
-        for mem_entry in memories[-5:]:
-            timestamp = mem_entry.get('timestamp', 'N/A')
-            mem_type = mem_entry.get('type', 'N/A')
-            content = mem_entry.get('content', 'N/A')
-            print(f"  [{timestamp}] <{mem_type}> {content}")
+            return 0
+        for m in mems[-5:]:
+            ts = m.get("timestamp", "N/A")
+            mt = m.get("type", "N/A")
+            content = m.get("content", "N/A")
+            print(f"  [{ts}] <{mt}> {content}")
         print("----------------------------------")
-    else:
-        print(f"Agent '{agent_name}' not found or could not be loaded.")
+        return 0
 
-def get_swarm_status(swarm_name):
-    if swarm_name != "AlphaEcoSwarm":
-        print(f"Error: Swarm '{swarm_name}' is not currently supported by 'get status swarm'. Try 'AlphaEcoSwarm'.")
-        return
-        
-    state = load_swarm_state()
-    if state:
-        print(f"\n--- Status for Swarm: {state.get('name')} ---")
-        print(f"  Goal: {state.get('goal', 'N/A')}")
-        print(f"  Members: {', '.join(state.get('members', [])) if state.get('members') else 'None'}")
-        print(f"  Consensus Mechanism: {state.get('consensus_mechanism', 'N/A')}")
-        print(f"  Description: {state.get('description', 'N/A')}")
+    if target == "AlphaEcoSwarm":
+        st = load_swarm_state() or {}
+        mems = st.get("memetic_kernel", {}).get("memories") or []
+        if json_mode:
+            print(json.dumps({"entity": "swarm", "name": "AlphaEcoSwarm", "memories": mems[-20:]}, indent=2))
+            return 0
 
-        gradient = state.get('sovereign_gradient')
-        if gradient:
-            print(f"  Sovereign Gradient:")
-            print(f"    Vector: {gradient.get('autonomy_vector', 'N/A')}")
-            print(f"    Ethical Constraints: {', '.join(gradient.get('ethical_constraints', []))}")
-            print(f"    Override Threshold: {gradient.get('override_threshold', 'N/A')}")
-        else:
-            print("  Sovereign Gradient: Not set")
-        print("-----------------------------------")
-    else:
-        print(f"Swarm '{swarm_name}' not found or could not be loaded.")
-
-def get_swarm_memory(swarm_name):
-    if swarm_name != "AlphaEcoSwarm":
-        print(f"Error: Swarm '{swarm_name}' is not currently supported by 'get memory swarm'. Try 'AlphaEcoSwarm'.")
-        return
-
-    state = load_swarm_state()
-    if state:
-        memories = state.get('memetic_kernel', {}).get('memories', [])
-        if not memories:
-            print(f"\n--- Memories for Swarm: {swarm_name} ---")
+        print(f"\n--- Recent Memories for Swarm: {target} ---")
+        if not mems:
             print("  No memories recorded yet.")
             print("----------------------------------")
-            return
-
-        print(f"\n--- Recent Memories for Swarm: {swarm_name} ---")
-        for mem_entry in memories[-5:]:
-            timestamp = mem_entry.get('timestamp', 'N/A')
-            mem_type = mem_entry.get('type', 'N/A')
-            content = mem_entry.get('content', 'N/A')
-            print(f"  [{timestamp}] <{mem_type}> {content}")
+            return 0
+        for m in mems[-5:]:
+            ts = m.get("timestamp", "N/A")
+            mt = m.get("type", "N/A")
+            content = m.get("content", "N/A")
+            print(f"  [{ts}] <{mt}> {content}")
         print("----------------------------------")
-    else:
-        print(f"Swarm '{swarm_name}' not found or could not be loaded.")
+        return 0
 
-# --- NEW: Control functions ---
-def broadcast_intent(target_name, new_intent):
-    """
-    Simulates broadcasting a new intent to an agent or a swarm.
-    This writes a special 'intent_override.json' file that CatalystVectorAlpha would read.
-    """
-    intent_override_file = os.path.join(PERSISTENCE_DIR, f"intent_override_{target_name}.json")
-    override_data = {
-        "target": target_name,
+    print(f"Error: '{target}' is not recognized.")
+    return 1
+
+def action_broadcast_intent(target: str, new_intent: str, json_mode: bool) -> int:
+    # Only allow known agent or the main swarm
+    is_agent = os.path.exists(_agent_state_path(target))
+    is_swarm = (target == "AlphaEcoSwarm")
+
+    if not (is_agent or is_swarm):
+        print(f"Error: Broadcast target '{target}' not found or not supported.")
+        return 1
+
+    payload = {
+        "target": target,
         "new_intent": new_intent,
-        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat() + 'Z',
-        "status": "pending" # Status for CatalystVectorAlpha to process
+        "timestamp": _now_iso(),
+        "status": "pending",
     }
-    try:
-        with open(intent_override_file, 'w') as f:
-            json.dump(override_data, f, indent=2)
-        print(f"Broadcast: New intent '{new_intent}' queued for '{target_name}'. CatalystVectorAlpha will process this on its next cycle.")
-    except Exception as e:
-        print(f"Error queuing intent broadcast for '{target_name}': {e}")
+    dst = os.path.join(PERSISTENCE_DIR, f"intent_override_{target}.json")
+    _write_json_atomic(dst, payload)
 
-def toggle_agent_pause(agent_name, action):
-    """
-    Toggles the pause state of an agent by modifying a shared JSON file.
-    'action' can be 'pause' or 'resume'.
-    """
-    paused_agents = set(load_paused_agents())
-    
-    if action == 'pause':
-        if agent_name in paused_agents:
-            print(f"Agent '{agent_name}' is already paused.")
-        else:
-            paused_agents.add(agent_name)
-            save_paused_agents(paused_agents)
-            print(f"Agent '{agent_name}' paused.")
-    elif action == 'resume':
-        if agent_name not in paused_agents:
-            print(f"Agent '{agent_name}' is not currently paused.")
-        else:
-            paused_agents.remove(agent_name)
-            save_paused_agents(paused_agents)
-            print(f"Agent '{agent_name}' resumed.")
+    if json_mode:
+        print(json.dumps({"queued": True, "path": dst, "payload": payload}, indent=2))
     else:
-        print("Invalid action. Use 'pause' or 'resume'.")
+        print(f"Broadcast queued: '{new_intent}' → {target}. (written {dst})")
+    return 0
 
-def main_console():
-    """The main loop for the Swarm Console."""
-    print("--- Welcome to the Swarm Console! ---")
-    print("Type 'help' for commands, 'exit' to quit.")
-    
-    while True:
-        command_line = input("\nswarm-console> ").strip()
-        parts = command_line.split(maxsplit=2)
-        
-        if not parts:
+def action_pause(agent_names: List[str], json_mode: bool) -> int:
+    existing = set(load_paused_agents())
+    all_agents = set(_list_agent_names())
+    updated = []
+    for name in agent_names:
+        if name not in all_agents:
+            print(f"Warning: Agent '{name}' not found; skipping.")
             continue
-        
-        command_verb = parts[0].lower()
-        command_object = parts[1].lower() if len(parts) > 1 else ""
-        command_arg = parts[2] if len(parts) > 2 else ""
+        if name not in existing:
+            existing.add(name)
+            updated.append(name)
+    save_paused_agents(existing)
 
-        if command_verb == "exit":
-            print("Exiting Swarm Console. Goodbye!")
-            sys.exit(0)
-        elif command_verb == "help":
-            print("\n--- Swarm Console Commands ---")
-            print("  list agents                          - List all active agent instances (shows pause status).")
-            print("  get status <agent_name/swarm_name>   - Show detailed status of an agent or swarm.")
-            print("  get memory <agent_name/swarm_name>   - Show recent memories of an agent or swarm.")
-            print("  broadcast intent <target_name>:<new_intent> - Send new intent to agent/swarm.")
-            print("  pause agent <agent_name>             - Pause an agent's task execution.")
-            print("  resume agent <agent_name>            - Resume a paused agent.")
-            print("  exit                                 - Exit the console.")
-            print("------------------------------")
-        elif command_verb == "list" and command_object == "agents":
-            list_agents()
-        elif command_verb == "get" and command_object in ["status", "memory"]:
-            if command_arg:
-                # Determine if argument is an agent or swarm
-                if os.path.exists(get_agent_state_filepath(command_arg)):
-                    if command_object == "status":
-                        get_agent_status(command_arg)
-                    else:
-                        get_agent_memory(command_arg)
-                elif command_arg == "AlphaEcoSwarm":
-                    if command_object == "status":
-                        get_swarm_status(command_arg)
-                    else:
-                        get_swarm_memory(command_arg)
-                else:
-                    print(f"Error: Entity '{command_arg}' not found or not recognized as an agent or the main swarm.")
+    if json_mode:
+        print(json.dumps({"paused": sorted(updated)}, indent=2))
+    else:
+        for n in updated:
+            print(f"Agent '{n}' paused.")
+    return 0
+
+def action_resume(agent_names: List[str], json_mode: bool) -> int:
+    existing = set(load_paused_agents())
+    updated = []
+    for name in agent_names:
+        if name in existing:
+            existing.remove(name)
+            updated.append(name)
+    save_paused_agents(existing)
+
+    if json_mode:
+        print(json.dumps({"resumed": sorted(updated)}, indent=2))
+    else:
+        for n in updated:
+            print(f"Agent '{n}' resumed.")
+    return 0
+
+def action_watch_log(json_mode: bool, follow: bool, max_lines: int) -> int:
+    """
+    Print last N entries of the JSONL log; optionally follow (tail -f).
+    """
+    path = SWARM_ACTIVITY_LOG
+    if not os.path.exists(path):
+        print(f"{path} not found. Start your monitor/orchestrator first.")
+        return 1
+
+    def _iter_entries() -> Iterable[Dict[str, Any]]:
+        with open(path, "r", encoding="utf-8") as f:
+            # seek to last N lines cheaply
+            if max_lines > 0:
+                try:
+                    f.seek(0, os.SEEK_END)
+                    pos = f.tell()
+                    block = 4096
+                    data = b""
+                    while pos > 0 and data.count(b"\n") <= max_lines:
+                        read = min(block, pos)
+                        pos -= read
+                        f.seek(pos, os.SEEK_SET)
+                        data = f.read(read).encode("utf-8") + data
+                    lines = data.decode("utf-8", errors="ignore").splitlines()[-max_lines:]
+                except Exception:
+                    f.seek(0)
+                    lines = f.readlines()[-max_lines:]
             else:
-                print(f"Usage: get {command_object} <agent_name/swarm_name>")
-        elif command_verb == "broadcast" and command_object == "intent":
-            if ":" in command_arg:
-                target_name, new_intent = command_arg.split(':', 1)
-                target_name = target_name.strip()
-                new_intent = new_intent.strip()
-                if os.path.exists(get_agent_state_filepath(target_name)) or target_name == "AlphaEcoSwarm":
-                    broadcast_intent(target_name, new_intent)
-                else:
-                    print(f"Error: Broadcast target '{target_name}' not found or not supported.")
-            else:
-                print("Usage: broadcast intent <target_name>:<new_intent>")
-        elif command_verb in ["pause", "resume"] and command_object == "agent":
-            if command_arg:
-                if os.path.exists(get_agent_state_filepath(command_arg)):
-                    toggle_agent_pause(command_arg, command_verb)
-                else:
-                    print(f"Error: Agent '{command_arg}' not found.")
-            else:
-                print(f"Usage: {command_verb} agent <agent_name>")
+                lines = f.readlines()
+
+            for ln in lines:
+                try:
+                    yield json.loads(ln.strip())
+                except Exception:
+                    continue
+
+            if not follow:
+                return
+
+            # tail
+            while True:
+                ln = f.readline()
+                if not ln:
+                    time.sleep(0.3)
+                    continue
+                try:
+                    yield json.loads(ln.strip())
+                except Exception:
+                    continue
+
+    for entry in _iter_entries():
+        if json_mode:
+            print(json.dumps(entry, indent=2))
         else:
-            print(f"Unknown command: '{command_line}'. Type 'help' for commands.")
+            ts = entry.get("timestamp", "N/A")
+            ev = entry.get("event_type", "N/A")
+            src = entry.get("source", "N/A")
+            desc = entry.get("description", "N/A")
+            details = entry.get("details", {})
+            dstr = json.dumps(details, indent=2) if details else "{}"
+            print(f"[{ts}] <{ev}> {src}\n  {desc}\n  Details: {dstr}\n---")
+    return 0
+
+def action_latest_snapshot(json_mode: bool) -> int:
+    """
+    Read the last SWARM_SNAPSHOT from the log (if any) and display summary.
+    """
+    path = SWARM_ACTIVITY_LOG
+    if not os.path.exists(path):
+        print(f"{path} not found.")
+        return 1
+
+    last_snap = None
+    with open(path, "r", encoding="utf-8") as f:
+        for ln in f:
+            try:
+                obj = json.loads(ln.strip())
+                if obj.get("event_type") == "SWARM_SNAPSHOT":
+                    last_snap = obj
+            except Exception:
+                continue
+
+    if not last_snap:
+        print("No snapshot entries yet.")
+        return 0
+
+    if json_mode:
+        print(json.dumps(last_snap, indent=2))
+        return 0
+
+    det = last_snap.get("details", {})
+    agents = det.get("agents", {})
+    p99 = det.get("p99_latency_per_agent", {})
+    sys_ = det.get("system", {})
+
+    print("--- Latest Snapshot ---")
+    print(f"Timestamp: {last_snap.get('timestamp')}")
+    print(f"Agents ({len(agents)}):")
+    for a, st in agents.items():
+        print(f"  - {a}: {st}")
+    if p99:
+        print("p99 latency (s):")
+        for a, v in p99.items():
+            print(f"  - {a}: {v:.2f}")
+    print("System EWMA:")
+    print(f"  proc_cpu={sys_.get('proc_cpu_ewma', 0):.1f}%  proc_mem={sys_.get('proc_mem_ewma', 0):.1f}%")
+    print(f"  sys_cpu={sys_.get('sys_cpu_ewma', 0):.1f}%   sys_mem={sys_.get('sys_mem_ewma', 0):.1f}%")
+    print("-----------------------")
+    return 0
+
+# --------------------------------------------------------------------
+# CLI arg parsing
+# --------------------------------------------------------------------
+@dataclass
+class Args:
+    json: bool = False
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="swarm-console",
+        description="Swarm Console: inspect and control your agent swarm.",
+    )
+    p.add_argument("--json", action="store_true", help="Emit JSON instead of human text.")
+
+    sub = p.add_subparsers(dest="cmd")
+
+    sub.add_parser("list-agents", help="List all active agents.")
+
+    gs = sub.add_parser("get-status", help="Show detailed status of an agent or the swarm.")
+    gs.add_argument("target", help="Agent name or 'AlphaEcoSwarm'")
+
+    gm = sub.add_parser("get-memory", help="Show recent memories for an agent or the swarm.")
+    gm.add_argument("target", help="Agent name or 'AlphaEcoSwarm'")
+
+    bc = sub.add_parser("broadcast-intent", help="Broadcast a new intent to an agent/swarm.")
+    bc.add_argument("target", help="Agent name or 'AlphaEcoSwarm'")
+    bc.add_argument("intent", help="New intent string")
+
+    pause = sub.add_parser("pause", help="Pause one or more agents.")
+    pause.add_argument("agent", nargs="+", help="Agent name(s)")
+
+    resume = sub.add_parser("resume", help="Resume one or more agents.")
+    resume.add_argument("agent", nargs="+", help="Agent name(s)")
+
+    watch = sub.add_parser("watch", help="Tail/swipe the swarm activity log.")
+    watch.add_argument("-n", "--lines", type=int, default=50, help="Print last N lines before following.")
+    watch.add_argument("-f", "--follow", action="store_true", help="Follow the log (tail -f).")
+
+    sub.add_parser("latest", help="Show latest SWARM_SNAPSHOT summary.")
+
+    repl = sub.add_parser("repl", help="Interactive console (classic commands).")
+
+    return p
+
+# --------------------------------------------------------------------
+# Interactive REPL (keeps your original verbs)
+# --------------------------------------------------------------------
+def run_repl(json_mode: bool) -> int:
+    print("--- Welcome to the Swarm Console (REPL) ---")
+    print("Type 'help' for commands, 'exit' to quit.")
+    while True:
+        try:
+            line = input("\nswarm-console> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nExiting.")
+            return 0
+        if not line:
+            continue
+        if line.lower() in {"exit", "quit"}:
+            return 0
+        if line.lower() == "help":
+            print("\n--- Commands ---")
+            print("  list agents")
+            print("  get status <agent|AlphaEcoSwarm>")
+            print("  get memory <agent|AlphaEcoSwarm>")
+            print("  broadcast intent <target>:<new_intent>")
+            print("  pause agent <agent> [<agent> ...]")
+            print("  resume agent <agent> [<agent> ...]")
+            print("  watch [-n N] [-f]")
+            print("  latest")
+            print("  exit")
+            continue
+
+        # minimal parser for backward-compatible verbs
+        parts = line.split()
+        if parts[:2] == ["list", "agents"]:
+            action_list_agents(json_mode)
+            continue
+
+        if parts[:2] == ["get", "status"] and len(parts) >= 3:
+            action_get_status(" ".join(parts[2:]), json_mode)
+            continue
+
+        if parts[:2] == ["get", "memory"] and len(parts) >= 3:
+            action_get_memory(" ".join(parts[2:]), json_mode)
+            continue
+
+        if parts[:2] == ["broadcast", "intent"] and len(parts) >= 3:
+            if ":" in parts[2]:
+                target, intent = parts[2].split(":", 1)
+                action_broadcast_intent(target.strip(), intent.strip(), json_mode)
+            else:
+                print("Usage: broadcast intent <target>:<new_intent>")
+            continue
+
+        if parts[0:2] == ["pause", "agent"] and len(parts) >= 3:
+            action_pause(parts[2:], json_mode)
+            continue
+
+        if parts[0:2] == ["resume", "agent"] and len(parts) >= 3:
+            action_resume(parts[2:], json_mode)
+            continue
+
+        if parts[0] == "watch":
+            # basic flags support in REPL: watch -n 100 -f
+            n = 50
+            follow = False
+            if "-n" in parts:
+                try:
+                    idx = parts.index("-n")
+                    n = int(parts[idx + 1])
+                except Exception:
+                    pass
+            if "-f" in parts:
+                follow = True
+            action_watch_log(json_mode, follow=follow, max_lines=n)
+            continue
+
+        if parts[0] == "latest":
+            action_latest_snapshot(json_mode)
+            continue
+
+        print(f"Unknown command: '{line}'. Type 'help' for commands.")
+    # end while
+
+# --------------------------------------------------------------------
+# Main
+# --------------------------------------------------------------------
+def main(argv: Optional[List[str]] = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    # default: repl if no subcommand
+    if not args.cmd:
+        return run_repl(json_mode=args.json)
+
+    if args.cmd == "repl":
+        return run_repl(json_mode=args.json)
+    if args.cmd == "list-agents":
+        return action_list_agents(json_mode=args.json)
+    if args.cmd == "get-status":
+        return action_get_status(args.target, json_mode=args.json)
+    if args.cmd == "get-memory":
+        return action_get_memory(args.target, json_mode=args.json)
+    if args.cmd == "broadcast-intent":
+        return action_broadcast_intent(args.target, args.intent, json_mode=args.json)
+    if args.cmd == "pause":
+        return action_pause(args.agent, json_mode=args.json)
+    if args.cmd == "resume":
+        return action_resume(args.agent, json_mode=args.json)
+    if args.cmd == "watch":
+        return action_watch_log(json_mode=args.json, follow=args.follow, max_lines=args.lines)
+    if args.cmd == "latest":
+        return action_latest_snapshot(json_mode=args.json)
+
+    parser.print_help()
+    return 2
 
 if __name__ == "__main__":
-    os.makedirs(PERSISTENCE_DIR, exist_ok=True)
-    main_console()
+    sys.exit(main())
