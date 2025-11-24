@@ -5,7 +5,6 @@ from __future__ import annotations
 
 # Put project-root on sys.path BEFORE any local imports (prevents utils collisions)
 import os, sys, warnings
-
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
@@ -874,38 +873,17 @@ class ProtoAgent(ABC):
                 if task_status == "completed":
                     self.active_plan_directives[task_desc] = "completed"
                     print(f"  [{self.name}] Task '{task_desc}' from plan '{self.last_plan_id}' marked as completed.")
-                    try:
-                        from database import cva_db
-                        from datetime import datetime, timezone
-                        cva_db.record_task(
-                            task_id=f"task_{int(datetime.now().timestamp())}",
-                            agent_name=self.name,
-                            description=task_desc,
-                            outcome="completed",
-                            started_at=datetime.now(timezone.utc).isoformat(),
-                            completed_at=datetime.now(timezone.utc).isoformat(),
-                            execution_time=0
-                        )
-                    except Exception:
-                        pass
                 else:
                     # If any task fails, the plan is considered failed.
                     print(f"  [{self.name}] Task '{task_desc}' from plan '{self.last_plan_id}' FAILED. Aborting plan.")
-                    try:
-                        from database import cva_db
-                        from datetime import datetime, timezone
-                        cva_db.record_task(
-                            task_id=f"task_{int(datetime.now().timestamp())}",
-                            agent_name=self.name,
-                            description=task_desc,
-                            outcome="failed",
-                            started_at=datetime.now(timezone.utc).isoformat(),
-                            completed_at=datetime.now(timezone.utc).isoformat(),
-                            execution_time=0
-                        )
-                    except Exception:
-                        pass
                     self.reset_after_plan_failure()
+                    return
+
+        # Check if all tasks in the plan are completed
+        if all(status == "completed" for status in self.active_plan_directives.values()):
+            print(f"  [{self.name}] All tasks for plan '{self.last_plan_id}' are completed. Resetting state.")
+            self.reset_after_plan_success()
+
 
     def reset_after_plan_success(self):
         """Resets the agent's state after a successful multi-step plan."""
@@ -1470,67 +1448,52 @@ class ProtoAgent(ABC):
                 investigation_start['timestamp'], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
         return datetime.timedelta(0)
 
-    async def _execute_tool_proposal_async(self, tool_proposal: dict) -> str:
-            """
-            Async version: Executes a proposed tool call and returns the tool's output.
-            """
-            tool_name = tool_proposal.get("tool_name")
-            tool_args = tool_proposal.get("tool_args", {})
-
-            if tool_name == "update_world_model":
-                key = tool_args.get("key")
-                value = tool_args.get("value")
-                if key and value is not None:
-                    self.world_model.update_value(key, value)
-                    return f"Shared World Model updated: '{key}' is now '{value}'."
-                else:
-                    return "Tool 'update_world_model' failed: Missing 'key' or 'value' argument."
-
-            if not tool_name:
-                return "No tool name provided for execution."
-
-            tool_instance = self.tool_registry.get_tool(tool_name)
-            if not tool_instance:
-                error_msg = f"Attempted to execute unknown tool: '{tool_name}'."
-                print(f"  [Tool EXEC ERROR] {self.name}: {error_msg}")
-                self.memetic_kernel.add_memory("ToolExecutionError", error_msg, {"tool_name": tool_name, "tool_args": tool_args})
-                return error_msg
-
-            print(f"  [Tool EXEC] {self.name} executing tool '{tool_name}' with args: {tool_args}")
-            self.memetic_kernel.add_memory("ToolExecutionAttempt", f"Attempting tool '{tool_name}'", {"tool_name": tool_name, "tool_args": tool_args})
-
-            try:
-                # Run tool in thread pool to avoid blocking
-                import asyncio
-                from concurrent.futures import ThreadPoolExecutor
-                loop = asyncio.get_event_loop()
-                with ThreadPoolExecutor() as pool:
-                    tool_output = await loop.run_in_executor(pool, lambda: tool_instance.func(**tool_args))
-
-                self.memetic_kernel.add_memory("ToolExecutionSuccess", f"Tool '{tool_name}' executed successfully.", {"tool_name": tool_name, "tool_output": tool_output})
-                print(f"  [Tool EXEC SUCCESS] {self.name}: Tool '{tool_name}' output: {str(tool_output)[:200]}...")
-                return tool_output
-            except TypeError as e:
-                error_msg = f"Tool '{tool_name}' execution failed due to invalid arguments: {e}. Args provided: {tool_args}"
-                print(f"  [Tool EXEC ERROR] {self.name}: {error_msg}")
-                self.memetic_kernel.add_memory("ToolExecutionError", error_msg, {"tool_name": tool_name, "tool_args": tool_args, "error": str(e)})
-                return error_msg
-            except Exception as e:
-                error_msg = f"Tool '{tool_name}' execution failed: {e}. Args provided: {tool_args}"
-                print(f"  [Tool EXEC ERROR] {self.name}: {error_msg}")
-                self.memetic_kernel.add_memory("ToolExecutionError", error_msg, {"tool_name": tool_name, "tool_args": tool_args, "error": str(e)})
-                return error_msg
-
-        # Keep sync version for backward compatibility
     def _execute_tool_proposal(self, tool_proposal: dict) -> str:
-            """Sync wrapper for async tool execution."""
-            import asyncio
-            try:
-                loop = asyncio.get_event_loop()
-                return loop.run_until_complete(self._execute_tool_proposal_async(tool_proposal))
-            except RuntimeError:
-                # No event loop, create one
-                return asyncio.run(self._execute_tool_proposal_async(tool_proposal))
+        """
+        Executes a proposed tool call and returns the tool's output.
+        Stores tool execution results and errors in memory.
+        """
+        tool_name = tool_proposal.get("tool_name")
+        tool_args = tool_proposal.get("tool_args", {})
+
+        if tool_name == "update_world_model":
+            key = tool_args.get("key")
+            value = tool_args.get("value")
+            if key and value is not None:
+                self.world_model.update_value(key, value)
+                return f"Shared World Model updated: '{key}' is now '{value}'."
+            else:
+                return "Tool 'update_world_model' failed: Missing 'key' or 'value' argument."
+
+        if not tool_name:
+            return "No tool name provided for execution."
+
+        tool_instance = self.tool_registry.get_tool(tool_name)
+        if not tool_instance:
+            error_msg = f"Attempted to execute unknown tool: '{tool_name}'."
+            print(f"  [Tool EXEC ERROR] {self.name}: {error_msg}")
+            self.memetic_kernel.add_memory("ToolExecutionError", error_msg, {"tool_name": tool_name, "tool_args": tool_args})
+            return error_msg
+
+        print(f"  [Tool EXEC] {self.name} executing tool '{tool_name}' with args: {tool_args}")
+        self.memetic_kernel.add_memory("ToolExecutionAttempt", f"Attempting tool '{tool_name}'", {"tool_name": tool_name, "tool_args": tool_args})
+
+        try:
+            tool_output = tool_instance.func(**tool_args)
+
+            self.memetic_kernel.add_memory("ToolExecutionSuccess", f"Tool '{tool_name}' executed successfully.", {"tool_name": tool_name, "tool_output": tool_output})
+            print(f"  [Tool EXEC SUCCESS] {self.name}: Tool '{tool_name}' output: {tool_output[:200]}...") # Truncate for print
+            return tool_output
+        except TypeError as e:
+            error_msg = f"Tool '{tool_name}' execution failed due to invalid arguments: {e}. Args provided: {tool_args}"
+            print(f"  [Tool EXEC ERROR] {self.name}: {error_msg}")
+            self.memetic_kernel.add_memory("ToolExecutionError", error_msg, {"tool_name": tool_name, "tool_args": tool_args, "error": str(e)})
+            return error_msg
+        except Exception as e:
+            error_msg = f"Tool '{tool_name}' execution failed: {e}. Args provided: {tool_args}"
+            print(f"  [Tool EXEC ERROR] {self.name}: {error_msg}")
+            self.memetic_kernel.add_memory("ToolExecutionError", error_msg, {"tool_name": tool_name, "tool_args": tool_args, "error": str(e)})
+            return error_msg
 
     def _process_spawn_agent_instance_directive(self, directive): # This method is likely in CatalystVectorAlpha, not ProtoAgent. This snippet might be out of place if it's not meant to be here.
         # This method is likely not part of ProtoAgent, but rather CatalystVectorAlpha.
@@ -3258,395 +3221,189 @@ class ProtoAgent_Planner(ProtoAgent):
         }
 
     def _check_system_alerts(self) -> tuple[str, str, float]:
-        """
-        Check for urgent system alerts and use LLM to autonomously decide the response.
-        
-        This is the "cognitive loop" - where CVA demonstrates true intelligence
-        by reasoning about alerts rather than following pre-programmed rules.
-        
-        Returns:
-            tuple: (goal_description, mission_type, complexity) or (None, None, None)
-        """
-        
-        # --- 1. Check AlertStore (User-facing Alerts: Email, Calendar, etc.) ---
+        """Check for urgent system alerts that require immediate action."""
+
+        # --- START MODIFIED BLOCK ---
+        # 1. Check the persistent AlertStore for high-priority user tasks
         try:
+            # We import here to avoid circular dependencies
             from alert_store import get_alert_store
             
+            # Imports needed for flight time parsing
+            import datetime
+            from dateutil.parser import isoparse
+            from datetime import timedelta
+
             recent_alerts = get_alert_store().get_recent_alerts(limit=50)
 
             for alert in recent_alerts:
                 alert_type = alert.get("type")
-                
-                # Initialize deduplication tracker
+
+                # Check if we've *already* planned for this email ID
                 if not hasattr(self, "_processed_alert_ids"):
                     self._processed_alert_ids = set()
                 
-                # Skip already-processed alerts
                 alert_id = alert.get("source_email_id") or alert.get("timestamp")
                 if alert_id in self._processed_alert_ids:
-                    continue
-                
-                # Process new alerts with LLM reasoning
-                if alert_type:
-                    self._processed_alert_ids.add(alert_id)
-                    
-                    self._log_agent_activity("ALERT_DETECTED", self.name, {
-                        "type": alert_type,
-                        "source": "AlertStore",
-                        "alert_id": alert_id,
-                        "subject": alert.get("subject", "N/A")
-                    })
+                    continue  # We've already handled this one, skip it.
 
+                # --- START: NEW FLIGHT_UPDATE LOGIC ---
+                if alert_type == "flight_update":
+                    self._processed_alert_ids.add(alert_id)  # Mark as processed
+                    self._log_agent_activity("ALERT_DETECTED", self.name, {"type": alert_type, "source": "AlertStore"})
+
+                    # --- This is the new "Conductor" logic ---
                     try:
-                        # Ask LLM to reason about this alert
-                        decision = self._reason_about_alert(alert)
+                        # 1. Get flight details from the alert
+                        details = alert.get("details", {})
+                        new_time_str = details.get("new_time_utc")
+                        flight_num = details.get("flight_number", "Your flight")
                         
-                        if decision:
-                            goal, mission_type, complexity = decision
-                            
-                            self._log_agent_activity("LLM_DECISION_ACCEPTED", self.name, {
-                                "goal": goal,
-                                "mission_type": mission_type,
-                                "complexity": complexity
-                            })
-                            
-                            return goal, mission_type, complexity
-                    
-                    except Exception as e:
-                        # Graceful degradation: If AI fails, still notify user
-                        self._log_agent_activity("LLM_REASONING_FAILED", self.name, {
-                            "error": str(e),
-                            "alert_type": alert_type,
-                            "fallback": "simple_notification"
-                        })
+                        if not new_time_str:
+                            raise ValueError("Alert missing 'new_time_utc'")
+
+                        # 2. Calculate a 1-hour calendar window around the new time
+                        #    Use isoparse() to handle the 'Z' (UTC) suffix correctly
+                        new_time_obj = isoparse(new_time_str)
                         
-                        # Fallback to basic notification
+                        # Ensure we are working with timezone-aware datetimes
+                        if new_time_obj.tzinfo is None:
+                             new_time_obj = new_time_obj.replace(tzinfo=datetime.timezone.utc)
+
+                        window_start_obj = new_time_obj - datetime.timedelta(minutes=30)
+                        window_end_obj = new_time_obj + datetime.timedelta(minutes=30)
+
+                        # Convert back to ISO 8601 string format for the tool
+                        window_start = window_start_obj.isoformat()
+                        window_end = window_end_obj.isoformat()
+
+
+                        # 3. Planner calls its OWN tool
+                        self._log_agent_activity("PLANNER_TOOL_CALL", self.name, {"tool": "check_calendar", "start": window_start, "end": window_end})
+                        
+                        # Use self.tool_registry, which should be available to the Planner
+                        if not hasattr(self, 'tool_registry'):
+                             raise ValueError("Planner does not have access to 'tool_registry'")
+                             
+                        calendar_result = self.tool_registry.safe_call(
+                            "check_calendar",
+                            time_min_utc=window_start,
+                            time_max_utc=window_end
+                        )
+                        
+                        # 4. Create a smart, context-aware message
+                        title = f"Flight Update: {flight_num}"
+                        
+                        # Format new_time_str for readability (remove 'Z')
+                        friendly_time = new_time_str.replace("T", " at ").replace("Z", " UTC")
+                        message = f"{flight_num} is delayed. New time: {friendly_time}\n"
+                        
+                        if calendar_result.get("status") == "conflict":
+                            event = calendar_result.get("events", [{}])[0]
+                            event_summary = event.get("summary", "Unknown Event")
+                            message += f"**CONFLICT:** You have a meeting: '{event_summary}'."
+                        elif calendar_result.get("status") == "clear":
+                            message += "Your calendar is clear around that time."
+                        else:
+                            message += f"Could not check calendar: {calendar_result.get('error', 'Unknown error')}"
+
+                        # 5. Set this smart message as the target
                         self._current_notification_target = {
-                            "title": f"Alert: {alert_type}",
-                            "message": f"Subject: {alert.get('subject', 'Unknown')}\n\n(AI processing failed - raw alert)"
+                            "title": title,
+                            "message": message
                         }
                         
-                        return (
-                            f"Notify user about {alert_type} alert",
-                            "user_notification_email",
-                            0.2
-                        )
+                        # 6. Create the same simple mission as before
+                        goal = f"Notify user about flight update & calendar: {flight_num}"
+                        mission_type = "user_notification_email"  # We re-use the *same* mission type
+                        complexity = 0.2
+                        
+                        return goal, mission_type, complexity
+
+                    except Exception as e:
+                        self._log_agent_activity("PLANNER_CALENDAR_ERROR", self.name, {"error": str(e)})
+                        # Fallback: just send the simple notification
+                        self._current_notification_target = {
+                            "title": f"CVA Alert: {alert_type}",
+                            "message": f"Subject: {alert.get('subject', 'N/A')} (Error checking calendar: {e})"
+                        }
+                        return f"Notify user about a new '{alert_type}' alert", "user_notification_email", 0.2
+                
+                # --- END: NEW FLIGHT_UPDATE LOGIC ---
+
+                # --- This is the old logic for other simple alerts ---
+                elif alert_type in ["free_trial", "invoice"]:
+                    self._processed_alert_ids.add(alert_id)  # Mark as processed
+                    self._log_agent_activity("ALERT_DETECTED", self.name, {"type": alert_type, "source": "AlertStore"})
+
+                    # Create a high-priority goal and mission
+                    goal = f"Notify user about a new '{alert_type}' alert: {alert.get('subject', 'No Subject')}"
+                    mission_type = "user_notification_email"  # A new, unique mission type
+                    complexity = 0.2  # This is a very simple task
+
+                    # We will also create the plan_args right here
+                    # so the LLM doesn't have to guess.
+                    self._current_notification_target = {
+                        "title": f"CVA Alert: {alert_type}",
+                        "message": f"Subject: {alert.get('subject', 'N/A')}"
+                    }
+
+                    return goal, mission_type, complexity
 
         except Exception as e:
-            self._log_agent_activity("ALERT_STORE_ERROR", self.name, {
-                "error": str(e)
-            }, level="error")
-        
-        # --- 2. Check Memetic Kernel (System Alerts: K8s, Infrastructure) ---
+            self._log_agent_activity("ALERT_STORE_CHECK_ERROR", self.name, {"error": str(e)})
+        # --- END MODIFIED BLOCK ---
+
+        # 2. Check for internal kernel alerts (your original code)
         try:
+            # Get recent alerts from Observer
             recent_memories = self.memetic_kernel.get_recent_memories(limit=30)
-            
+
             for memory in recent_memories:
                 if memory.get('type') == 'SystemAlert':
                     content = memory.get('content', {})
                     alert_type = content.get('type')
-                    
-                    # For now, keep K8s logic procedural for stability
-                    # TODO: Make this LLM-driven once user alerts are proven stable
+
                     if alert_type == 'high_cpu_load':
                         avg_cpu = content.get('avg_cpu', 0)
                         target_deployment = content.get('target_deployment', 'nginx')
                         recommended_replicas = content.get('recommended_replicas', 4)
-                        
+
+                        goal = (
+                            f"Scale {target_deployment} to {recommended_replicas} replicas due to high CPU ({avg_cpu:.1f}%)",
+                            "performance_optimization",
+                            0.9
+                        )
+                        # Store the scaling details for the plan to use
                         self._current_scaling_target = {
                             'deployment': target_deployment,
                             'replicas': recommended_replicas,
                             'reason': f'high_cpu_{avg_cpu:.0f}pct'
                         }
-                        
-                        return (
-                            f"Scale {target_deployment} to {recommended_replicas} replicas (CPU: {avg_cpu:.1f}%)",
-                            "performance_optimization",
-                            0.9
-                        )
-                    
+                        return goal
+
                     elif alert_type == 'low_cpu_load':
                         avg_cpu = content.get('avg_cpu', 0)
                         target_deployment = content.get('target_deployment', 'nginx')
                         recommended_replicas = content.get('recommended_replicas', 1)
-                        
+
+                        goal = (
+                            f"Scale {target_deployment} to {recommended_replicas} replicas due to low CPU ({avg_cpu:.1f}%)",
+                            "cost_optimization",
+                            0.7
+                        )
                         self._current_scaling_target = {
                             'deployment': target_deployment,
                             'replicas': recommended_replicas,
                             'reason': f'low_cpu_{avg_cpu:.0f}pct'
                         }
-                        
-                        return (
-                            f"Scale down {target_deployment} to {recommended_replicas} replicas (CPU: {avg_cpu:.1f}%)",
-                            "cost_optimization",
-                            0.7
-                        )
-        
+                        return goal
+
         except Exception as e:
-            self._log_agent_activity("KERNEL_ALERT_ERROR", self.name, {
-                "error": str(e)
-            }, level="error")
-        
-        # No alerts found
+            self._log_agent_activity("ALERT_CHECK_ERROR", self.name, {"error": str(e)})
+
         return None, None, None
-
-
-    def _reason_about_alert(self, alert: dict) -> tuple:
-        """
-        Use LLM to autonomously reason about an alert and decide the response.
-        
-        This is where CVA demonstrates intelligence - the LLM examines the alert,
-        decides what tools to use, executes them, and formulates the user notification.
-        
-        Args:
-            alert: Alert dictionary from AlertStore
-            
-        Returns:
-            tuple: (goal_description, mission_type, complexity) or None if reasoning fails
-        """
-        import json
-        
-        # Build the reasoning prompt
-        prompt = self._build_alert_reasoning_prompt(alert)
-        
-        try:
-            # Ask the LLM to reason about this alert
-            response = self.ollama_inference_model.generate_text(
-                prompt=prompt,
-                json_mode=True,
-                temperature=0.3  # Low temperature for consistent, reliable decisions
-            )
-            
-            # Parse LLM's decision
-            decision = json.loads(response)
-            
-            # Log what the AI decided
-            self._log_agent_activity("LLM_REASONING", self.name, {
-                "reasoning": decision.get("reasoning", "No reasoning provided"),
-                "actions_count": len(decision.get("actions", [])),
-                "goal": decision.get("goal_description", "Unknown goal")
-            })
-            
-            # Execute the actions the LLM decided on
-            notification_context = self._execute_llm_decided_actions(
-                actions=decision.get("actions", []),
-                alert=alert
-            )
-            
-            # Build final notification with context from executed actions
-            self._build_final_notification(
-                decision=decision,
-                context=notification_context,
-                alert=alert
-            )
-            
-            # Return mission tuple
-            return (
-                decision.get("goal_description", "Handle alert"),
-                decision.get("mission_type", "user_notification_email"),
-                decision.get("complexity", 0.5)
-            )
-            
-        except json.JSONDecodeError as e:
-            self._log_agent_activity("LLM_JSON_PARSE_ERROR", self.name, {
-                "error": str(e),
-                "response_preview": response[:200] if 'response' in locals() else "No response"
-            }, level="error")
-            return None
-            
-        except Exception as e:
-            self._log_agent_activity("LLM_EXECUTION_ERROR", self.name, {
-                "error": str(e),
-                "error_type": type(e).__name__
-            }, level="error")
-            return None
-
-
-    def _build_alert_reasoning_prompt(self, alert: dict) -> str:
-        """
-        Construct the prompt that asks the LLM to reason about an alert.
-        
-        This prompt is critical - it defines how intelligent the system is.
-        """
-        import json
-        
-        alert_type = alert.get("type", "unknown")
-        subject = alert.get("subject", "N/A")
-        details = alert.get("details", {})
-        details_json = json.dumps(details, indent=2)
-        
-        prompt = f"""You are the autonomous reasoning engine of an intelligent assistant system.
-
-    ALERT RECEIVED:
-    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    Type: {alert_type}
-    Subject: {subject}
-    Details: {details_json}
-    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-    AVAILABLE TOOLS:
-    1. check_calendar(time_min_utc, time_max_utc)
-    - Checks user's Google Calendar for events in a time window
-    - Args must be ISO 8601 format: "YYYY-MM-DDTHH:MM:SSZ"
-    - Returns: {{"status": "conflict"|"clear", "events": [...]}}
     
-    2. send_desktop_notification(title, message)
-    - Sends a notification to the user
-    - Use markdown formatting for emphasis: **CONFLICT**, *important*
-
-    CONTEXT:
-    - User timezone: America/Toronto (EST/EDT)
-    - Current system: CVA (Catalyst Vector Alpha)
-    - Your role: Decide what actions to take for this alert
-
-    CRITICAL NOTIFICATION RULES:
-    - When displaying times in notification messages, ALWAYS show them in the user's local timezone (America/Toronto)
-    - Convert UTC times back to human-readable local time
-    - Example: "2025-11-20T04:15:00Z" should be shown as "11:15 PM on November 19"
-    - NEVER show UTC times or "Z" suffix to the user
-    - Users expect to see times in their local timezone, not UTC
-
-    YOUR TASK:
-    1. Analyze the alert and determine if calendar checking is needed
-    2. If yes, calculate the appropriate time window to check
-    3. Decide on the notification message (will be enhanced with calendar results)
-    4. Consider urgency and user impact
-
-    RESPONSE FORMAT (MUST BE VALID JSON):
-    {{
-        "reasoning": "Explain your thought process (2-3 sentences)",
-        "actions": [
-            {{
-                "tool": "check_calendar",
-                "args": {{
-                    "time_min_utc": "2025-11-19T04:00:00Z",
-                    "time_max_utc": "2025-11-19T05:30:00Z"
-                }}
-            }},
-            {{
-                "tool": "send_desktop_notification",
-                "args": {{
-                    "title": "Flight Update: QA999",
-                    "message": "Your flight has been delayed to 11:30 PM."
-                }}
-            }}
-        ],
-        "goal_description": "Notify user about flight delay with calendar conflict check",
-        "mission_type": "user_notification_email",
-        "complexity": 0.5
-    }}
-
-    IMPORTANT:
-    - Only use tools that are necessary
-    - For schedule changes, ALWAYS check calendar first
-    - Keep notifications clear and actionable
-    - Complexity: 0.2 (trivial) to 0.9 (very complex)
-    """
-        
-        return prompt
-
-
-    def _execute_llm_decided_actions(self, actions: list, alert: dict) -> str:
-        """
-        Execute the actions that the LLM decided to take.
-        
-        Investigation actions (like check_calendar) are executed immediately
-        so their results can be included in notifications.
-        
-        Args:
-            actions: List of action dictionaries from LLM
-            alert: Original alert for context
-            
-        Returns:
-            str: Context string to append to notification (e.g., "CONFLICT: Meeting at 11 PM")
-        """
-        context_additions = []
-        
-        for idx, action in enumerate(actions):
-            tool_name = action.get("tool")
-            args = action.get("args", {})
-            
-            try:
-                if tool_name == "check_calendar":
-                    # Execute calendar check immediately
-                    result = self.tool_registry.safe_call("check_calendar", **args)
-                    
-                    self._log_agent_activity("LLM_ACTION_EXECUTED", self.name, {
-                        "action_index": idx,
-                        "tool": tool_name,
-                        "result_status": result.get("status", "unknown")
-                    })
-                    
-                    # Build context string based on calendar result
-                    if result.get("status") == "conflict":
-                        events = result.get("events", [])
-                        if events:
-                            event_summary = events[0].get("summary", "Unknown Event")
-                            event_time = events[0].get("start", "")
-                            context_additions.append(
-                                f"\n\n**⚠️ CONFLICT DETECTED:**\nYou have '{event_summary}' at that time."
-                            )
-                    
-                    elif result.get("status") == "clear":
-                        context_additions.append("\n\n✓ Your calendar is clear around that time.")
-                    
-                elif tool_name == "send_desktop_notification":
-                    # Don't execute yet - just store for later
-                    # The notification will be enhanced with context and sent by NotifierAgent
-                    self._log_agent_activity("LLM_ACTION_QUEUED", self.name, {
-                        "action_index": idx,
-                        "tool": tool_name,
-                        "will_enhance": len(context_additions) > 0
-                    })
-                    
-            except Exception as e:
-                self._log_agent_activity("LLM_ACTION_FAILED", self.name, {
-                    "action_index": idx,
-                    "tool": tool_name,
-                    "error": str(e)
-                }, level="error")
-        
-        return "".join(context_additions)
-
-
-    def _build_final_notification(self, decision: dict, context: str, alert: dict):
-        """
-        Build the final notification message by combining LLM's decision with
-        the results of executed actions (like calendar checks).
-        
-        Args:
-            decision: The LLM's decision dictionary
-            context: Additional context from executed actions
-            alert: Original alert
-        """
-        # Find the notification action
-        for action in decision.get("actions", []):
-            if action.get("tool") == "send_desktop_notification":
-                args = action.get("args", {})
-                
-                # Enhance the message with context from calendar check
-                base_message = args.get("message", "")
-                enhanced_message = base_message + context
-                
-                self._current_notification_target = {
-                    "title": args.get("title", f"Alert: {alert.get('type')}"),
-                    "message": enhanced_message
-                }
-                
-                self._log_agent_activity("NOTIFICATION_PREPARED", self.name, {
-                    "title": args.get("title"),
-                    "has_context": len(context) > 0,
-                    "message_length": len(enhanced_message)
-                })
-                
-                return
-        
-        # Fallback if LLM didn't include notification action
-        self._current_notification_target = {
-            "title": f"Alert: {alert.get('type')}",
-            "message": f"Subject: {alert.get('subject')}"
-        }
-            
     def _handle_idle_synthesis(self):
         """
         Called when planner is idle. Select a mission via hybrid context,
@@ -3839,7 +3596,11 @@ class ProtoAgent_Planner(ProtoAgent):
                         "summary": "Plan contained no dispatchable steps."
                     }, 0.2
 
-                dispatched = dispatch_plan_steps(self=self, plan=normalized_steps, goal_str=goal)
+                dispatched = self._dispatch_plan_steps(
+                    normalized_steps,
+                    plan_id=plan_or_metrics.get("plan_id", None),
+                    parent_goal=goal,
+                )
                 self._log_agent_activity("PLAN_DISPATCHED", self.name, {"dispatched": bool(dispatched)})
 
                 self._note_result_and_schedule(cooldown_key, "completed")
@@ -8094,90 +7855,6 @@ class ProtoAgent_Planner(ProtoAgent):
         else:
             self.external_log_sink.error("CatalystVectorAlpha reference not available in MessageBus for directive injection.", extra={"agent": self.name})
 
-    def _build_planning_system_prompt(self, mission_type: str, complexity: float) -> str:
-        """
-        Constructs the System Prompt for the General Planner.
-        UPDATED: Enables Toolsmith capabilities and enforces strict tool syntax.
-        """
-        prompt = f"""You are the Master Planner for Catalyst Vector Alpha (CVA).
-        Your goal is to decompose high-level objectives into atomic, executable steps.
-
-        CURRENT MISSION TYPE: {mission_type}
-        COMPLEXITY SCORE: {complexity}
-
-        AVAILABLE AGENTS:
-        - ProtoAgent_Worker_instance_1: Executes terminal commands, file I/O, scripts. (The "Hands")
-        - ProtoAgent_Observer_instance_1: Monitoring, web search, analysis. (The "Eyes")
-        - ProtoAgent_Notifier_instance_1: Communication only. (The "Mouth")
-
-        AVAILABLE TOOLS:
-        1. execute_terminal_command(command): Runs shell commands in the sandbox.
-        2. write_sandbox_file(filepath, content): Writes code to the sandbox.
-        3. check_calendar, send_desktop_notification, etc.
-
-        🛑 CRITICAL RULE: TOOL ARGUMENTS
-        You must ALWAYS provide specific arguments for tools. Never leave them empty.
-
-        1. When using 'execute_terminal_command':
-        - ❌ WRONG: {{"tool": "execute_terminal_command", "args": {{}}}}
-        - ✅ RIGHT: {{"tool": "execute_terminal_command", "args": {{"command": "ls -la"}}}}
-
-        2. When using 'write_sandbox_file':
-        - ✅ RIGHT: {{"tool": "write_sandbox_file", "args": {{"filepath": "/workspace/script.py", "content": "print('hello')"}}}}
-
-        3. AGENT ASSIGNMENT:
-        - Terminal commands/Scripts -> Assign to 'ProtoAgent_Worker_instance_1'
-        - Notifications -> Assign to 'ProtoAgent_Notifier_instance_1'
-
-TOOLSMITH MODE (Self-Evolution):
-1. ALWAYS search procedural memory first (`recall_memory`) to see if you have solved this before.
-2. If a tool execution fails, DO NOT GIVE UP. Follow this recovery sequence:
-   a) Read the error message carefully
-   b) If "ModuleNotFoundError" -> pip install the missing module
-   c) If "command not found" -> apt-get install or find alternative
-   d) If "SyntaxError" -> rewrite with proper formatting
-   e) RETRY with the fix
-3. You have permission to install any missing library without asking.
-4. Write robust, multi-line code with error handling.
-5. ALWAYS wrap code in try/except blocks.
-6. For complex tasks, break into multiple steps:
-   - Step 1: Install dependencies
-   - Step 2: Write script to file
-   - Step 3: Execute script
-   - Step 4: Parse/return results
-   
-   CODE STANDARDS (CRITICAL):
-   1. NEVER write single-line loops or "with" statements. They cause SyntaxErrors.
-   2. ALWAYS use proper newlines and 4-space indentation.
-   3. Write the script exactly as you would in a .py file.
-        If you are asked to do something you don't have a specific tool for (e.g., "Check internet speed", "Scrape website"), you must BUILD it using the terminal tools.
-        1. Install dependencies (pip install ...)
-        2. Write the script if necessary.
-        3. Run the command.
-
-        RESPONSE FORMAT:
-        Return a JSON object with a "steps" key containing a list of steps.
-        {{
-        "steps": [
-            {{
-            "id": "S1",
-            "title": "Install dependencies",
-            "agent": "ProtoAgent_Worker_instance_1",
-            "tool": "execute_terminal_command",
-            "args": {{ "command": "pip install speedtest-cli" }}
-            }},
-            {{
-            "id": "S2",
-            "title": "Run tool",
-            "agent": "ProtoAgent_Worker_instance_1",
-            "tool": "execute_terminal_command",
-            "args": {{ "command": "speedtest-cli --simple" }}
-            }}
-        ]
-        }}
-        """
-        return prompt
-
     def _llm_plan_decomposition(self, high_level_goal: str, **kwargs) -> Tuple[str, Optional[str], Dict[str, Any], float]:
         """
         Production-grade plan decomposition with robust JSON handling and guardrails.
@@ -8220,14 +7897,8 @@ TOOLSMITH MODE (Self-Evolution):
                 self._log_agent_activity("PLAN_ENV_ERROR", self.name, msg, level="error")
                 return "failed", msg, {"summary": msg}, 0.0
 
-            # ---------- 2) Prompt (UPDATED FOR TOOLSMITH) ----------
-            # Use our new, strict prompt builder
-            m_type = kwargs.get("mission_type", "general_planning")
-            comp = kwargs.get("complexity", 0.5)
-            prompt = self._build_planning_system_prompt(m_type, comp)
-            
-            # Add the specific goal for this run
-            prompt += f"\n\nCURRENT GOAL: {goal_str}\nPlan the steps:"
+            # ---------- 2) Prompt ----------
+            prompt = build_plan_prompt(goal_str, available_agents, tool_instructions)
 
             # ---------- 3) LLM call helper ----------
             def _chat_json(prompt_text: str, strict_json: bool, temperature: float) -> str:

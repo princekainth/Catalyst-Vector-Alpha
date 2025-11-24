@@ -1,0 +1,11 @@
+{
+  "mission_type": "system_inspection",
+  "description": "Inspect the sandbox environment and report system details",
+  "priority": "high",
+  "tasks": [
+    "Check what operating system is running",
+    "Verify Python installation and version",
+    "List installed packages",
+    "Check available disk space"
+  ]
+}

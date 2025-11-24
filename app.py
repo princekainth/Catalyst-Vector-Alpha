@@ -18,6 +18,14 @@ import threading
 from threading import Thread, Lock
 from collections import deque
 from typing import Dict, Any, Optional, Tuple
+from notify_agent import ProtoAgent_Notifier
+import gmail_agent
+import threading
+import gmail_agent
+import threading
+from flask import Response
+import time
+from flask_cors import CORS
 
 # --- Environment --------------------------------------------------------------
 try:
@@ -50,7 +58,6 @@ except ImportError as e:
 
 # Register all tools into the global singleton registry (lazy module import, no function imports)
 import tools  # the module only
-tools.register_tools_into(tool_registry)
 
 # --- Globals ------------------------------------------------------------------
 API_KEY = os.getenv("CATALYST_API_KEY", "your-secret-key")
@@ -75,13 +82,29 @@ plan_lock = Lock()
 _runner = MissionRunner(PROM, K8S, POL, mem_kernel=None)
 
 # --- Logger -------------------------------------------------------------------
+# --- Logger -------------------------------------------------------------------
 logger = logging.getLogger("CatalystLogger")
-if not logger.handlers:
-    logger.setLevel(logging.INFO)
-    console_handler = logging.StreamHandler(sys.stdout)
-    formatter = logging.Formatter("[%(asctime)s] [%(levelname)s] %(message)s", "%H:%M:%S")
-    console_handler.setFormatter(formatter)
-    logger.addHandler(console_handler)
+logger.setLevel(logging.INFO)
+
+# Remove duplicate handlers if any
+logger.handlers = []
+
+# Console handler
+console_handler = logging.StreamHandler(sys.stdout)
+console_formatter = logging.Formatter("[%(asctime)s] [%(levelname)s] %(message)s", "%H:%M:%S")
+console_handler.setFormatter(console_formatter)
+logger.addHandler(console_handler)
+
+# File handler - ALWAYS add this
+os.makedirs("logs", exist_ok=True)
+file_handler = logging.FileHandler("logs/catalyst.log", mode='a')
+file_formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+file_handler.setFormatter(file_formatter)
+file_handler.setLevel(logging.INFO)
+logger.addHandler(file_handler)
+
+# Confirmation print
+print(f"✅ Logging enabled: Console + File (logs/catalyst.log)")
 
 # --- UI Broadcast Handler -----------------------------------------------------
 class UIBroadcastHandler(logging.Handler):
@@ -333,9 +356,14 @@ def get_task_status(task_id):
 
 @app.route('/api/event_stream')
 def get_event_stream():
-    with events_lock:
-        events_copy = list(LIVE_EVENTS)
-    return jsonify(events_copy), 200
+    def generate():
+        while True:
+            with events_lock:
+                if LIVE_EVENTS:
+                    event = LIVE_EVENTS.pop(0)
+                    yield f"data: {json.dumps(event)}\n\n"
+            time.sleep(1)
+    return Response(generate(), mimetype='text/event-stream')
 
 # --- Routes: System Metrics & Insights ---------------------------------------
 @app.route('/api/system_metrics')
@@ -369,6 +397,33 @@ def debug_tasks():
     with tasks_lock:
         snapshot = dict(tasks)
     return jsonify({"status": "ok", "data": snapshot}), 200
+
+@app.route('/api/health/detailed')
+def health_check():
+    """Health endpoint for monitoring CVA status."""
+    try:
+        from database import cva_db
+        
+        # Get tool stats
+        tool_stats = cva_db.get_tool_stats()
+        task_stats = cva_db.get_task_stats()
+        
+        # Get swarm state
+        swarm = cva_db.load_full_swarm_state() or {}
+        agents = list(swarm.get('agent_instances', {}).keys())
+        
+        return jsonify({
+            "status": "healthy",
+            "running": swarm.get('is_running', False),
+            "paused": swarm.get('is_paused', False),
+            "cycle": swarm.get('current_action_cycle_id', 'Unknown'),
+            "agents": agents,
+            "agent_count": len(agents),
+            "tool_stats": tool_stats,
+            "task_stats": task_stats
+        }), 200
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e)}), 500
 
 # --- Routes: Mission Runner (threshold scaling helper) -----------------------
 @app.post("/api/mission/scale_cpu")
@@ -604,8 +659,109 @@ def api_prom_query():
     return jsonify(res), 200
 
 # --- Main ---------------------------------------------------------------------
+
+@app.route('/api/agents/factory', methods=['GET'])
+def get_factory_status():
+    """Get Agent Factory status and metrics."""
+    try:
+        factory = system_instance.agent_factory
+        guardian = system_instance.guardian
+
+        return jsonify({
+            "active_agents": factory.list_active(),
+            "metrics": guardian.get_metrics(),
+            "last_health_check": guardian.health_check()
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/agents/semantic-tools', methods=['POST'])
+def get_semantic_tool_suggestions():
+    """Get semantically matched tools for a given purpose (debugging endpoint)."""
+    try:
+        data = request.json
+        purpose = data.get('purpose', '')
+        if not purpose:
+            return jsonify({"error": "purpose is required"}), 400
+
+        factory = system_instance.agent_factory
+        suggestions = factory.get_semantic_suggestions(purpose)
+        return jsonify(suggestions)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/agents/spawn', methods=['POST'])
+def spawn_agent_api():
+    """Manually spawn an agent via API for testing."""
+    try:
+        data = request.json
+        purpose = data.get('purpose', 'Test agent')
+        context = data.get('context', {})
+
+        result = system_instance.handle_spawn_request(
+            purpose=purpose,
+            context=context,
+            parent_agent="api_manual"
+        )
+
+        # Check if result is a validation error dict
+        if isinstance(result, dict):
+            # Validation failed - return error with suggestions
+            return jsonify({
+                "success": False,
+                "error": result.get("error", "Unknown error"),
+                "suggestions": result.get("suggestions", []),
+                "hint": result.get("hint", "")
+            }), 400
+
+        # Success - result is agent_id string
+        if result:
+            return jsonify({"success": True, "agent_id": result})
+
+        return jsonify({"success": False, "error": "Spawn failed"}), 500
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/agents/task', methods=['POST'])
+def assign_agent_task():
+    """Give a dynamic agent a specific task to execute"""
+    data = request.get_json()
+    agent_id = data.get('agent_id')
+    task_description = data.get('task')
+    
+    if not agent_id or not task_description:
+        return jsonify({"error": "Missing agent_id or task"}), 400
+    
+    # Get agent from factory
+    agent = system_instance.agent_factory.active_agents.get(agent_id)
+    if not agent:
+        return jsonify({"error": f"Agent {agent_id} not found"}), 404
+    
+    try:
+        # Create a task directive for the agent
+        result = agent.execute_task({"description": task_description})
+        
+        return jsonify({
+            "success": True,
+            "agent_id": agent_id,
+            "agent_name": agent.name,
+            "task": task_description,
+            "result": result
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 if __name__ == '__main__':
-    # Start CVA loop in a background thread
+    
+    logger.info("[app.py] Starting GmailAgent loop in a background thread...")
+    gmail_thread = threading.Thread(target=gmail_agent.main_loop, daemon=True)
+    
+    gmail_thread.start()
+    logger.info("[app.py] GmailAgent is now running in the background.")
+    # ----------------------------------------------------------
+
+    # Start CVA loop in a background thread (This is your original code)
     system_thread = Thread(target=run_catalyst_system_in_background, daemon=True)
     system_thread.start()
 

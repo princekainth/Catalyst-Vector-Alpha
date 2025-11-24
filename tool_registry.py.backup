@@ -575,6 +575,9 @@ class ToolRegistry:
 
             Tool("redact_pii", "Redact PII from text.", REDACT_PII_PARAMS, _tf("redact_pii_tool"),
                  validator=lambda a: not _is_placeholder(a.get("text")), task_type="GenericTask", roles_allowed={"Planner","Observer"}),
+            Tool("generate_report_pdf", "Create a multi-section PDF report.", GENERATE_REPORT_PDF_PARAMS, _tf("generate_report_pdf_tool"),
+                 validator=lambda a: bool(a.get("sections")) and isinstance(a["sections"], list),
+                 task_type="GenericTask", roles_allowed={"Planner","Worker"}),
 
             # World/Memory
             Tool("update_world_model", "Updates the swarm's shared world-state.", UPDATE_WORLD_MODEL_PARAMS, _tf("update_world_model_tool"),
@@ -616,42 +619,6 @@ class ToolRegistry:
                                       and isinstance(a.get("start_s"), int) and isinstance(a.get("end_s"), int)
                                       and a["end_s"] > a["start_s"] and (a.get("step_s", 15) >= 1)),
                  cooldown_seconds=2.0, task_type="Observation", roles_allowed={"Observer", "Planner"}),
-
-            Tool("send_desktop_notification", "Send a desktop notification to the user.", 
-                {"title": {"type": "string"}, "message": {"type": "string"}}, 
-                _tf("send_desktop_notification_tool"),
-                task_type="Notification", 
-                roles_allowed={"Notifier", "Planner", "Security"}),
-            
-            Tool("check_calendar", "Check Google Calendar for events in a time range.", 
-                 {"time_min_utc": {"type": "string"}, "time_max_utc": {"type": "string"}},
-                 _tf("check_calendar_tool"),
-                 task_type="InformationRetrieval",
-                 roles_allowed={"Planner", "Observer"}),
-
-            Tool("find_wasteful_deployments", "Find Kubernetes deployments with low resource utilization.",
-                 {"namespace": {"type": "string", "default": "default"}},
-                 _tf("find_wasteful_deployments_tool"),
-                 task_type="Observation",
-                 roles_allowed={"Observer", "Worker"}),
-
-            Tool("get_tool_usage_stats", "Get statistics on tool usage.",
-                 {},
-                 _tf("get_tool_usage_stats_tool"),
-                 task_type="Observation",
-                 roles_allowed={"Observer", "Planner"}),
-
-            Tool("list_available_tools", "List all available tools in the registry.",
-                 {},
-                 _tf("list_available_tools_tool"),
-                 task_type="Observation",
-                 roles_allowed={"Planner", "Observer"}),
-
-            Tool("tool_health_check", "Check health status of all tools.",
-                 {},
-                 _tf("tool_health_check_tool"),
-                 task_type="Observation",
-                 roles_allowed={"Observer", "Security"}),
 
             # Policy eval
             Tool("policy_eval", "Evaluate a threshold rule (approval, cooldown, budgets) against a metric value.", POLICY_EVAL_PARAMS,

@@ -1,0 +1,356 @@
+{
+  "RunType": "HTTP",
+  "Labels": "cva-baseline-3k",
+  "StartTime": "2025-10-09T01:41:34.776448879Z",
+  "RequestedQPS": "3000",
+  "RequestedDuration": "2m0s",
+  "ActualQPS": 2999.932889626301,
+  "ActualDuration": 120002684475,
+  "NumThreads": 60,
+  "Version": "1.72.0",
+  "DurationHistogram": {
+    "Count": 360000,
+    "Min": 0.00006546,
+    "Max": 0.036012907,
+    "Sum": 85.71797397200005,
+    "Avg": 0.0002381054832555557,
+    "StdDev": 0.0004523955247186115,
+    "Data": [
+      {
+        "Start": 0.00006546,
+        "End": 0.001,
+        "Percent": 99.87666666666667,
+        "Count": 359556
+      },
+      {
+        "Start": 0.001,
+        "End": 0.002,
+        "Percent": 99.9563888888889,
+        "Count": 287
+      },
+      {
+        "Start": 0.002,
+        "End": 0.003,
+        "Percent": 99.97361111111111,
+        "Count": 62
+      },
+      {
+        "Start": 0.003,
+        "End": 0.004,
+        "Percent": 99.97666666666667,
+        "Count": 11
+      },
+      {
+        "Start": 0.004,
+        "End": 0.005,
+        "Percent": 99.97944444444444,
+        "Count": 10
+      },
+      {
+        "Start": 0.005,
+        "End": 0.006,
+        "Percent": 99.98027777777777,
+        "Count": 3
+      },
+      {
+        "Start": 0.006,
+        "End": 0.007,
+        "Percent": 99.98055555555555,
+        "Count": 1
+      },
+      {
+        "Start": 0.014,
+        "End": 0.016,
+        "Percent": 99.98222222222222,
+        "Count": 6
+      },
+      {
+        "Start": 0.02,
+        "End": 0.025,
+        "Percent": 99.98694444444445,
+        "Count": 17
+      },
+      {
+        "Start": 0.03,
+        "End": 0.035,
+        "Percent": 99.99138888888889,
+        "Count": 16
+      },
+      {
+        "Start": 0.035,
+        "End": 0.036012907,
+        "Percent": 100,
+        "Count": 31
+      }
+    ],
+    "Percentiles": [
+      {
+        "Percentile": 50,
+        "Value": 0.0005333057133401009
+      },
+      {
+        "Percentile": 75,
+        "Value": 0.0007672298695887973
+      },
+      {
+        "Percentile": 90,
+        "Value": 0.0009075843633380151
+      },
+      {
+        "Percentile": 99,
+        "Value": 0.0009917970595875456
+      },
+      {
+        "Percentile": 99.9,
+        "Value": 0.0012926829268293293
+      }
+    ]
+  },
+  "ErrorsDurationHistogram": {
+    "Count": 24,
+    "Min": 0.001086618,
+    "Max": 0.036002277,
+    "Sum": 0.477622656,
+    "Avg": 0.019900944,
+    "StdDev": 0.01716843234968419,
+    "Data": [
+      {
+        "Start": 0.001086618,
+        "End": 0.002,
+        "Percent": 45.833333333333336,
+        "Count": 11
+      },
+      {
+        "Start": 0.035,
+        "End": 0.036002277,
+        "Percent": 100,
+        "Count": 13
+      }
+    ],
+    "Percentiles": [
+      {
+        "Percentile": 50,
+        "Value": 0.03507709823076923
+      },
+      {
+        "Percentile": 75,
+        "Value": 0.03553968761538462
+      },
+      {
+        "Percentile": 90,
+        "Value": 0.03581724124615385
+      },
+      {
+        "Percentile": 99,
+        "Value": 0.03598377342461538
+      },
+      {
+        "Percentile": 99.9,
+        "Value": 0.03600042664246154
+      }
+    ]
+  },
+  "Exactly": 0,
+  "Jitter": false,
+  "Uniform": false,
+  "NoCatchUp": false,
+  "RunID": 0,
+  "AccessLoggerInfo": "",
+  "ID": "2025-10-09-014134_cva_baseline_3k",
+  "RetCodes": {
+    "-1": 24,
+    "200": 359976
+  },
+  "IPCountMap": {
+    "10.107.186.22:80": 444
+  },
+  "Insecure": false,
+  "MTLS": false,
+  "CACert": "",
+  "Cert": "",
+  "Key": "",
+  "UnixDomainSocket": "",
+  "URL": "http://nginx.default.svc.cluster.local/",
+  "NumConnections": 1,
+  "Compression": false,
+  "DisableFastClient": false,
+  "HTTP10": false,
+  "H2": false,
+  "DisableKeepAlive": false,
+  "AllowHalfClose": false,
+  "FollowRedirects": false,
+  "Resolve": "",
+  "HTTPReqTimeOut": 3000000000,
+  "UserCredentials": "",
+  "ContentType": "",
+  "Payload": "",
+  "MethodOverride": "",
+  "LogErrors": true,
+  "SequentialWarmup": false,
+  "ConnReuseRange": [
+    0,
+    0
+  ],
+  "NoResolveEachConn": false,
+  "Offset": 0,
+  "Resolution": 0.001,
+  "Sizes": {
+    "Count": 360000,
+    "Min": 0,
+    "Max": 853,
+    "Sum": 307057878,
+    "Avg": 852.93855,
+    "StdDev": 6.966089809275059,
+    "Data": [
+      {
+        "Start": 0,
+        "End": 0,
+        "Percent": 0.006666666666666667,
+        "Count": 24
+      },
+      {
+        "Start": 800,
+        "End": 853,
+        "Percent": 100,
+        "Count": 359976
+      }
+    ]
+  },
+  "HeaderSizes": {
+    "Count": 360000,
+    "Min": 0,
+    "Max": 238,
+    "Sum": 85672638,
+    "Avg": 237.97955,
+    "StdDev": 1.9490421059684058,
+    "Data": [
+      {
+        "Start": 0,
+        "End": 0,
+        "Percent": 0.006666666666666667,
+        "Count": 24
+      },
+      {
+        "Start": 225,
+        "End": 238,
+        "Percent": 100,
+        "Count": 359976
+      }
+    ]
+  },
+  "Sockets": [
+    7,
+    7,
+    7,
+    9,
+    7,
+    7,
+    7,
+    7,
+    8,
+    7,
+    7,
+    11,
+    11,
+    8,
+    7,
+    7,
+    7,
+    7,
+    7,
+    7,
+    7,
+    7,
+    7,
+    7,
+    8,
+    7,
+    7,
+    7,
+    7,
+    7,
+    9,
+    8,
+    8,
+    7,
+    7,
+    7,
+    7,
+    7,
+    7,
+    7,
+    7,
+    7,
+    7,
+    7,
+    7,
+    7,
+    9,
+    7,
+    7,
+    7,
+    7,
+    7,
+    7,
+    9,
+    8,
+    7,
+    7,
+    7,
+    7,
+    9
+  ],
+  "SocketCount": 444,
+  "ConnectionStats": {
+    "Count": 444,
+    "Min": 0.000067331,
+    "Max": 0.018156394,
+    "Sum": 0.09041420999999995,
+    "Avg": 0.000203635608108108,
+    "StdDev": 0.0008623235413197363,
+    "Data": [
+      {
+        "Start": 0.000067331,
+        "End": 0.001,
+        "Percent": 99.54954954954955,
+        "Count": 442
+      },
+      {
+        "Start": 0.001,
+        "End": 0.002,
+        "Percent": 99.77477477477477,
+        "Count": 1
+      },
+      {
+        "Start": 0.018000000000000002,
+        "End": 0.018156394,
+        "Percent": 100,
+        "Count": 1
+      }
+    ],
+    "Percentiles": [
+      {
+        "Percentile": 50,
+        "Value": 0.000534722947845805
+      },
+      {
+        "Percentile": 75,
+        "Value": 0.0007694763696145124
+      },
+      {
+        "Percentile": 90,
+        "Value": 0.0009103284226757369
+      },
+      {
+        "Percentile": 99,
+        "Value": 0.0009948396545124715
+      },
+      {
+        "Percentile": 99.9,
+        "Value": 0.018086955064000005
+      }
+    ]
+  },
+  "AbortOn": 0
+}
+pod "ft-json-3k" deleted from default namespace

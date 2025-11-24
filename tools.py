@@ -1,5 +1,4 @@
-# tools.py — clean, circular-import-safe tool implementations + lazy registration
-
+# tools.py — robust, production-ready tool implementations
 from __future__ import annotations
 
 import os
@@ -14,42 +13,246 @@ import logging
 import hashlib
 import subprocess
 import shlex
-from typing import Any, Dict, List, Optional, Tuple, Callable
+import tempfile
+from typing import Any, Dict, List, Optional, Tuple, Callable, Union
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
-from ipaddress import ip_address
+from ipaddress import ip_address, IPv4Address
+import threading
+from concurrent.futures import ThreadPoolExecutor
+# Import sandbox tools so registry can find them
+from sandbox_tools import execute_terminal_command as execute_terminal_command_tool
+from sandbox_tools import write_sandbox_file as write_sandbox_file_tool
+import functools 
+from functools import lru_cache
+from time import sleep
+# Third-party imports with graceful fallbacks
+try:
+    from ddgs import DDGS
+except ImportError:
+    DDGS = None
 
-# Optional deps (guarded)
 try:
     import requests
-except Exception:
-    requests = None  # handled in code
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
+    REQUESTS_AVAILABLE = True
+except ImportError:
+    requests = None
+    REQUESTS_AVAILABLE = False
 
 try:
     from bs4 import BeautifulSoup
-except Exception:
-    BeautifulSoup = None  # handled in code
+    BEAUTIFULSOUP_AVAILABLE = True
+except ImportError:
+    BeautifulSoup = None
+    BEAUTIFULSOUP_AVAILABLE = False
 
 try:
     from fpdf import FPDF
-except Exception:
+    FPDF_AVAILABLE = True
+except ImportError:
     FPDF = None
+    FPDF_AVAILABLE = False
 
 try:
     from transformers import pipeline as _hf_pipeline
-except Exception:
+    TRANSFORMERS_AVAILABLE = True
+except ImportError:
     _hf_pipeline = None
+    TRANSFORMERS_AVAILABLE = False
 
+try:
+    from googleapiclient.discovery import build
+    from google_auth import authenticate_google_services
+    GOOGLE_APIS_AVAILABLE = True
+except ImportError:
+    build = None
+    authenticate_google_services = None
+    GOOGLE_APIS_AVAILABLE = False
+
+# Local imports
+try:
+    from sandbox_tools import execute_terminal_command, write_sandbox_file
+    SANDBOX_AVAILABLE = True
+except ImportError:
+    execute_terminal_command = None
+    write_sandbox_file = None
+    SANDBOX_AVAILABLE = False
+
+class ToolCache:
+    """Simple TTL cache for expensive tool results."""
+    def __init__(self):
+        self._cache = {}
+        self._ttl = {}
+    
+    def get(self, key: str, max_age: int = 300):
+        """Get cached value if not expired (default 5 min)."""
+        if key in self._cache:
+            if time.time() - self._ttl[key] < max_age:
+                return self._cache[key]
+        return None
+    
+    def set(self, key: str, value):
+        """Cache a value."""
+        self._cache[key] = value
+        self._ttl[key] = time.time()
+    
+    def clear(self):
+        """Clear all cache."""
+        self._cache.clear()
+        self._ttl.clear()
+
+_tool_cache = ToolCache()
+
+
+def retry_on_failure(max_retries: int = 3, delay: float = 1.0, backoff: float = 2.0):
+    """Decorator to retry failed tool executions."""
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            last_error = None
+            current_delay = delay
+            
+            for attempt in range(max_retries):
+                try:
+                    result = func(*args, **kwargs)
+                    # Check if result indicates failure
+                    if isinstance(result, dict) and result.get('ok') == False:
+                        raise Exception(result.get('error', 'Unknown error'))
+                    return result
+                except Exception as e:
+                    last_error = e
+                    if attempt < max_retries - 1:
+                        logger.warning(f"Retry {attempt + 1}/{max_retries} for {func.__name__}: {e}")
+                        sleep(current_delay)
+                        current_delay *= backoff
+            
+            # All retries failed
+            logger.error(f"All {max_retries} retries failed for {func.__name__}: {last_error}")
+            return {"ok": False, "error": f"Failed after {max_retries} retries: {last_error}"}
+        return wrapper
+    return decorator
 
 # ------------------------------------------------------------------------------
-# Logging
+# Configuration & Constants
+# ------------------------------------------------------------------------------
+class ToolConfig:
+    """Central configuration for all tools"""
+    KUBECTL_TIMEOUT = 15
+    REQUEST_TIMEOUT = 12
+    SCALE_MIN_INTERVAL = float(os.getenv("CVA_SCALE_MIN_INTERVAL_S", "300"))
+    MAX_PROCESS_LIMIT = 100
+    MAX_FILE_SIZE_MB = 50
+    MAX_WEBPAGE_SIZE = 8000
+    MAX_SEARCH_RESULTS = 5
+    
+    # Security limits
+    MAX_SCAN_TARGETS = 10
+    MAX_HASH_TEXT_SIZE = 10 * 1024 * 1024  # 10MB
+    
+    @classmethod
+    def validate(cls):
+        """Validate configuration on startup"""
+        if cls.SCALE_MIN_INTERVAL < 0:
+            raise ValueError("SCALE_MIN_INTERVAL must be positive")
+        if cls.MAX_PROCESS_LIMIT <= 0:
+            raise ValueError("MAX_PROCESS_LIMIT must be positive")
+        return True
+
+# ------------------------------------------------------------------------------
+# Logging Setup
 # ------------------------------------------------------------------------------
 logger = logging.getLogger("CatalystLogger")
 
+# ------------------------------------------------------------------------------
+# Utility Classes & Helpers
+# ------------------------------------------------------------------------------
+class ToolUsageTracker:
+    """Thread-safe tool usage tracking"""
+    def __init__(self):
+        self._lock = threading.RLock()
+        self._stats: Dict[str, int] = {}
+        self._errors: Dict[str, int] = {}
+    
+    def track_usage(self, tool_name: str, success: bool = True, execution_time: float = 0.0, error: str = None):
+        with self._lock:
+            self._stats[tool_name] = self._stats.get(tool_name, 0) + 1
+            if not success:
+                self._errors[tool_name] = self._errors.get(tool_name, 0) + 1
+        # Log to database
+        try:
+            from database import cva_db
+            cva_db.record_tool_usage(tool_name, success, execution_time, error)
+        except Exception:
+            pass  # Don't break tools if DB fails
+
+    def get_stats(self) -> Dict[str, Any]:
+        with self._lock:
+            total_calls = sum(self._stats.values())
+            error_count = sum(self._errors.values())
+            error_rate = error_count / max(1, total_calls)
+            return {
+                "usage": dict(self._stats),
+                "errors": dict(self._errors),
+                "total_calls": total_calls,
+                "error_rate": round(error_rate, 4)
+            }
+
+# Global tracker instance
+_usage_tracker = ToolUsageTracker()
+
+class SafeSubprocess:
+    """Safe subprocess execution with timeouts and error handling"""
+    
+    @staticmethod
+    def run(cmd: List[str], timeout: float = 10, **kwargs) -> Tuple[bool, str, str]:
+        """Execute command safely with timeout"""
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,  # We'll handle non-zero returns
+                **kwargs
+            )
+            return True, result.stdout, result.stderr
+        except subprocess.TimeoutExpired:
+            return False, "", f"Command timed out after {timeout}s"
+        except FileNotFoundError:
+            return False, "", f"Command not found: {cmd[0]}"
+        except Exception as e:
+            return False, "", f"Subprocess error: {str(e)}"
+    
+    @staticmethod
+    def check_available(command: str) -> bool:
+        """Check if a command is available in PATH"""
+        return shutil.which(command) is not None
+
+class RetrySession:
+    """HTTP session with retry logic"""
+    
+    @staticmethod
+    def create_session(retries: int = 3, backoff_factor: float = 0.5):
+        """Create requests session with retry logic"""
+        if not REQUESTS_AVAILABLE:
+            return None
+            
+        session = requests.Session()
+        retry_strategy = Retry(
+            total=retries,
+            backoff_factor=backoff_factor,
+            status_forcelist=[429, 500, 502, 503, 504],
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        return session
 
 # ------------------------------------------------------------------------------
-# Small helpers
+# Core Utilities
 # ------------------------------------------------------------------------------
 _PLACEHOLDERS = {"", " ", "string", "placeholder", "tbd", "todo", "none", "null", "n/a", "na", "<placeholder>"}
 
@@ -69,9 +272,25 @@ def _valid_url(url: str) -> bool:
     except Exception:
         return False
 
+def _validate_integer(value: Any, min_val: Optional[int] = None, max_val: Optional[int] = None) -> Optional[str]:
+    """Validate integer with optional min/max bounds"""
+    try:
+        int_val = int(value)
+        if min_val is not None and int_val < min_val:
+            return f"Value must be >= {min_val}"
+        if max_val is not None and int_val > max_val:
+            return f"Value must be <= {max_val}"
+        return None
+    except (ValueError, TypeError):
+        return "Value must be an integer"
+
 def standardize_response(status: str, data: Any = None, error: str | None = None, **meta) -> dict:
-    """Consistent response wrapper across tools."""
-    res = {"status": status, "timestamp": _now_iso()}
+    """Consistent response wrapper across all tools"""
+    res = {
+        "status": status, 
+        "timestamp": _now_iso(),
+        "success": status.lower() in ("ok", "success")
+    }
     if data is not None:
         res["data"] = data
     if error:
@@ -80,9 +299,8 @@ def standardize_response(status: str, data: Any = None, error: str | None = None
         res.update(meta)
     return res
 
-
 # ------------------------------------------------------------------------------
-# Validators (used during registration by the central registry)
+# Validators
 # ------------------------------------------------------------------------------
 def _v_url(field: str) -> Callable[[Dict[str, Any]], Optional[str]]:
     def _v(args: Dict[str, Any]) -> Optional[str]:
@@ -116,7 +334,6 @@ def _v_has_namespace(args: dict) -> Optional[str]:
     return None if ns and not _is_placeholder(ns) else "'namespace' is required"
 
 def _v_k8s_scale_args(args: dict) -> Optional[str]:
-    # must have deployment or alias 'name' and replicas>=1
     name = args.get("deployment") or args.get("name")
     if not (isinstance(name, str) and name.strip() and not _is_placeholder(name)):
         return "either 'deployment' or 'name' is required"
@@ -128,119 +345,191 @@ def _v_k8s_scale_args(args: dict) -> Optional[str]:
         return "'replicas' must be an integer"
     return None
 
-
 # ------------------------------------------------------------------------------
-# Prometheus helpers
+# Prometheus Helpers
 # ------------------------------------------------------------------------------
 def _prom_url() -> Optional[str]:
     return os.getenv("PROMETHEUS_URL")
 
 def _prom_request(path: str, params: Dict[str, Any], timeout: float = 10.0) -> dict:
-    if requests is None:
+    if not REQUESTS_AVAILABLE:
         return standardize_response("error", error="python-requests not installed")
+    
     base = _prom_url()
     if not base:
         return standardize_response("error", error="PROMETHEUS_URL not set")
+    
+    session = RetrySession.create_session()
     try:
-        r = requests.get(f"{base.rstrip('/')}{path}", params=params, timeout=timeout)
-        r.raise_for_status()
-        return standardize_response("ok", data=r.json())
+        url = f"{base.rstrip('/')}{path}"
+        if session:
+            response = session.get(url, params=params, timeout=timeout)
+        else:
+            response = requests.get(url, params=params, timeout=timeout)
+        response.raise_for_status()
+        return standardize_response("ok", data=response.json())
     except Exception as e:
-        return standardize_response("error", error=str(e))
-
+        return standardize_response("error", error=f"Prometheus request failed: {str(e)}")
 
 # ------------------------------------------------------------------------------
-# Tool implementations
+# Tool Implementations
 # ------------------------------------------------------------------------------
 
-# ---- System / Local ----------------------------------------------------------
+# ---- System / Local Tools ----
 def get_system_cpu_load_tool(time_interval_seconds: float = 0.5, samples: int = 3, per_core: bool = False) -> dict:
-    # clamp
-    interval = max(0.0, min(float(time_interval_seconds), 5.0))
-    samples = max(1, min(int(samples), 5))
+    """Get system CPU load with configurable sampling"""
+    _usage_tracker.track_usage("get_system_cpu_load_tool")
+    
+    # Input validation
+    interval = max(0.1, min(float(time_interval_seconds), 5.0))
+    samples = max(1, min(int(samples), 10))
+    
     try:
         readings: List[Any] = []
         for _ in range(samples):
             readings.append(psutil.cpu_percent(interval=interval, percpu=per_core))
+        
         if per_core:
             cores = len(readings[0]) if readings else 0
-            averaged = [round(sum(s[i] for s in readings)/len(readings), 2) for i in range(cores)]
+            averaged = [round(sum(s[i] for s in readings) / len(readings), 2) for i in range(cores)]
             data = averaged
-            summary = f"Per-core CPU: {averaged}"
+            summary = f"Per-core CPU load: {averaged}"
         else:
             avg = sum(readings) / len(readings)
             data = round(float(avg), 2)
-            summary = f"CPU load: {data}%"
+            summary = f"System CPU load: {data}%"
+        
         return standardize_response("ok", data=data, summary=summary, unit="percent")
     except Exception as e:
+        _usage_tracker.track_usage("get_system_cpu_load_tool", success=False)
         return standardize_response("error", error=str(e), summary="Failed to get CPU load")
 
 def get_system_resource_usage_tool() -> dict:
+    """Get comprehensive system resource usage"""
+    _usage_tracker.track_usage("get_system_resource_usage_tool")
+    
     try:
         cpu = psutil.cpu_percent(interval=0.5)
-        mem = psutil.virtual_memory().percent
-        return standardize_response("ok", data={"cpu_percent": cpu, "memory_percent": mem},
-                                    summary=f"CPU {cpu}%, MEM {mem}%")
+        memory = psutil.virtual_memory()
+        disk = psutil.disk_usage('/')
+        load_avg = os.getloadavg() if hasattr(os, 'getloadavg') else None
+        
+        data = {
+            "cpu_percent": cpu,
+            "memory_percent": memory.percent,
+            "memory_used_gb": round(memory.used / (1024**3), 2),
+            "memory_total_gb": round(memory.total / (1024**3), 2),
+            "disk_percent": disk.percent,
+            "disk_used_gb": round(disk.used / (1024**3), 2),
+            "disk_total_gb": round(disk.total / (1024**3), 2),
+            "load_average": load_avg
+        }
+        
+        summary = f"CPU: {cpu}%, Memory: {memory.percent}%, Disk: {disk.percent}%"
+        return standardize_response("ok", data=data, summary=summary)
     except Exception as e:
-        return standardize_response("error", error=str(e), summary="resource usage failure")
+        _usage_tracker.track_usage("get_system_resource_usage_tool", success=False)
+        return standardize_response("error", error=str(e), summary="Resource usage check failed")
 
 def disk_usage_tool(path: str = "/") -> dict:
+    """Get disk usage for specified path"""
+    _usage_tracker.track_usage("disk_usage_tool")
+    
+    if not path or _is_placeholder(path):
+        return standardize_response("error", error="Path cannot be empty", data={"path": path})
+    
     try:
         u = psutil.disk_usage(path)
-        return standardize_response(
-            "ok",
-            data={"path": path, "total_bytes": u.total, "used_bytes": u.used, "free_bytes": u.free, "percent": u.percent},
-            summary=f"{path}: {u.percent}% used",
-        )
+        data = {
+            "path": path,
+            "total_bytes": u.total,
+            "used_bytes": u.used,
+            "free_bytes": u.free,
+            "percent": u.percent,
+            "total_gb": round(u.total / (1024**3), 2),
+            "used_gb": round(u.used / (1024**3), 2),
+            "free_gb": round(u.free / (1024**3), 2)
+        }
+        return standardize_response("ok", data=data, summary=f"{path}: {u.percent}% used")
     except Exception as e:
-        return standardize_response("error", error=f"disk_usage_tool failed: {e}", data={"path": path})
+        _usage_tracker.track_usage("disk_usage_tool", success=False)
+        return standardize_response("error", error=f"Disk usage check failed: {e}", data={"path": path})
 
-def top_processes_tool(limit: int = 10) -> dict:
-    """Return top processes by CPU% (dict form)."""
+def top_processes_tool(limit: int = 10, sort_by: str = "cpu") -> dict:
+    """Get top processes by CPU or memory usage"""
+    _usage_tracker.track_usage("top_processes_tool")
+    
+    # Input validation
+    limit = max(1, min(int(limit), ToolConfig.MAX_PROCESS_LIMIT))
+    valid_sorts = {"cpu", "memory"}
+    sort_by = sort_by.lower() if sort_by.lower() in valid_sorts else "cpu"
+    
     try:
-        # warm-up for accurate cpu_percent
-        procs = [p for p in psutil.process_iter(attrs=["pid", "name"])]
+        # Warm-up for accurate cpu_percent
+        procs = [p for p in psutil.process_iter(attrs=["pid", "name", "username", "create_time"])]
         for p in procs:
             try:
                 p.cpu_percent(None)
-            except Exception:
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
                 pass
-        time.sleep(0.25)
+        
+        time.sleep(0.25)  # Allow CPU percent calculation
+        
         rows = []
         for p in procs:
             try:
-                rows.append({
-                    "pid": p.pid,
-                    "name": p.info.get("name"),
-                    "cpu_percent": p.cpu_percent(None),
-                    "memory_percent": p.memory_percent(),
-                })
-            except Exception:
+                with p.oneshot():
+                    rows.append({
+                        "pid": p.pid,
+                        "name": p.info.get("name", "Unknown"),
+                        "username": p.info.get("username", "Unknown"),
+                        "cpu_percent": p.cpu_percent(None),
+                        "memory_percent": p.memory_percent(),
+                        "memory_rss_mb": round(p.memory_info().rss / (1024**2), 2),
+                        "create_time": p.info.get("create_time", 0),
+                        "status": p.status()
+                    })
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
-        rows.sort(key=lambda r: r.get("cpu_percent") or 0.0, reverse=True)
-        rows = rows[: max(1, min(int(limit), 50))]
-        return standardize_response("ok", data={"processes": rows, "count": len(rows)},
-                                    summary=f"Top {len(rows)} processes by CPU")
+        
+        # Sort by specified field
+        reverse = True  # Descending order
+        if sort_by == "memory":
+            rows.sort(key=lambda r: r.get("memory_percent") or 0.0, reverse=reverse)
+        else:  # cpu
+            rows.sort(key=lambda r: r.get("cpu_percent") or 0.0, reverse=reverse)
+        
+        rows = rows[:limit]
+        return standardize_response("ok", data={"processes": rows, "count": len(rows), "sort_by": sort_by},
+                                  summary=f"Top {len(rows)} processes by {sort_by}")
     except Exception as e:
+        _usage_tracker.track_usage("top_processes_tool", success=False)
         return standardize_response("error", error=str(e))
 
 def measure_responsiveness_tool(**kwargs) -> dict:
-    """Rough 'open time' by timing a tiny Python run (compatible signature)."""
+    """Measure system responsiveness by timing command execution"""
+    _usage_tracker.track_usage("measure_responsiveness_tool")
+    
     try:
         start = time.time()
-        subprocess.run(["python3", "-c", "print(1)"], capture_output=True, timeout=2)
+        success, stdout, stderr = SafeSubprocess.run(["python3", "-c", "print(1)"], timeout=2)
         elapsed_ms = (time.time() - start) * 1000.0
-        return standardize_response("ok", data={"open_time_ms": round(elapsed_ms, 2), "responsive": elapsed_ms < 500})
+        
+        responsive = success and elapsed_ms < 500
+        data = {
+            "open_time_ms": round(elapsed_ms, 2),
+            "responsive": responsive,
+            "command_success": success
+        }
+        
+        return standardize_response("ok", data=data, summary=f"Responsiveness: {elapsed_ms:.2f}ms")
     except Exception as e:
+        _usage_tracker.track_usage("measure_responsiveness_tool", success=False)
         return standardize_response("error", error=str(e))
 
-
-# ---- Kubernetes --------------------------------------------------------------
+# ---- Kubernetes Tools ----
 def _parse_kubectl_top_pods(raw: str) -> List[Dict[str, Any]]:
-    """
-    Parse `kubectl top pods -A --no-headers` lines:
-    NAMESPACE NAME CPU(cores) MEMORY(bytes)
-    """
+    """Parse kubectl top pods output"""
     rows: List[Dict[str, Any]] = []
     for line in filter(None, (l.strip() for l in raw.splitlines())):
         parts = line.split()
@@ -259,8 +548,7 @@ def _parse_kubectl_top_pods(raw: str) -> List[Dict[str, Any]]:
                 if v.endswith("Mi"):  return float(v[:-2])
                 if v.endswith("Gi"):  return float(v[:-2]) * 1024.0
                 if v.endswith("Ki"):  return float(v[:-2]) / 1024.0
-                # assume bytes
-                return float(v) / (1024.0 * 1024.0)
+                return float(v) / (1024.0 * 1024.0)  # assume bytes
             except Exception:
                 return None
 
@@ -277,722 +565,844 @@ def _parse_kubectl_top_pods(raw: str) -> List[Dict[str, Any]]:
 def kubernetes_pod_metrics_tool(namespace: Optional[str] = None,
                                 selector: Optional[str] = None,
                                 limit: int = 50) -> dict:
-    """Use `kubectl top pods` for real pod metrics (needs metrics-server)."""
-    if not shutil.which("kubectl"):
-        return standardize_response("error", error="kubectl not found on PATH",
-                                    cmd="kubectl top pods -A --no-headers")
-    cmd = ["kubectl", "top", "pods"]
-    if namespace:
-        cmd += ["-n", namespace]
-    else:
-        cmd += ["-A"]
-    cmd += ["--no-headers"]
-    if selector:
-        cmd += ["-l", selector]
+    """Get Kubernetes pod metrics using kubectl top"""
+    _usage_tracker.track_usage("kubernetes_pod_metrics_tool")
+    
+    if not SafeSubprocess.check_available("kubectl"):
+        return standardize_response("error", error="kubectl not found on PATH")
+    
     try:
-        out = subprocess.check_output(cmd, text=True, timeout=8)
-        rows = _parse_kubectl_top_pods(out)
+        cmd = ["kubectl", "top", "pods", "--no-headers"]
+        if namespace:
+            cmd.extend(["-n", namespace])
+        else:
+            cmd.append("-A")
+        if selector:
+            cmd.extend(["-l", selector])
+        
+        success, stdout, stderr = SafeSubprocess.run(cmd, timeout=ToolConfig.KUBECTL_TIMEOUT)
+        if not success:
+            return standardize_response("error", error=stderr, cmd=" ".join(cmd))
+        
+        rows = _parse_kubectl_top_pods(stdout)
         if limit:
-            rows = rows[: max(1, int(limit))]
+            rows = rows[:max(1, int(limit))]
+        
         total_cpu = sum(r.get("cpu_mcores") or 0 for r in rows)
         total_mem = sum(r.get("memory_Mi") or 0.0 for r in rows)
+        
         return standardize_response(
             "ok",
-            data={"pods": rows, "count": len(rows), "total_cpu_mcores": total_cpu, "total_memory_Mi": round(total_mem, 2)},
+            data={
+                "pods": rows, 
+                "count": len(rows), 
+                "total_cpu_mcores": total_cpu, 
+                "total_memory_Mi": round(total_mem, 2)
+            },
             cmd=" ".join(shlex.quote(x) for x in cmd),
-            summary=f"{len(rows)} pods, total CPU {total_cpu}m",
+            summary=f"{len(rows)} pods, total CPU {total_cpu}m, memory {total_mem:.1f}Mi"
         )
-    except subprocess.TimeoutExpired:
-        return standardize_response("error", error="kubectl top timed out", cmd=" ".join(cmd))
-    except subprocess.CalledProcessError as e:
-        return standardize_response("error", error=f"kubectl failed: {e}", cmd=" ".join(cmd))
-
-_SCALE_MIN_INTERVAL_S = float(os.getenv("CVA_SCALE_MIN_INTERVAL_S", "300"))  # rate limit per deployment
+    except Exception as e:
+        _usage_tracker.track_usage("kubernetes_pod_metrics_tool", success=False)
+        return standardize_response("error", error=str(e))
 
 def _kubectl_json(cmd: List[str]) -> Any:
-    out = subprocess.check_output(cmd, text=True, timeout=8)
-    return json.loads(out)
+    """Execute kubectl command and return JSON result"""
+    success, stdout, stderr = SafeSubprocess.run(cmd, timeout=ToolConfig.KUBECTL_TIMEOUT)
+    if not success:
+        raise Exception(stderr)
+    return json.loads(stdout)
 
 def _get_deploy(ns: str, name: str) -> Dict[str, Any]:
+    """Get deployment JSON"""
     return _kubectl_json(["kubectl", "-n", ns, "get", "deploy", name, "-o", "json"])
 
-def k8s_scale_tool(namespace: str,
-                   deployment: str,
-                   replicas: int,
-                   dry_run: bool = True,
-                   approval_token: Optional[str] = None,
-                   min_replicas: int = 1,
-                   max_replicas: int = 10) -> dict:
-    """Safe, subprocess-based scaler with guardrails and rate limiting."""
-    # sanitize
+def find_wasteful_deployments_tool(namespace: str = "default", 
+                                   cpu_threshold: float = 5.0,
+                                   min_replicas: int = 2) -> dict:
+    """Find deployments with low CPU utilization but high replica count"""
+    _usage_tracker.track_usage("find_wasteful_deployments_tool")
+    
+    if not SafeSubprocess.check_available("kubectl"):
+        return standardize_response("error", error="kubectl not found on PATH")
+    
     try:
-        replicas = int(replicas)
-        min_replicas = int(min_replicas)
-        max_replicas = int(max_replicas)
-    except Exception:
-        return {"ok": False, "error": "replicas/min/max must be integers"}
-    if min_replicas < 0 or max_replicas < 0 or min_replicas > max_replicas:
-        return {"ok": False, "error": "invalid min/max replicas bounds"}
-    target = max(min_replicas, min(max_replicas, replicas))
-
-    # rate limit per (ns, deployment)
-    key_path = f"/tmp/cva_scale_{namespace}_{deployment}.ts"
-    try:
-        with open(key_path, "r") as f:
-            last_ts = float(f.read().strip() or "0")
-    except Exception:
-        last_ts = 0.0
-    now = time.time()
-    if now - last_ts < _SCALE_MIN_INTERVAL_S:
-        return {"ok": False, "reason": "rate_limited", "retry_in_s": round(_SCALE_MIN_INTERVAL_S - (now - last_ts), 1)}
-
-    # fetch current replicas
-    try:
-        dep = _get_deploy(namespace, deployment)
-        current = int(dep["spec"].get("replicas", 1))
-    except subprocess.CalledProcessError as e:
-        return {"ok": False, "error": f"kubectl get failed: {e}"}
+        # Get all deployments
+        cmd = ["kubectl", "-n", namespace, "get", "deployments", "-o", "json"]
+        success, stdout, stderr = SafeSubprocess.run(cmd, timeout=ToolConfig.KUBECTL_TIMEOUT)
+        if not success:
+            return standardize_response("error", error=stderr)
+        
+        data = json.loads(stdout)
+        wasteful = []
+        
+        for item in data.get("items", []):
+            name = item["metadata"]["name"]
+            replicas = item["spec"].get("replicas", 0)
+            
+            if replicas < min_replicas:
+                continue
+            
+            # Try to get pod CPU usage
+            try:
+                top_cmd = ["kubectl", "-n", namespace, "top", "pods", "-l", f"app={name}", "--no-headers"]
+                success, top_stdout, top_stderr = SafeSubprocess.run(top_cmd, timeout=5)
+                
+                if not success or not top_stdout.strip():
+                    continue
+                
+                total_cpu_millicores = 0
+                pod_count = 0
+                
+                for line in top_stdout.strip().split("\n"):
+                    if not line:
+                        continue
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        cpu_str = parts[1].replace("m", "")
+                        try:
+                            total_cpu_millicores += int(cpu_str)
+                            pod_count += 1
+                        except ValueError:
+                            continue
+                
+                if pod_count == 0:
+                    continue
+                
+                avg_cpu_millicores = total_cpu_millicores / pod_count
+                
+                if avg_cpu_millicores < cpu_threshold:
+                    waste_score = replicas * (cpu_threshold - avg_cpu_millicores)
+                    wasteful.append({
+                        "deployment": name,
+                        "namespace": namespace,
+                        "replicas": replicas,
+                        "avg_cpu_millicores": round(avg_cpu_millicores, 2),
+                        "waste_score": round(waste_score, 2),
+                        "recommended_replicas": max(1, replicas // 2)
+                    })
+                    
+            except Exception:
+                continue
+        
+        wasteful.sort(key=lambda x: x["waste_score"], reverse=True)
+        return standardize_response("ok", data={"wasteful_deployments": wasteful, "count": len(wasteful)})
+        
     except Exception as e:
-        return {"ok": False, "error": f"could not read deployment: {e}"}
+        _usage_tracker.track_usage("find_wasteful_deployments_tool", success=False)
+        return standardize_response("error", error=str(e))
 
-    plan = {
-        "namespace": namespace,
-        "deployment": deployment,
-        "current": current,
-        "target": target,
-        "min": min_replicas,
-        "max": max_replicas,
-        "dry_run": bool(dry_run),
-    }
-    if dry_run or not approval_token:
-        plan["action"] = "plan"
-        plan["note"] = "dry-run or missing approval_token"
-        return {"ok": True, **plan}
-
-    # execute
-    cmd = ["kubectl", "-n", namespace, "scale", "deploy", deployment, f"--replicas={target}"]
-    try:
-        subprocess.check_call(cmd, timeout=8)
-        try:
-            with open(key_path, "w") as f:
-                f.write(str(now))
-        except Exception:
-            pass
-        rollback = {"namespace": namespace, "deployment": deployment, "prev_replicas": current, "ts": now}
-        return {"ok": True, "action": "scaled", "rolled_from": current, "rolled_to": target,
-                "cmd": " ".join(shlex.quote(x) for x in cmd), "rollback": rollback}
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "error": "kubectl scale timed out", "cmd": " ".join(shlex.quote(x) for x in cmd)}
-    except subprocess.CalledProcessError as e:
-        return {"ok": False, "error": f"kubectl scale failed: {e}", "cmd": " ".join(shlex.quote(x) for x in cmd)}
-    except Exception as e:
-        return {"ok": False, "error": f"unexpected: {e}", "cmd": " ".join(shlex.quote(x) for x in cmd)}
-
-
-# ---- Security / Networking ---------------------------------------------------
+# ---- Security / Networking Tools ----
 _ALLOWED_SCAN_TYPES = {"ping_sweep", "full_port_scan", "vulnerability_scan"}
 
-def initiate_network_scan_tool(target_ip: str, scan_type: str = "ping_sweep") -> str:
+def initiate_network_scan_tool(target_ip: str, scan_type: str = "ping_sweep") -> dict:
+    """Initiate network security scans"""
+    _usage_tracker.track_usage("initiate_network_scan_tool")
+    
+    # Input validation
     err = _require_non_placeholder("target_ip", target_ip)
     if err:
-        return f"[ERROR] initiate_network_scan_tool: {err}"
+        return standardize_response("error", error=err)
+    
+    try:
+        ip_address(target_ip)  # Validate IP
+    except ValueError:
+        return standardize_response("error", error=f"Invalid IP address: {target_ip}")
+    
     scan_type = (scan_type or "ping_sweep").strip().lower()
     if scan_type not in _ALLOWED_SCAN_TYPES:
-        logger.warning(f"[TOOL EXEC] Unknown scan_type '{scan_type}', defaulting to ping_sweep.")
         scan_type = "ping_sweep"
-    logger.info(f"[TOOL EXEC] network_scan: {scan_type} on {target_ip}")
-    time.sleep(0.2)
+    
+    logger.info(f"Network scan: {scan_type} on {target_ip}")
+    time.sleep(0.2)  # Simulate scan time
+    
     if scan_type == "full_port_scan":
         open_ports = random.sample([21, 22, 23, 80, 443, 3389, 8080], k=random.randint(1, 3))
-        return f"Port scan on {target_ip} complete. Open ports: {open_ports}"
-    if scan_type == "vulnerability_scan":
+        return standardize_response("ok", data={"open_ports": open_ports}, 
+                                  summary=f"Port scan on {target_ip}: {len(open_ports)} ports open")
+    
+    elif scan_type == "vulnerability_scan":
         if random.random() < 0.1:
             vuln = random.choice(["CVE-2023-1234 (High)", "CVE-2022-5678 (Medium)"])
-            return f"Vulnerability scan found: {vuln}"
-        return f"No critical vulnerabilities found on {target_ip}"
-    return f"Successfully pinged {target_ip}. Host is up."
+            return standardize_response("ok", data={"vulnerabilities": [vuln]}, 
+                                      summary=f"Vulnerability found: {vuln}")
+        return standardize_response("ok", data={"vulnerabilities": []}, 
+                                  summary=f"No critical vulnerabilities found on {target_ip}")
+    
+    else:  # ping_sweep
+        return standardize_response("ok", data={"host_up": True}, 
+                                  summary=f"Successfully pinged {target_ip}. Host is up.")
 
-def deploy_recovery_protocol_tool(protocol_name: str, target_system_id: str, urgency_level: str = "medium") -> str:
+def deploy_recovery_protocol_tool(protocol_name: str, target_system_id: str, urgency_level: str = "medium") -> dict:
+    """Deploy recovery protocols"""
+    _usage_tracker.track_usage("deploy_recovery_protocol_tool")
+    
     for k, v in (("protocol_name", protocol_name), ("target_system_id", target_system_id)):
         err = _require_non_placeholder(k, v)
         if err:
-            return f"[ERROR] deploy_recovery_protocol_tool: {err}"
+            return standardize_response("error", error=err)
+    
     urgency_level = (urgency_level or "medium").strip().lower()
     if urgency_level not in {"low", "medium", "high", "critical"}:
-        logger.warning(f"[TOOL EXEC] Unknown urgency_level '{urgency_level}', defaulting to 'medium'.")
         urgency_level = "medium"
-    logger.info(f"[TOOL EXEC] deploy_recovery: {protocol_name} -> {target_system_id} ({urgency_level})")
+    
+    logger.info(f"Deploy recovery: {protocol_name} -> {target_system_id} ({urgency_level})")
     time.sleep(0.2)
-    return f"Recovery protocol '{protocol_name}' deployed to {target_system_id} (Urgency: {urgency_level})."
+    
+    return standardize_response("ok", 
+                              data={"protocol": protocol_name, "target": target_system_id, "urgency": urgency_level},
+                              summary=f"Recovery protocol '{protocol_name}' deployed to {target_system_id}")
 
 def analyze_threat_signature_tool(signature: str, source_ip: str) -> dict:
+    """Analyze threat signatures"""
+    _usage_tracker.track_usage("analyze_threat_signature_tool")
+    
     for k, v in (("signature", signature), ("source_ip", source_ip)):
         err = _require_non_placeholder(k, v)
         if err:
             return standardize_response("error", error=err)
+    
+    try:
+        ip_address(source_ip)  # Validate IP
+    except ValueError:
+        return standardize_response("error", error=f"Invalid source IP: {source_ip}")
+    
     risk = random.choice(["Low", "Medium", "High", "Critical"])
+    confidence = round(random.uniform(0.7, 0.99), 2)
+    
     return standardize_response("ok",
-                               data={"signature": signature, "source_ip": source_ip, "risk_level": risk},
-                               summary=f"Analysis of {signature} from {source_ip}: Risk={risk}")
+                              data={
+                                  "signature": signature, 
+                                  "source_ip": source_ip, 
+                                  "risk_level": risk,
+                                  "confidence": confidence
+                              },
+                              summary=f"Analysis: {signature} from {source_ip} = {risk} risk")
 
 def isolate_network_segment_tool(segment_id: str, reason: str) -> dict:
+    """Isolate network segments"""
+    _usage_tracker.track_usage("isolate_network_segment_tool")
+    
     for k, v in (("segment_id", segment_id), ("reason", reason)):
         err = _require_non_placeholder(k, v)
         if err:
-            return standardize_response("error", error=f"isolate_network_segment_tool: {err}",
-                                        summary="Isolation failed (bad args)")
-    return standardize_response("ok", data={"segment_id": segment_id, "reason": reason},
-                                summary=f"Segment '{segment_id}' isolated")
+            return standardize_response("error", error=err)
+    
+    return standardize_response("ok", 
+                              data={"segment_id": segment_id, "reason": reason},
+                              summary=f"Segment '{segment_id}' isolated")
 
 def extract_iocs_tool(text: str) -> dict:
+    """Extract Indicators of Compromise from text"""
+    _usage_tracker.track_usage("extract_iocs_tool")
+    
     if _is_placeholder(text):
-        return standardize_response("error", error="Text is empty/placeholder.", summary="IOC extraction failed")
-    ips = re.findall(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", text)
-    urls = re.findall(r"https?://[^\s)]+", text)
-    sha256 = re.findall(r"\b[a-fA-F0-9]{64}\b", text)
-    emails = re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", text)
-    data = {"ips": sorted(set(ips)), "urls": sorted(set(urls)), "sha256": sorted(set(sha256)), "emails": sorted(set(emails))}
-    total = sum(len(v) for v in data.values())
-    return standardize_response("ok", data=data, summary=f"Extracted {total} IOCs")
+        return standardize_response("error", error="Text is empty/placeholder")
+    
+    try:
+        # Enhanced IOC patterns
+        ips = re.findall(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", text)
+        urls = re.findall(r"https?://[^\s)\]]+", text)
+        sha256 = re.findall(r"\b[a-fA-F0-9]{64}\b", text)
+        md5 = re.findall(r"\b[a-fA-F0-9]{32}\b", text)
+        emails = re.findall(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b", text)
+        domains = re.findall(r"\b(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}\b", text)
+        
+        data = {
+            "ips": sorted(set(ips)),
+            "urls": sorted(set(urls)),
+            "sha256": sorted(set(sha256)),
+            "md5": sorted(set(md5)),
+            "emails": sorted(set(emails)),
+            "domains": sorted(set(domains))
+        }
+        
+        total = sum(len(v) for v in data.values())
+        return standardize_response("ok", data=data, summary=f"Extracted {total} IOCs")
+    except Exception as e:
+        _usage_tracker.track_usage("extract_iocs_tool", success=False)
+        return standardize_response("error", error=str(e))
 
 def hash_text_tool(text: str, algorithm: str = "sha256") -> dict:
+    """Hash text using specified algorithm"""
+    _usage_tracker.track_usage("hash_text_tool")
+    
     if _is_placeholder(text):
-        return standardize_response("error", error="Text is empty/placeholder.", summary="Hash failed")
+        return standardize_response("error", error="Text is empty/placeholder")
+    
+    if len(text.encode('utf-8')) > ToolConfig.MAX_HASH_TEXT_SIZE:
+        return standardize_response("error", error="Text too large for hashing")
+    
     algo = (algorithm or "sha256").lower()
+    supported_algos = {"md5", "sha1", "sha224", "sha256", "sha384", "sha512"}
+    
+    if algo not in supported_algos:
+        return standardize_response("error", error=f"Unsupported algorithm. Use one of: {sorted(supported_algos)}")
+    
     try:
         h = hashlib.new(algo)
-    except Exception:
-        return standardize_response("error", error=f"Unsupported hash algorithm '{algorithm}'.", summary="Hash failed")
-    h.update(text.encode("utf-8", errors="ignore"))
-    return standardize_response("ok", data={"algorithm": algo, "hexdigest": h.hexdigest()},
-                                summary=f"Hashed text with {algo}")
+        h.update(text.encode("utf-8", errors="ignore"))
+        return standardize_response("ok", 
+                                  data={"algorithm": algo, "hexdigest": h.hexdigest()},
+                                  summary=f"Hashed text with {algo}")
+    except Exception as e:
+        _usage_tracker.track_usage("hash_text_tool", success=False)
+        return standardize_response("error", error=str(e))
 
-
-# ---- Environment / World / Knowledge ----------------------------------------
+# ---- Environment / World / Knowledge Tools ----
 def get_environmental_data_tool(location: Optional[str] = "server_room_3",
                                 data_type: str = "all",
                                 use_real_sensors: bool = False) -> dict:
-    """
-    If use_real_sensors=True and SENSOR_API_URL is set, tries GET {SENSOR_API_URL}/sensors/{location}.
-    Otherwise returns synthetic readings.
-    """
-    # optional real sensor
+    """Get environmental sensor data"""
+    _usage_tracker.track_usage("get_environmental_data_tool")
+    
+    # Try real sensors if requested
     if use_real_sensors and requests is not None:
         try:
             base = os.getenv("SENSOR_API_URL")
             if base and location:
-                r = requests.get(f"{base.rstrip('/')}/sensors/{location}", timeout=5)
-                if r.ok:
-                    return standardize_response("ok", data=r.json(), location=location, source="sensor_api")
+                session = RetrySession.create_session()
+                url = f"{base.rstrip('/')}/sensors/{location}"
+                response = session.get(url, timeout=5) if session else requests.get(url, timeout=5)
+                if response.status_code == 200:
+                    return standardize_response("ok", data=response.json(), location=location, source="sensor_api")
         except Exception as e:
-            logger.warning(f"Sensor API failed, fallback to mock: {e}")
-
-    # synthetic fallback
+            logger.warning(f"Sensor API failed, using mock data: {e}")
+    
+    # Mock data fallback
     reading = {
         "temperature_celsius": round(19.5 + random.random() * 6.0, 2),
         "humidity_percent": round(30 + random.random() * 25, 1),
         "air_quality_index": int(40 + random.random() * 40),
+        "pressure_hpa": round(1013 + random.random() * 10, 1),
+        "noise_level_db": round(35 + random.random() * 20, 1)
     }
-    allowed = {"all", "temperature_celsius", "humidity_percent", "air_quality_index"}
+    
+    allowed = {"all", "temperature_celsius", "humidity_percent", "air_quality_index", "pressure_hpa", "noise_level_db"}
     if data_type not in allowed:
-        return standardize_response("error", error=f"unsupported data_type: {data_type}")
+        return standardize_response("error", error=f"Unsupported data_type. Use one of: {sorted(allowed)}")
+    
     payload = reading if data_type == "all" else {data_type: reading[data_type]}
     return standardize_response("ok", data=payload, location=location, data_type=data_type, source="simulated")
 
-_SERP_TIMEOUT = 12
-def web_search_tool(query: str) -> dict:
-    logger.info(f"[TOOL EXEC] web_search: {query}")
-    api_key = os.getenv("SERPAPI_API_KEY")
-    if not api_key:
-        return standardize_response("error", error="Missing SERPAPI_API_KEY environment variable.",
-                                    summary="Search failed (no API key)")
+@retry_on_failure(max_retries=3, delay=1.0)
+def web_search_tool(query: str, max_results: int = 3) -> dict:
+    """Search the web using DuckDuckGo"""
+    _usage_tracker.track_usage("web_search_tool")
+    
+    if not query or _is_placeholder(query):
+        return standardize_response("error", error="Query cannot be empty")
+    
+    if DDGS is None:
+        return standardize_response("error", error="DuckDuckGo search not available")
+    
     try:
-        from serpapi import GoogleSearch  # lazy import
-        params = {"q": query, "api_key": api_key, "engine": "google"}
-        results = GoogleSearch(params).get_dict().get("organic_results", [])
-        links = [{"title": r.get("title"), "link": r.get("link")} for r in results[:5]]
-        return standardize_response("ok", data={"results": links}, summary=f"Top {len(links)} results for '{query}'")
+        max_results = min(max(1, max_results), ToolConfig.MAX_SEARCH_RESULTS)
+        results = list(DDGS().text(query, max_results=max_results))
+        return standardize_response("ok", 
+                                  data={"results": results, "query": query, "count": len(results)},
+                                  summary=f"Found {len(results)} results for '{query}'")
     except Exception as e:
-        return standardize_response("error", error=f"web_search_tool failed: {e}", summary="Search failed")
+        _usage_tracker.track_usage("web_search_tool", success=False)
+        return standardize_response("error", error=f"Search failed: {str(e)}")
 
-_READ_CACHE_TTL = 600
-_read_cache: Dict[str, Tuple[float, str]] = {}
-def read_webpage_tool(url: str) -> str:
-    url = (url or "").strip()
-    if not url or not _valid_url(url):
-        return "[ERROR] read_webpage_tool: 'url' must be a valid http(s) URL."
+def reply_to_user(message: str) -> dict:
+    """Save reply to user-readable file"""
+    _usage_tracker.track_usage("reply_to_user")
+    
+    if not message or _is_placeholder(message):
+        return standardize_response("error", error="Message cannot be empty")
+    
+    try:
+        # Ensure directory exists
+        os.makedirs("persistence_data", exist_ok=True)
+        
+        with open("persistence_data/latest_response.txt", "w", encoding='utf-8') as f:
+            f.write(message)
+        
+        return standardize_response("ok", data={"message_length": len(message)}, summary="Reply saved successfully")
+    except Exception as e:
+        _usage_tracker.track_usage("reply_to_user", success=False)
+        return standardize_response("error", error=str(e))
+
+def update_resource_allocation_tool(resource_type: str, target_agent_name: str, new_allocation_percentage: int = None) -> dict:
+    """Update resource allocation for agents"""
+    _usage_tracker.track_usage("update_resource_allocation_tool")
+    
+    for k, v in (("resource_type", resource_type), ("target_agent_name", target_agent_name)):
+        err = _require_non_placeholder(k, v)
+        if err:
+            return standardize_response("error", error=err)
+    
+    # Validate percentage if provided
+    if new_allocation_percentage is not None:
+        err = _validate_integer(new_allocation_percentage, 0, 100)
+        if err:
+            return standardize_response("error", error=f"Invalid allocation percentage: {err}")
+    
+    data = {
+        "resource_type": resource_type,
+        "target_agent": target_agent_name,
+        "new_allocation": new_allocation_percentage,
+        "timestamp": _now_iso()
+    }
+    
+    return standardize_response("ok", data=data, summary=f"Updated {resource_type} for {target_agent_name}")
+
+@retry_on_failure(max_retries=3, delay=1.0)
+def read_webpage_tool(url: str) -> dict:
+    """Read and extract text content from webpage"""
+    _usage_tracker.track_usage("read_webpage_tool")
+    
+    if not url or _is_placeholder(url):
+        return standardize_response("error", error="URL cannot be empty")
+    
+    if not _valid_url(url):
+        return standardize_response("error", error="Invalid URL format")
+    
     if requests is None:
-        return "[ERROR] read_webpage_tool: python-requests not installed."
+        return standardize_response("error", error="Requests library not available")
+    
     try:
-        ts_val = _read_cache.get(url)
-        if ts_val and time.time() - ts_val[0] < _READ_CACHE_TTL:
-            return ts_val[1]
-        resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
-        resp.raise_for_status()
-        if BeautifulSoup is None:
-            # fallback to raw text
-            txt = resp.text[:4000]
-            _read_cache[url] = (time.time(), txt)
-            return txt
-        soup = BeautifulSoup(resp.text, "lxml") if BeautifulSoup else None
-        if soup is None:
-            txt = resp.text[:4000]
-            _read_cache[url] = (time.time(), txt)
-            return txt
-        for s in soup(["script", "style", "noscript"]):
-            s.decompose()
-        text = " ".join(soup.get_text().split())
-        snippet = text[:4000] or "[WARN] Page has no readable text."
-        _read_cache[url] = (time.time(), snippet)
-        return snippet
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        
+        session = RetrySession.create_session()
+        response = session.get(url, headers=headers, timeout=ToolConfig.REQUEST_TIMEOUT) if session else requests.get(url, headers=headers, timeout=ToolConfig.REQUEST_TIMEOUT)
+        response.raise_for_status()
+        
+        # Basic HTML cleaning
+        html = response.text
+        text = re.sub('<[^<]+?>', ' ', html)  # Remove HTML tags
+        text = re.sub(r'\s+', ' ', text).strip()  # Normalize whitespace
+        
+        # Truncate if necessary
+        if len(text) > ToolConfig.MAX_WEBPAGE_SIZE:
+            text = text[:ToolConfig.MAX_WEBPAGE_SIZE] + "... [truncated]"
+        
+        data = {
+            "content": text,
+            "url": url,
+            "content_length": len(text),
+            "encoding": response.encoding,
+            "status_code": response.status_code
+        }
+        
+        return standardize_response("ok", data=data, summary=f"Read {len(text)} characters from {url}")
+    except requests.RequestException as e:
+        _usage_tracker.track_usage("read_webpage_tool", success=False)
+        return standardize_response("error", error=f"HTTP error: {str(e)}")
     except Exception as e:
-        return f"[ERROR] read_webpage_tool failed: {e}"
+        _usage_tracker.track_usage("read_webpage_tool", success=False)
+        return standardize_response("error", error=str(e))
 
-def update_world_model_tool(key: str, value: str) -> dict:
-    err = _require_non_placeholder("key", key) or _require_non_placeholder("value", value)
-    if err:
-        return standardize_response("error", error=f"update_world_model_tool: {err}", summary="World model update failed")
-    return standardize_response("ok", data={"key": key, "value": value},
-                                summary=f"World model updated: {key}={value}")
-
-def query_long_term_memory_tool(query_text: str) -> dict:
-    err = _require_non_placeholder("query_text", query_text)
-    if err:
-        return standardize_response("error", error=f"query_long_term_memory_tool: {err}", summary="LTM query failed")
-    # hook your vector search here
-    return standardize_response("ok", data={"query": query_text}, summary=f"LTM queried: '{query_text}'")
-
-
-# ---- Text / ML / Reporting ---------------------------------------------------
-_sentiment = None
-def _get_sentiment_pipeline():
-    global _sentiment
-    if _sentiment is None and _hf_pipeline is not None:
-        try:
-            _sentiment = _hf_pipeline("sentiment-analysis", model="distilbert-base-uncased-finetuned-sst-2-english")
-        except Exception as e:
-            logger.error(f"Failed to load sentiment pipeline: {e}")
-            _sentiment = None
-    return _sentiment
-
-def analyze_text_sentiment_tool(text: str) -> dict:
-    if _is_placeholder(text):
-        return {"error": "Text is empty/placeholder."}
-    p = _get_sentiment_pipeline()
-    if not p:
-        return {"error": "Sentiment model unavailable."}
+def send_desktop_notification_tool(title: str, message: str) -> dict:
+    """
+    Send a desktop notification to the user.
+    
+    Args:
+        title: The notification title
+        message: The notification body text
+        
+    Returns:
+        Dict with success status
+    """
+    import subprocess
+    import platform
+    
     try:
-        return p(text)[0]
+        system = platform.system()
+        
+        if system == "Linux":
+            # Use notify-send on Linux
+            subprocess.run(
+                ["notify-send", title, message],
+                check=True,
+                timeout=5
+            )
+        elif system == "Darwin":  # macOS
+            subprocess.run(
+                ["osascript", "-e", f'display notification "{message}" with title "{title}"'],
+                check=True,
+                timeout=5
+            )
+        elif system == "Windows":
+            try:
+                import importlib
+                win10toast = importlib.import_module('win10toast')
+                toaster = win10toast.ToastNotifier()
+                toaster.show_toast(title, message, duration=5)
+            except ImportError:
+                return {"ok": False, "error": "win10toast not installed"}
+        return {
+            "ok": True,
+            "success": True,
+            "title": title,
+            "message": message,
+            "platform": system
+        }
+        
     except Exception as e:
-        return {"error": f"Sentiment analysis failed: {e}"}
+        return {
+            "ok": False,
+            "success": False,
+            "error": str(e)
+        }
 
 def redact_pii_tool(text: str) -> dict:
-    if _is_placeholder(text):
-        return {"error": "Text is empty/placeholder."}
-    red = text
-    red = re.sub(r"([A-Za-z0-9._%+-]+)@([A-Za-z0-9.-]+\.[A-Za-z]{2,})", r"***@\2", red)
-    red = re.sub(r"\b(\+?\d[\d\s\-]{7,}\d)\b", "[REDACTED-PHONE]", red)
-    return {"redacted_text": red}
-
-def _safe_pdf_name(name: str) -> str:
-    stem = Path(name).stem or f"report-{int(time.time())}"
-    safe = "".join(c for c in stem if c.isalnum() or c in ("_", "-")) or "report"
-    return f"{safe}.pdf"
-
-def create_pdf_tool(filename: str, text_content: str) -> str:
-    os.makedirs("output", exist_ok=True)
-    if FPDF is None:
-        return "[ERROR] create_pdf_tool failed: FPDF not available."
-    path = os.path.join("output", _safe_pdf_name(filename))
+    """Redact PII (Personally Identifiable Information) from text"""
+    _usage_tracker.track_usage("redact_pii_tool")
+    
+    if not text or _is_placeholder(text):
+        return standardize_response("error", error="Text cannot be empty")
+    
     try:
-        pdf = FPDF()
-        pdf.add_page()
-        pdf.set_font("Arial", size=12)
-        pdf.multi_cell(0, 10, txt=text_content.encode("latin-1", "replace").decode("latin-1"))
-        pdf.output(path)
-        return f"PDF saved: {path}"
-    except Exception as e:
-        return f"[ERROR] create_pdf_tool failed: {e}"
-
-def generate_report_pdf_tool(title: str, sections: List[Dict[str, str]], filename: Optional[str] = None) -> str:
-    if not sections or not isinstance(sections, list):
-        return "[ERROR] generate_report_pdf_tool: 'sections' must be a non-empty list of {heading, body}."
-    if not filename:
-        filename = f"{title or 'Report'}-{int(time.time())}.pdf"
-    lines = [f"# {title or 'Report'}", ""]
-    for sec in sections:
-        h = sec.get("heading") or "Section"
-        b = sec.get("body") or ""
-        lines.append(f"\n## {h}\n\n{b}\n")
-    return create_pdf_tool(filename=filename, text_content="\n".join(lines))
-
-def shuffle_roles_and_tasks_tool(stagnant_agents: List[str]) -> List[dict]:
-    pool = {
-        "observer": [
-            "Cross-check system metrics against public datasets.",
-            "Perform forensic analysis of last 100 events.",
-            "Predict CPU load trends.",
-        ],
-        "security": [
-            "Proactively hunt for emerging CVEs.",
-            "Design heuristic for anomalous logins.",
-            "Simulate red-team probe on sandbox network.",
-        ],
-        "collector": [
-            "Integrate novel data source from open web.",
-            "Audit integrity of all active data streams.",
-            "Summarize past 24h of ingested data.",
-        ],
-    }
-    directives = []
-    for agent in stagnant_agents or []:
-        role = "observer"
-        if isinstance(agent, str) and "Security" in agent:
-            role = "security"
-        elif isinstance(agent, str) and "Collector" in agent:
-            role = "collector"
-        task = random.choice(pool[role])
-        directives.append({"type": "AGENT_PERFORM_TASK", "agent_name": agent, "task_description": task})
-    return directives
-
-# --- Resource tuning ---------------------------------------------------------
-def update_resource_allocation_tool(
-    resource_type: str,
-    target_agent_name: str,
-    new_allocation_percentage,
-    **kwargs
-):
-    """
-    Idempotent no-op/stub that normalizes and returns the requested allocation.
-    Accepts values like 0.35 (35%) or 35 (percent). Bounds to [0, 100].
-    """
-    try:
-        val = float(new_allocation_percentage)
-    except Exception:
-        return {"status": "error", "error": "new_allocation_percentage must be a number"}
-
-    # Normalize: if it's 0..1 treat as fraction; if >1 treat as percent
-    if 0.0 <= val <= 1.0:
-        pct = val * 100.0
-    else:
-        pct = val
-
-    # Clamp just to be safe
-    pct = max(0.0, min(100.0, pct))
-
-    if not isinstance(resource_type, str) or not resource_type.strip():
-        return {"status": "error", "error": "resource_type is required"}
-    if not isinstance(target_agent_name, str) or not target_agent_name.strip():
-        return {"status": "error", "error": "target_agent_name is required"}
-
-    # This stub doesn’t actually change resources; it just echoes a deterministic result.
-    # If you later wire real behavior, keep the same return shape.
-    return {
-        "status": "ok",
-        "action": "update_resource_allocation",
-        "resource_type": resource_type.strip().lower(),
-        "target_agent_name": target_agent_name.strip(),
-        "requested_percent": pct,
-        "applied_percent": pct,   # in a real impl, reflect any policy clamps here
-        "idempotent": True,
-    }
-
-
-# ---- Prometheus query tools --------------------------------------------------
-def prometheus_query_tool(query: str, timeout_s: int = 10) -> dict:
-    if not query or not isinstance(query, str):
-        return standardize_response("error", error="query is required")
-    res = _prom_request("/api/v1/query", {"query": query}, timeout=float(timeout_s))
-    if res.get("status") != "ok":
-        return res
-    data = res["data"]
-    # convenience summary
-    try:
-        result = data.get("data", {}).get("result", [])
-        summary = {"result_type": data.get("data", {}).get("resultType"), "series": len(result)}
-    except Exception:
-        summary = {}
-    return {"status": "ok", "data": data, "meta": {"summary": summary}, "ts": time.time()}
-
-def prometheus_range_query_tool(query: str, start_s: int, end_s: int, step_s: int = 15, timeout_s: int = 10) -> dict:
-    if not query or not isinstance(query, str):
-        return standardize_response("error", error="query is required")
-    if not all(isinstance(x, (int, float)) for x in (start_s, end_s, step_s)):
-        return standardize_response("error", error="start_s, end_s, step_s must be numbers (unix seconds)")
-    if end_s <= start_s:
-        return standardize_response("error", error="end_s must be > start_s")
-    res = _prom_request("/api/v1/query_range",
-                        {"query": query, "start": int(start_s), "end": int(end_s), "step": int(step_s)},
-                        timeout=float(timeout_s))
-    if res.get("status") != "ok":
-        return res
-    data = res["data"]
-    try:
-        result = data.get("data", {}).get("result", [])
-        summary = {
-            "result_type": data.get("data", {}).get("resultType"),
-            "series": len(result),
-            "points_per_series": (len(result[0]["values"]) if result else 0),
+        # Enhanced PII patterns
+        email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+        phone_pattern = r'\b(?:\+?1[-. ]?)?\(?([0-9]{3})\)?[-. ]?([0-9]{3})[-. ]?([0-9]{4})\b'
+        ip_pattern = r'\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b'
+        ssn_pattern = r'\b\d{3}-\d{2}-\d{4}\b'
+        credit_card_pattern = r'\b\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}\b'
+        
+        redacted_text = text
+        redactions = {}
+        
+        # Count and redact each type
+        for pattern, replacement, label in [
+            (email_pattern, '[EMAIL_REDACTED]', 'emails'),
+            (phone_pattern, '[PHONE_REDACTED]', 'phones'),
+            (ip_pattern, '[IP_REDACTED]', 'ips'),
+            (ssn_pattern, '[SSN_REDACTED]', 'ssns'),
+            (credit_card_pattern, '[CREDIT_CARD_REDACTED]', 'credit_cards')
+        ]:
+            matches = re.findall(pattern, redacted_text)
+            redactions[label] = len(matches)
+            redacted_text = re.sub(pattern, replacement, redacted_text)
+        
+        data = {
+            "redacted_text": redacted_text,
+            "redactions_applied": redactions,
+            "original_length": len(text),
+            "redacted_length": len(redacted_text)
         }
-    except Exception:
-        summary = {}
-    return {"status": "ok", "data": data, "meta": {"summary": summary}, "ts": time.time()}
+        
+        total_redactions = sum(redactions.values())
+        return standardize_response("ok", data=data, summary=f"Redacted {total_redactions} PII elements")
+    except Exception as e:
+        _usage_tracker.track_usage("redact_pii_tool", success=False)
+        return standardize_response("error", error=str(e))
 
-
-# ------------------------------------------------------------------------------
-# Lazy registration (call ONCE from tool_registry.py or app.py)
-# ------------------------------------------------------------------------------
-def register_tools_into(registry) -> None:
+def check_calendar_tool(time_min_utc: str, time_max_utc: str) -> dict:
     """
-    Register all tools into the central ToolRegistry instance.
-    Import ToolSpec *inside* to avoid circular imports.
-    """
-    from tool_registry import ToolSpec  # lazy import to avoid cycles
-
-    # Observability / Prometheus
-    registry.register_tool("prometheus_query", ToolSpec(
-        fn=prometheus_query_tool,
-        task_type="Observation",
-        roles_allowed={"Observer", "Planner", "Worker"},
-        timeout_s=15, retries=1, idempotent=True,
-        required_args={"query"}, cache_ttl_s=1,
-    ))
-    registry.register_tool("prometheus_range_query", ToolSpec(
-        fn=prometheus_range_query_tool,
-        task_type="Observation",
-        roles_allowed={"Observer", "Planner"},
-        timeout_s=20, retries=1, idempotent=True,
-        required_args={"query", "start_s", "end_s"},
-    ))
-
-    # System / Local
-    registry.register_tool("get_system_cpu_load", ToolSpec(
-        fn=get_system_cpu_load_tool,
-        task_type="Observation",
-        roles_allowed={"Observer", "Worker", "Security"},
-        timeout_s=5, idempotent=True,
-    ))
-    registry.register_tool("get_system_resource_usage", ToolSpec(
-        fn=get_system_resource_usage_tool,
-        task_type="Observation",
-        roles_allowed={"Observer", "Worker", "Security"},
-        timeout_s=5, idempotent=True,
-    ))
-    registry.register_tool("disk_usage", ToolSpec(
-        fn=disk_usage_tool,
-        task_type="Observation",
-        roles_allowed={"Observer", "Worker", "Security"},
-        timeout_s=8, idempotent=True,
-    ))
-    registry.register_tool("top_processes", ToolSpec(
-        fn=top_processes_tool,
-        task_type="Observation",
-        roles_allowed={"Observer", "Security"},
-        timeout_s=10, idempotent=True,
-    ))
-    registry.register_tool("measure_responsiveness", ToolSpec(
-        fn=measure_responsiveness_tool,
-        task_type="Observation",
-        roles_allowed={"Observer", "Security"},
-        timeout_s=5, idempotent=True,
-    ))
-
-    # Kubernetes
-    registry.register_tool("kubernetes_pod_metrics", ToolSpec(
-        fn=kubernetes_pod_metrics_tool,
-        task_type="Observation",
-        roles_allowed={"Observer"},
-        timeout_s=8, idempotent=True,
-    ))
-    registry.register_tool("k8s_scale", ToolSpec(
-        fn=k8s_scale_tool,
-        task_type="Actuation",
-        roles_allowed={"Worker"},
-        timeout_s=12, retries=0, idempotent=False,
-        arg_aliases={"name": "deployment"},
-        required_args={"namespace", "replicas"},
-        validators=[_v_has_namespace, _v_k8s_scale_args],
-    ))
-
-    # Security / Net
-    registry.register_tool("initiate_network_scan", ToolSpec(
-        fn=initiate_network_scan_tool,
-        task_type="GenericTask",
-        roles_allowed={"Security", "Observer"},
-        timeout_s=15, retries=1, idempotent=False,
-        required_args={"target_ip"},
-    ))
-    registry.register_tool("deploy_recovery_protocol", ToolSpec(
-        fn=deploy_recovery_protocol_tool,
-        task_type="GenericTask",
-        roles_allowed={"Security", "Worker"},
-        timeout_s=20, retries=1, idempotent=False,
-        required_args={"protocol_name", "target_system_id"},
-        validators=[_v_enum("urgency_level", {"low", "medium", "high", "critical"})],
-    ))
-    registry.register_tool("analyze_threat_signature", ToolSpec(
-        fn=analyze_threat_signature_tool,
-        task_type="GenericTask",
-        roles_allowed={"Security"},
-        timeout_s=10, idempotent=True,
-        required_args={"signature", "source_ip"},
-        validators=[_v_ipv4("source_ip")],
-    ))
-    registry.register_tool("isolate_network_segment", ToolSpec(
-        fn=isolate_network_segment_tool,
-        task_type="GenericTask",
-        roles_allowed={"Security"},
-        timeout_s=10, idempotent=False,
-        required_args={"segment_id", "reason"},
-    ))
-    registry.register_tool("extract_iocs", ToolSpec(
-        fn=extract_iocs_tool,
-        task_type="GenericTask",
-        roles_allowed={"Security", "Observer", "Worker", "Planner"},
-        timeout_s=6, idempotent=True,
-        required_args={"text"},
-    ))
-    registry.register_tool("hash_text", ToolSpec(
-        fn=hash_text_tool,
-        task_type="GenericTask",
-        roles_allowed={"Observer", "Security", "Worker", "Planner"},
-        timeout_s=5, idempotent=True,
-        required_args={"text"},
-        validators=[_v_enum("algorithm", {"md5", "sha1", "sha224", "sha256", "sha384", "sha512"})],
-    ))
-
-    # Env / World / Knowledge
-    registry.register_tool("get_environmental_data", ToolSpec(
-        fn=get_environmental_data_tool,
-        task_type="GenericTask",
-        roles_allowed={"Observer", "Worker"},
-        timeout_s=8, idempotent=True,
-    ))
-    registry.register_tool("web_search", ToolSpec(
-        fn=web_search_tool,
-        task_type="GenericTask",
-        roles_allowed={"Planner", "Observer", "Security"},
-        timeout_s=_SERP_TIMEOUT, retries=1, idempotent=True,
-        required_args={"query"},
-    ))
-    registry.register_tool("read_webpage", ToolSpec(
-        fn=read_webpage_tool,
-        task_type="GenericTask",
-        roles_allowed={"Planner", "Observer"},
-        timeout_s=12, retries=1, idempotent=True,
-        required_args={"url"},
-        validators=[_v_url("url")],
-    ))
-    registry.register_tool("update_world_model", ToolSpec(
-        fn=update_world_model_tool,
-        task_type="GenericTask",
-        roles_allowed={"Planner", "Observer", "Worker"},
-        timeout_s=5, idempotent=True,
-        required_args={"key", "value"},
-    ))
-    registry.register_tool("query_long_term_memory", ToolSpec(
-        fn=query_long_term_memory_tool,
-        task_type="GenericTask",
-        roles_allowed={"Planner", "Observer"},
-        timeout_s=8, idempotent=True,
-        required_args={"query_text"},
-    ))
-
-    # Reporting
-    registry.register_tool("create_pdf", ToolSpec(
-        fn=create_pdf_tool,
-        task_type="Reporting",
-        roles_allowed={"Worker", "Planner"},
-        timeout_s=20, idempotent=True,
-        required_args={"filename", "text_content"},
-    ))
-    registry.register_tool("generate_report_pdf", ToolSpec(
-        fn=generate_report_pdf_tool,
-        task_type="Reporting",
-        roles_allowed={"Worker", "Planner"},
-        timeout_s=25, idempotent=True,
-        required_args={"title", "sections"},
-    ))
-
-    # Planner assist
-    registry.register_tool("shuffle_roles_and_tasks", ToolSpec(
-        fn=shuffle_roles_and_tasks_tool,
-        task_type="PlannerAssist",
-        roles_allowed={"Planner"},
-        timeout_s=8, idempotent=True,
-        required_args={"stagnant_agents"},
-    ))
-
-
-# ------------------------------------------------------------------------------
-# Convenience aliases + optional proxy invocation
-# ------------------------------------------------------------------------------
-# simple aliases some code may import
-kubernetes_pod_metrics = kubernetes_pod_metrics_tool
-k8s_scale = k8s_scale_tool
-
-def invoke_tool(name: str, args: Dict[str, Any]) -> dict:
-    """
-    Optional convenience proxy: if a global tool_registry.tool_registry instance
-    exists, use it to invoke. Otherwise return an error.
-    Imported lazily to avoid circular imports.
+    Check Google Calendar for events in a time range.
+    
+    Args:
+        time_min_utc: Start time in ISO format (e.g., "2024-11-20T00:00:00Z")
+        time_max_utc: End time in ISO format (e.g., "2024-11-20T23:59:59Z")
+        
+    Returns:
+        Dict with calendar events
     """
     try:
-        from tool_registry import tool_registry  # type: ignore
-    except Exception:
-        return {"ok": False, "error": "Central tool registry not available; call register_tools_into(...) and use registry.invoke()."}
+        from gmail_agent import get_calendar_events
+        events = get_calendar_events(time_min_utc, time_max_utc)
+        return {
+            "ok": True,
+            "success": True,
+            "events": events,
+            "count": len(events) if events else 0
+        }
+    except Exception as e:
+        return {
+            "ok": False,
+            "success": False,
+            "error": str(e),
+            "events": []
+        }
+
+# ---- Management & Utility Tools ----
+def get_tool_usage_stats_tool() -> dict:
+    """Get usage statistics for all tools"""
+    stats = _usage_tracker.get_stats()
+    return standardize_response("ok", data=stats, summary="Tool usage statistics retrieved")
+
+def tool_health_check_tool() -> dict:
+    """Check health status of all tools and dependencies"""
+    health = {
+        "system": {
+            "python_requests": requests is not None,
+            "beautifulsoup": BeautifulSoup is not None,
+            "fpdf": FPDF is not None,
+            "transformers": _hf_pipeline is not None,
+            "duckduckgo_search": DDGS is not None,
+            "google_apis": build is not None and authenticate_google_services is not None
+        },
+        "commands": {
+            "kubectl": SafeSubprocess.check_available("kubectl"),
+            "python3": SafeSubprocess.check_available("python3")
+        },
+        "environment": {
+            "prometheus_url": bool(_prom_url()),
+            "sensor_api_url": bool(os.getenv("SENSOR_API_URL"))
+        }
+    }
+    
+    # Overall health
+    all_healthy = (
+        all(health["system"].values()) and 
+        all(health["commands"].values()) and
+        any(health["environment"].values())  # At least one service should be available
+    )
+    
+    status = "healthy" if all_healthy else "degraded"
+    summary = "All systems operational" if all_healthy else "Some dependencies or services unavailable"
+    
+    return standardize_response("ok", data=health, status=status, summary=summary)
+
+# Add to tools.py
+
+def update_world_model_tool(key: str, value: Any) -> dict:
+    """Updates the swarm's shared world-state."""
     try:
-        return tool_registry.invoke(name, args or {})
+        from catalyst_vector_alpha import shared_world_model
+        shared_world_model.update_value(key, value)
+        return {"ok": True, "key": key, "value": value, "model": shared_world_model.get_full_model()}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
+def query_long_term_memory_tool(query_text: str, agent_name: str = "system") -> dict:
+    """Searches the agent's long-term memory via ChromaDB."""
+    try:
+        from memory_store import MemoryStore
+        store = MemoryStore()
+        
+        if not store.client:
+            return {"ok": False, "error": "ChromaDB not initialized"}
+        
+        # Search episodic memory
+        results = store.episodic.query(
+            query_texts=[query_text],
+            n_results=5
+        )
+        
+        return {
+            "ok": True,
+            "query": query_text,
+            "results": results.get('documents', [[]])[0],
+            "metadatas": results.get('metadatas', [[]])[0]
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
-# ------------------------------------------------------------------------------
-# Public exports
-# ------------------------------------------------------------------------------
+def analyze_text_sentiment_tool(text: str) -> dict:
+    """Analyzes text sentiment using simple heuristics."""
+    import re
+    
+    # Word lists
+    positive = ["good", "great", "excellent", "amazing", "wonderful", "fantastic", "success", "completed", "resolved", "optimal"]
+    negative = ["bad", "poor", "terrible", "awful", "failed", "error", "critical", "warning", "degraded", "failure"]
+    
+    text_lower = text.lower()
+    words = re.findall(r'\w+', text_lower)
+    
+    pos_count = sum(1 for w in words if w in positive)
+    neg_count = sum(1 for w in words if w in negative)
+    
+    score = pos_count - neg_count
+    total = len(words)
+    
+    if score > 0:
+        sentiment = "positive"
+    elif score < 0:
+        sentiment = "negative"
+    else:
+        sentiment = "neutral"
+    
+    return {
+        "ok": True,
+        "sentiment": sentiment,
+        "score": score,
+        "confidence": abs(score) / max(total, 1),
+        "positive_words": pos_count,
+        "negative_words": neg_count
+    }
+
+def prometheus_query_tool(query: str, prometheus_url: str = "http://localhost:9090") -> dict:
+    """Query Prometheus metrics with PromQL."""
+    import requests
+    try:
+        response = requests.get(
+            f"{prometheus_url}/api/v1/query",
+            params={"query": query},
+            timeout=5
+        )
+        data = response.json()
+        
+        if data.get("status") == "success":
+            return {
+                "ok": True,
+                "query": query,
+                "result": data.get("data", {}).get("result", [])
+            }
+        else:
+            return {"ok": False, "error": data.get("error", "Unknown error")}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+def prometheus_range_query_tool(query: str, start: str, end: str, step: str = "15s", prometheus_url: str = "http://localhost:9090") -> dict:
+    """Query Prometheus metrics over a time range."""
+    import requests
+    try:
+        response = requests.get(
+            f"{prometheus_url}/api/v1/query_range",
+            params={"query": query, "start": start, "end": end, "step": step},
+            timeout=10
+        )
+        data = response.json()
+        
+        if data.get("status") == "success":
+            return {
+                "ok": True,
+                "query": query,
+                "result": data.get("data", {}).get("result", [])
+            }
+        else:
+            return {"ok": False, "error": data.get("error", "Unknown error")}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+def create_pdf_tool(filename: str, sections: list) -> dict:
+    """Creates a PDF report from structured sections."""
+    try:
+        from reportlab.lib.pagesizes import letter
+        from reportlab.pdfgen import canvas
+        from reportlab.lib.styles import getSampleStyleSheet
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+        
+        doc = SimpleDocTemplate(filename, pagesize=letter)
+        story = []
+        styles = getSampleStyleSheet()
+        
+        for section in sections:
+            title = section.get("title", "Untitled")
+            content = section.get("content", "")
+            
+            story.append(Paragraph(title, styles['Heading1']))
+            story.append(Spacer(1, 12))
+            story.append(Paragraph(content, styles['BodyText']))
+            story.append(Spacer(1, 24))
+        
+        doc.build(story)
+        return {"ok": True, "filename": filename, "sections": len(sections)}
+    except ImportError:
+        return {"ok": False, "error": "reportlab not installed: pip install reportlab"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+def shuffle_roles_and_tasks_tool() -> dict:
+    """Placeholder for role shuffling - requires swarm access."""
+    return {"ok": False, "error": "Role shuffling not implemented - requires swarm coordination"}
+
+
+def list_available_tools_tool() -> dict:
+    """List all available tools with their descriptions"""
+    tools = {
+        "system_tools": {
+            "get_system_cpu_load_tool": "Get system CPU load with configurable sampling",
+            "get_system_resource_usage_tool": "Get comprehensive system resource usage",
+            "disk_usage_tool": "Get disk usage for specified path",
+            "top_processes_tool": "Get top processes by CPU or memory usage",
+            "measure_responsiveness_tool": "Measure system responsiveness"
+        },
+        "kubernetes_tools": {
+            "kubernetes_pod_metrics_tool": "Get Kubernetes pod metrics",
+            "k8s_scale_tool": "Safely scale Kubernetes deployments",
+            "find_wasteful_deployments_tool": "Find resource-wasteful deployments"
+        },
+        "security_tools": {
+            "initiate_network_scan_tool": "Perform network security scans",
+            "deploy_recovery_protocol_tool": "Deploy recovery protocols",
+            "analyze_threat_signature_tool": "Analyze threat signatures",
+            "isolate_network_segment_tool": "Isolate network segments",
+            "extract_iocs_tool": "Extract Indicators of Compromise",
+            "hash_text_tool": "Hash text using various algorithms",
+            "redact_pii_tool": "Redact PII from text"
+        },
+        "knowledge_tools": {
+            "web_search_tool": "Search the web using DuckDuckGo",
+            "read_webpage_tool": "Read content from webpages",
+            "get_environmental_data_tool": "Get environmental sensor data"
+        },
+        "utility_tools": {
+            "reply_to_user": "Save replies to user",
+            "update_resource_allocation_tool": "Update resource allocations",
+            "get_tool_usage_stats_tool": "Get tool usage statistics",
+            "tool_health_check_tool": "Check tool health status",
+            "list_available_tools_tool": "List all available tools"
+        }
+    }
+    
+    total_tools = sum(len(category) for category in tools.values())
+    return standardize_response("ok", data=tools, summary=f"Found {total_tools} available tools across {len(tools)} categories")
+
+# Initialize configuration validation on import
+ToolConfig.validate()
+
+# Export the standardized tool functions
 __all__ = [
-    # registration
-    "register_tools_into",
-    "invoke_tool",
-    # tools
-    "get_system_cpu_load_tool",
-    "get_system_resource_usage_tool",
-    "disk_usage_tool",
-    "top_processes_tool",
-    "measure_responsiveness_tool",
-    "kubernetes_pod_metrics_tool",
-    "k8s_scale_tool",
-    "initiate_network_scan_tool",
-    "deploy_recovery_protocol_tool",
-    "analyze_threat_signature_tool",
-    "isolate_network_segment_tool",
-    "extract_iocs_tool",
-    "hash_text_tool",
-    "get_environmental_data_tool",
-    "web_search_tool",
-    "read_webpage_tool",
-    "update_world_model_tool",
-    "query_long_term_memory_tool",
-    "analyze_text_sentiment_tool",
-    "redact_pii_tool",
-    "create_pdf_tool",
-    "generate_report_pdf_tool",
-    "shuffle_roles_and_tasks_tool",
-    "prometheus_query_tool",
-    "prometheus_range_query_tool",
-    # helpers/validators you may want elsewhere
-    "_parse_kubectl_top_pods",
-    "_v_has_namespace",
-    "_v_k8s_scale_args",
-    "_v_url",
-    "_v_enum",
-    "_v_ipv4",
-    # aliases
-    "kubernetes_pod_metrics",
-    "k8s_scale",
+    # System tools
+    "get_system_cpu_load_tool", "get_system_resource_usage_tool", "disk_usage_tool",
+    "top_processes_tool", "measure_responsiveness_tool",
+    
+    # Kubernetes tools  
+    "kubernetes_pod_metrics_tool", "k8s_scale_tool", "find_wasteful_deployments_tool",
+    
+    # Security tools
+    "initiate_network_scan_tool", "deploy_recovery_protocol_tool", "analyze_threat_signature_tool",
+    "isolate_network_segment_tool", "extract_iocs_tool", "hash_text_tool", "redact_pii_tool",
+    
+    # Knowledge tools
+    "web_search_tool", "read_webpage_tool", "get_environmental_data_tool",
+    
+    # Utility tools
+    "reply_to_user", "update_resource_allocation_tool", "get_tool_usage_stats_tool",
+    "tool_health_check_tool", "list_available_tools_tool",
+    
+    # Utility functions
+    "standardize_response", "ToolConfig"
 ]
-
-
-def register_tools_into(registry):
-    """compat shim; ToolRegistry now self-registers tools"""
-    return
+@retry_on_failure(max_retries=2)
+def spawn_specialized_agent(purpose: str, context: dict, parent_agent: str = "system") -> dict:
+    """
+    Spawn a specialized agent for a specific task.
+    
+    Args:
+        purpose: What this agent should accomplish
+        context: Relevant context (emails, alerts, data)
+        parent_agent: Name of agent requesting spawn
+    
+    Returns:
+        {"success": bool, "agent_id": str, "agent_name": str}
+    """
+    try:
+        # Get CVA instance from global context
+        cva = globals().get('_cva_instance')
+        if not cva:
+            return {"success": False, "error": "CVA not available"}
+        
+        agent_id = cva.handle_spawn_request(purpose, context, parent_agent)
+        
+        if agent_id:
+            agent = cva.agent_factory.get_agent(agent_id)
+            return {
+                "success": True,
+                "agent_id": agent_id,
+                "agent_name": agent.spec.name,
+                "expires_at": agent.spec.expires_at.isoformat()
+            }
+        
+        return {"success": False, "error": "Spawn failed"}
+        
+    except Exception as e:
+        return {"success": False, "error": str(e)}

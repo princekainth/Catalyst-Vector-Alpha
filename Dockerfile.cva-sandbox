@@ -1,0 +1,25 @@
+# Dockerfile.cva-sandbox
+FROM ubuntu:22.04
+
+# Prevent interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install essential tools that CVA might need
+RUN apt-get update && apt-get install -y \
+    python3 \
+    python3-pip \
+    git \
+    curl \
+    wget \
+    htop \
+    vim \
+    nano \
+    net-tools \
+    procps \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create a workspace directory
+WORKDIR /workspace
+
+# Keep the container running
+CMD ["tail", "-f", "/dev/null"]

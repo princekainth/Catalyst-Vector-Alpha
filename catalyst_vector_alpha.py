@@ -40,6 +40,9 @@ from shared_models import (
     _get_recent_log_entries as get_recent_log_entries
 )
 # CORRECTED: Import ToolRegistry from its own file
+from database import CVADatabase
+from guardian_agent import GuardianAgent
+from agent_factory import AgentFactory
 from tool_registry import ToolRegistry
 
 # CORRECTED: Add the new ProtoAgent_Security
@@ -52,6 +55,7 @@ from agents import (
     ProtoAgent_Security,
     ProtoAgent_Worker
 )
+from notify_agent import ProtoAgent_Notifier
 from scenarios.cyber_attack import CyberAttackScenario
 import prompts
 import llm_schemas
@@ -243,16 +247,20 @@ class SwarmProtocol:
         }
 
     def save_state(self):
-        """Saves the swarm's current state to its designated JSON file."""
+        """Saves the swarm's current state to SQLite database (with JSON fallback)."""
         try:
-            # Ensure the directory exists before writing
-            os.makedirs(os.path.dirname(self.swarm_state_file_full_path_path), exist_ok=True)
-            with open(self.swarm_state_file_full_path_path, 'w') as f:
-                json.dump(self.get_state(), f, indent=2)
-            self.external_log_sink.info(f"Swarm '{self.name}' state saved to {self.swarm_state_file_full_path_path}.")
+            from database import cva_db
+            state = self.get_state()
+            cva_db.save_full_swarm_state(state)
+            self.external_log_sink.info(f"Swarm '{self.name}' state saved to database.")
         except Exception as e:
-            self.external_log_sink.error(f"Failed to save state for swarm '{self.name}' to {self.swarm_state_file_full_path_path}: {e}")
-            # Optionally re-raise or handle more specifically
+            self.external_log_sink.error(f"Database save failed: {e}, falling back to JSON")
+            try:
+                os.makedirs(os.path.dirname(self.swarm_state_file_full_path), exist_ok=True)
+                with open(self.swarm_state_file_full_path, 'w') as f:
+                    json.dump(self.get_state(), f, indent=2)
+            except Exception as e2:
+                self.external_log_sink.error(f"JSON fallback also failed: {e2}")
 
 # --- Catalyst Vector Alpha (Main Orchestrator) ---
 class CatalystVectorAlpha:
@@ -321,6 +329,21 @@ class CatalystVectorAlpha:
         # --- Internal registries and queues ---
         self.eidos_registry = {}
         self.agent_instances = {}
+        
+        # --- Database & Agent Factory ---
+        db_path = os.path.join(self.persistence_dir, "cva.db")
+        self.db = CVADatabase(db_path=db_path)
+        self.agent_factory = AgentFactory(
+            db=self.db,
+            tool_registry=self.tool_registry,
+            llm=self.llm_integration
+        )
+        self.external_log_sink.info("AgentFactory initialized")
+        self.guardian = GuardianAgent(
+            factory=self.agent_factory,
+            db=self.db
+        )
+        self.external_log_sink.info("Guardian Agent initialized")
         self.swarm_protocols = {}
         self.dynamic_directive_queue = deque()
         self.current_action_cycle_id = None
@@ -406,6 +429,12 @@ class CatalystVectorAlpha:
             role: tool_using_executor
             initial_intent: "Awaiting tasks from the Planner."
 
+        - type: ASSERT_AGENT_EIDOS
+            eidos_name: ProtoAgent_Notifier
+            eidos_spec:
+            role: notification_agent
+            initial_intent: "Awaiting tasks from the Planner."
+
         # --- 2) SPAWN ALL AGENT INSTANCES ---
         - type: SPAWN_AGENT_INSTANCE
             eidos_name: ProtoAgent_Planner
@@ -422,6 +451,11 @@ class CatalystVectorAlpha:
         - type: SPAWN_AGENT_INSTANCE
             eidos_name: ProtoAgent_Worker
             instance_name: ProtoAgent_Worker_instance_1
+
+        - type: SPAWN_AGENT_INSTANCE
+            eidos_name: ProtoAgent_Notifier
+            instance_name: ProtoAgent_Notifier_instance_1
+
         """)
 
         # --- Directive handlers (keep your existing implementation) ---
@@ -679,6 +713,11 @@ class CatalystVectorAlpha:
                 "role": "Worker",
                 "params": {"max_allowed_recursion": 3}
             },
+            "ProtoAgent_Notifier_instance_1": {
+                "agent_type": "notifier",
+                "role": "Notifier",
+                "params": {"max_allowed_recursion": 3}
+            },
         }
 
         swarm_state = {
@@ -718,9 +757,19 @@ class CatalystVectorAlpha:
     def rehydrate_agents_from_state(self) -> None:
         """
         Builds self.agent_instances from self.swarm_state['agents'].
+        If no agents exist in state, creates default agents automatically.
         """
         self.agent_instances = {}
         cfg_agents = self.swarm_state.get("agents", {})
+        
+        # PERMANENT FIX: Create default agents if state is empty
+        if not cfg_agents:
+            print("⚠️  No agents found in state. Creating default agents...")
+            cfg_agents = self._create_default_agents(self.world_model)
+            self.swarm_state["agents"] = cfg_agents  # Save to state for next time
+            print(f"✅ Created {len(cfg_agents)} default agent configurations")
+        
+        # Instantiate all agents from config
         for agent_name, agent_conf in cfg_agents.items():
             try:
                 inst = self._instantiate_agent(agent_name, agent_conf)
@@ -728,11 +777,11 @@ class CatalystVectorAlpha:
             except Exception as e:
                 self._log_swarm_activity("AGENT_REHYDRATE_ERROR", agent_name,
                                         f"Failed to instantiate agent: {e}", level="error")
-        print(f"Created {len(self.agent_instances)} default agents: {list(self.agent_instances.keys())}")
+        
+        print(f"✅ Loaded {len(self.agent_instances)} agents: {list(self.agent_instances.keys())}")
         self._log_swarm_activity("AGENTS_INSTANTIATED", "CatalystVectorAlpha",
                                 "Rehydrated live agent instances.",
                                 {"agents": list(self.agent_instances.keys())})
-
 
     # --- Add this: factory for agent classes ---
     def _instantiate_agent(self, agent_name: str, agent_conf: dict):
@@ -749,6 +798,7 @@ class CatalystVectorAlpha:
         try:
             from agents import (ProtoAgent, ProtoAgent_Observer, ProtoAgent_Planner,
                                 ProtoAgent_Security, ProtoAgent_Worker)
+            from notify_agent import ProtoAgent_Notifier
         except ImportError as e:
             self._log_swarm_activity("AGENT_IMPORT_ERROR", agent_name, f"Failed importing agent classes: {e}", level="error")
             raise
@@ -756,6 +806,7 @@ class CatalystVectorAlpha:
         type_map = {
             "planner":  ProtoAgent_Planner, "observer": ProtoAgent_Observer,
             "security": ProtoAgent_Security, "worker":   ProtoAgent_Worker,
+            "notifier": ProtoAgent_Notifier
         }
         AgentCls = type_map.get(agent_type, ProtoAgent)
 
@@ -1376,6 +1427,12 @@ class CatalystVectorAlpha:
                 "agent_type": "worker",
                 "role": "Execution Worker",
                 "prime_directive": "Execute concrete tasks and interface with tools reliably.",
+                "params": {}
+            },
+            "ProtoAgent_Notifier_instance_1": {
+                "agent_type": "notifier",
+                "role": "Notification Agent",
+                "prime_directive": "Send notifications to users based on events.",
                 "params": {}
             }
         }
@@ -2246,16 +2303,13 @@ class CatalystVectorAlpha:
         
         # Save to a main system state file
         try:
-            # CORRECTED: Use the correct attribute name
-            os.makedirs(os.path.dirname(self.swarm_state_file_full_path), exist_ok=True)
-            with open(self.swarm_state_file_full_path, 'w') as f:
-                json.dump(system_state_data, f, indent=2)
-            print(f"  Overall swarm state saved to {self.swarm_state_file_full_path}.")
-            self._log_swarm_activity("SYSTEM_SAVE_SUCCESS", "CatalystVectorAlpha", f"Overall swarm state saved to {self.swarm_state_file_full_path}.", {"file": self.swarm_state_file_full_path}, level='info')
+            from database import cva_db
+            cva_db.save_full_swarm_state(system_state_data)
+            print(f"  Overall swarm state saved to database.")
+            self._log_swarm_activity("SYSTEM_SAVE_SUCCESS", "CatalystVectorAlpha", "Overall swarm state saved to database.", {"file": "persistence_data/cva.db"}, level='info')
         except Exception as e:
-            print(f"ERROR: Could not save overall swarm state: {e}")
+            print(f"ERROR: Could not save to database: {e}")
             self._log_swarm_activity("SYSTEM_SAVE_ERROR", "CatalystVectorAlpha", f"Error saving swarm state: {e}", {"error": str(e)}, level='error')
-
         print("--- System state saved ---")
     
     def is_swarm_stagnant(self) -> bool:
@@ -3041,6 +3095,48 @@ class CatalystVectorAlpha:
             'status': 'processing'
         }
 
+    def handle_spawn_request(self, purpose: str, context: Dict[str, Any], parent_agent: str) -> Union[str, Dict[str, Any]]:
+        """
+        Handle agent spawn request from existing agents.
+        Returns agent_id if successful, or dict with error/suggestions if validation fails.
+        """
+        try:
+            # Cleanup expired agents first
+            self.agent_factory.cleanup_expired()
+
+            # Spawn new agent
+            result = self.agent_factory.spawn_agent(
+                purpose=purpose,
+                context=context,
+                parent_agent=parent_agent,
+                ttl_hours=24.0
+            )
+
+            # Check if validation failed (returns dict with error)
+            if isinstance(result, dict):
+                self.external_log_sink.warning(
+                    f"Agent spawn validation failed: {result.get('error')}"
+                )
+                return result  # Return validation error with suggestions
+
+            # Success - result is a DynamicAgent
+            agent = result
+            if agent:
+                # Register in CVA's agent instances
+                self.agent_instances[agent.spec.agent_id] = agent
+
+                self.external_log_sink.info(
+                    f"Spawned dynamic agent: {agent.spec.name} "
+                    f"(purpose: {purpose}, parent: {parent_agent})"
+                )
+
+                return agent.spec.agent_id
+
+        except Exception as e:
+            self.external_log_sink.error(f"Failed to spawn agent: {e}")
+
+        return {"success": False, "error": "Spawn failed unexpectedly"}
+
     def run_cognitive_loop(self, tick_sleep: int = 10):
         """Main cognitive loop with robust error handling and adaptive validation."""
         
@@ -3213,6 +3309,15 @@ class CatalystVectorAlpha:
                                     agent.trigger_memory_compression()
                                 except:
                                     pass
+                        
+                        # Guardian health check (every 5 cycles)
+                        if loop_cycle_count % 5 == 0 and hasattr(self, 'guardian'):
+                            try:
+                                health = self.guardian.health_check()
+                                if health['policy_violations'] or health['actions_taken']:
+                                    self.external_log_sink.info(f"Guardian: {health}")
+                            except Exception as e:
+                                self.external_log_sink.error(f"Guardian check failed: {e}")
 
                     except Exception as e:
                         print(f"Error processing agent {agent_name}: {e}")
@@ -3468,11 +3573,24 @@ if __name__ == "__main__":
         swarm_activity_log="logs/swarm_activity.jsonl",
         system_pause_file="system_pause.flag",
         swarm_state_file="swarm_state.json",
-        paused_agents_file="paused_agents.json",
         isl_schema_path="isl_schema.yaml",
         chroma_db_path="chroma_db",
         intent_override_prefix="intent_override_"
     )
+    
+    # --- Register spawn tool and set CVA reference ---
+    from tools import spawn_specialized_agent
+    import tools as tools_module
+    tools_module._cva_instance = catalyst_alpha  # Set global reference
+    
+    from tool_registry import Tool
+    GLOBAL_TOOL_REGISTRY.register_tool(Tool(
+        name="spawn_specialized_agent",
+        func=spawn_specialized_agent,
+        description="Spawn a specialized agent for a specific task",
+        category="agent_management"
+    ))
+    central_logger.info("Spawn tool registered")
         
     # --- CRITICAL: System Startup Sequence (Moved from __init__) ---
     # Log initial object initialization

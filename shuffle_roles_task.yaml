@@ -1,0 +1,5 @@
+- type: INITIATE_PLANNING_CYCLE
+  details:
+    planner_agent_name: "ProtoAgent_Planner_instance_1"
+    high_level_goal: "SHUFFLE_ROLES: Temporarily reassign agent responsibilities and re-evaluate eidos definitions to resolve system-wide stagnation."
+    context: "The Meta-Monitor has detected that multiple agents are stagnating by repeating the same tasks without making progress. A strategic reset is required."

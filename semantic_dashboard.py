@@ -6,38 +6,33 @@ import time
 import logging 
 
 # Configure logging to show info messages in the console/log file
-# This will direct messages to the terminal where Streamlit is run.
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
-
 # --- Constants and Configurations ---
-# Determine the project root directory.
-# Since this script is now in the project root itself, PROJECT_ROOT_DIR is just its own directory.
 PROJECT_ROOT_DIR = os.path.abspath(os.path.dirname(__file__))
 PERSISTENCE_DIR = os.path.join(PROJECT_ROOT_DIR, 'persistence_data')
+SWARM_ACTIVITY_LOG = os.path.join(PERSISTENCE_DIR, 'logs', 'swarm_activity.jsonl') # Updated path based on structure
+# Fallback if log is in root persistence
+if not os.path.exists(SWARM_ACTIVITY_LOG):
+    SWARM_ACTIVITY_LOG = os.path.join(PERSISTENCE_DIR, 'swarm_activity.jsonl')
 
-SWARM_ACTIVITY_LOG = os.path.join(PERSISTENCE_DIR, 'swarm_activity.jsonl')
 PAUSED_AGENTS_FILE = os.path.join(PERSISTENCE_DIR, 'paused_agents.json')
+ALERTS_FILE = os.path.join(PERSISTENCE_DIR, 'alerts.json')
 
-# Ensure the persistence directory exists (good practice for all components)
+# Ensure the persistence directory exists
 os.makedirs(PERSISTENCE_DIR, exist_ok=True)
 
-st.set_page_config(layout="wide") # Use wide layout for better visualization
+st.set_page_config(layout="wide", page_title="CVA Dashboard") 
 
-# --- Helper functions for loading data (from persistence_data) ---
+# --- Helper functions for loading data ---
+
 def load_all_agent_states():
     """Loads the latest state for all agents from their JSON files."""
     agent_states = {}
-    logging.info(f"Dashboard: Starting load cycle. Looking in: {PERSISTENCE_DIR}") # Using logging
     if not os.path.exists(PERSISTENCE_DIR):
-        logging.info(f"Dashboard: Persistence directory NOT found: {PERSISTENCE_DIR}. Returning empty.") # Using logging
         return {}
     
     agent_files = [f for f in os.listdir(PERSISTENCE_DIR) if f.startswith('agent_state_') and f.endswith('.json')]
-    logging.info(f"Dashboard: Found {len(agent_files)} agent state files: {agent_files}") # Using logging
-    
-    if not agent_files:
-        logging.info("Dashboard: No agent_state_*.json files found matching criteria in directory.") # Using logging
         
     for filename in agent_files:
         filepath = os.path.join(PERSISTENCE_DIR, filename)
@@ -47,43 +42,50 @@ def load_all_agent_states():
                 agent_name = state.get('name')
                 if agent_name: 
                     agent_states[agent_name] = state
-                    logging.info(f"Dashboard: Loaded OK: '{agent_name}' from {filename}") # Using logging
-                else:
-                    logging.warning(f"Dashboard: SKIPPED: File {filename} has no 'name' key or it's empty.") # Using logging
-        except (json.JSONDecodeError, FileNotFoundError) as e:
-            st.warning(f"Dashboard: Could not load agent state from {filename}: {e}") # Keep st.warning for dashboard display
-            logging.error(f"Dashboard: ERROR: JSON Decode Error/File Not Found for {filename}: {e}") # Using logging for console error
         except Exception as e:
-            st.warning(f"Dashboard: Unexpected error loading agent state from {filename}: {e}")
-            logging.error(f"Dashboard: ERROR: Unexpected error for {filename}: {e}") # Using logging for console error
+            logging.error(f"Dashboard: Error loading {filename}: {e}")
     
-    logging.info(f"Dashboard: Final count of agents loaded into dashboard: {len(agent_states)}") # Using logging
     return agent_states
 
-def load_swarm_activity_logs():
-    """Loads all logs from the swarm_activity.jsonl file."""
+def load_swarm_activity_logs(limit=50):
+    """Loads recent logs from the swarm_activity.jsonl file."""
     logs = []
     if not os.path.exists(SWARM_ACTIVITY_LOG):
         return logs
     
-    with open(SWARM_ACTIVITY_LOG, 'r') as f:
-        for line in f:
-            try:
-                logs.append(json.loads(line.strip()))
-            except json.JSONDecodeError:
-                continue # Skip malformed lines
+    try:
+        with open(SWARM_ACTIVITY_LOG, 'r') as f:
+            # Read lines efficiently (simulating tail)
+            lines = f.readlines()
+            for line in reversed(lines[-limit:]): # Last N lines, reversed
+                try:
+                    logs.append(json.loads(line.strip()))
+                except json.JSONDecodeError:
+                    continue 
+    except Exception as e:
+        logging.error(f"Error reading logs: {e}")
     return logs
+
+def load_alerts():
+    """Loads active alerts from the persistence file."""
+    if not os.path.exists(ALERTS_FILE):
+        return []
+    try:
+        with open(ALERTS_FILE, 'r') as f:
+            content = f.read().strip()
+            if not content: return []
+            return json.load(f)
+    except (json.JSONDecodeError, FileNotFoundError):
+        return []
 
 # --- Helper functions for Pause/Resume logic ---
 def load_paused_agents():
     """Loads the list of paused agents from persistence."""
     if os.path.exists(PAUSED_AGENTS_FILE):
         try:
-            # --- CRITICAL FIX: Corrected typo here ---
             with open(PAUSED_AGENTS_FILE, 'r') as f: 
                 return json.load(f)
         except json.JSONDecodeError:
-            print(f"Warning: Corrupted {PAUSED_AGENTS_FILE}. Starting with no agents paused.")
             return []
     return []
 
@@ -96,172 +98,179 @@ def save_paused_agents_list_from_dashboard(paused_agents_list):
         st.error(f"Dashboard: Error saving paused agents list: {e}")
 
 def toggle_agent_pause_from_dashboard(agent_name, action):
-    """
-    Toggles the pause state of an agent by modifying a shared JSON file.
-    'action' can be 'pause' or 'resume'.
-    """
-    # FIX: Call the correctly named function
+    """Toggles the pause state of an agent."""
     paused_agents = set(load_paused_agents()) 
     
     if action == 'pause':
-        if agent_name in paused_agents:
-            st.info(f"Agent '{agent_name}' is already paused.")
-        else:
+        if agent_name not in paused_agents:
             paused_agents.add(agent_name)
             save_paused_agents_list_from_dashboard(paused_agents)
-            st.success(f"Agent '{agent_name}' paused successfully.")
-            st.rerun()
+            st.toast(f"⏸️ Paused {agent_name}")
     elif action == 'resume':
-        if agent_name not in paused_agents:
-            st.info(f"Agent '{agent_name}' is not currently paused.")
-        else:
+        if agent_name in paused_agents:
             paused_agents.remove(agent_name)
             save_paused_agents_list_from_dashboard(paused_agents)
-            st.success(f"Agent '{agent_name}' resumed successfully.")
-            st.rerun()
-    else:
-        st.error("Invalid action. Use 'pause' or 'resume'.")
+            st.toast(f"▶️ Resumed {agent_name}")
+    
+    # We don't strictly need st.rerun() here if using st.toast and auto-refresh, 
+    # but it makes UI snappy.
+    # st.rerun() 
 
 # --- Dashboard Layout ---
-st.title("🌌 The First Semantic OS: Live Dashboard")
+st.title("🌌 Catalyst Vector Alpha: Control Center")
 st.markdown("---")
 
-# Auto-refresh mechanism (adjust interval as needed)
-refresh_interval_seconds = 2 # Refresh every 2 seconds
-time_placeholder = st.empty() # Placeholder for current time display
+# Auto-refresh
+refresh_interval = 2
+if st.checkbox("Auto-refresh", value=True):
+    time.sleep(refresh_interval)
+    st.rerun()
 
-st.sidebar.header("Controls")
-if st.sidebar.button("Manual Refresh"):
-    st.rerun() # Force a rerun
-
-st.sidebar.text(f"Auto-refresh: {refresh_interval_seconds}s")
-
-# Load agent states and logs globally for the current rerun cycle
+# Load Data
 agent_states = load_all_agent_states()
-paused_agents = load_paused_agents() # Load paused agents for display
+paused_agents = load_paused_agents()
+alerts = load_alerts()
+logs = load_swarm_activity_logs()
 
-
-# Add a session state variable to store the selected agent's full details for display
+# Initializing Session State for 'Info' button
 if 'selected_agent_details' not in st.session_state:
     st.session_state.selected_agent_details = None
 
 
-# Main content columns
-col1, col2 = st.columns([2, 1])
+# --- MAIN UI COLUMNS ---
+col1, col2 = st.columns([2, 1.2])
 
+# --- LEFT COLUMN: AGENTS ---
 with col1:
-    st.header("Active Agents Overview")
+    st.subheader(f"🤖 Active Agents ({len(agent_states)})")
     
-    # --- Dynamic Agent Table with Pause/Resume Buttons ---
-    # Define columns for the custom table header - SIMPLIFIED FOR READABILITY
-    col_name_h, col_role_h, col_intent_h, col_status_h, col_pause_h, col_resume_h, col_info_h = st.columns([1.5, 0.7, 3.0, 0.7, 0.25, 0.25, 0.4])
-    
-    # Display header row
-    with col_name_h: st.write("**Agent Name**")
-    with col_role_h: st.write("**Role**")
-    with col_intent_h: st.write("**Current Intent**")
-    with col_status_h: st.write("**Status**")
-    with col_pause_h: st.write("**P**") # Abbreviated header for Pause button column
-    with col_resume_h: st.write("**R**") # Abbreviated header for Resume button column
-    with col_info_h: st.write("**Info**") # Header for Info button
-
-    st.markdown("---") # Separator below the header
+    # Custom Table Layout using Columns
+    # Header
+    h1, h2, h3, h4, h5 = st.columns([1.5, 3, 0.8, 1, 0.5])
+    h1.markdown("**Name**")
+    h2.markdown("**Current Intent**")
+    h3.markdown("**Status**")
+    h4.markdown("**Controls**")
+    h5.markdown("**Info**")
+    st.markdown("---")
 
     if agent_states:
-        # Sort agents by name for consistent display
-        sorted_agent_names = sorted(agent_states.keys())
-        for name in sorted_agent_names:
+        sorted_names = sorted(agent_states.keys())
+        for name in sorted_names:
             state = agent_states[name]
             
-            # Extract agent details
-            current_intent_full = state.get('current_intent', 'N/A')
-            # TRUNCATE CURRENT INTENT FOR DISPLAY IN TABLE - MORE AGGRESSIVE
-            current_intent_display = current_intent_full
-            if len(current_intent_display) > 50: # Truncate to 50 chars for table display
-                current_intent_display = current_intent_display[:47] + "..."
+            # Data prep
+            full_intent = state.get('current_intent', 'Idle')
+            display_intent = (full_intent[:50] + '...') if len(full_intent) > 50 else full_intent
             
-            # Location, Gradient, Last Memory are removed from this table for readability
-            # but their full versions will be available via the Info button.
+            is_paused = name in paused_agents
+            status_color = "🔴 Paused" if is_paused else "🟢 Active"
             
-            # Determine agent status and button disabled states
-            status_text = "PAUSED" if name in paused_agents else "ACTIVE"
-            is_paused_status = (name in paused_agents)
-
-            # Create columns for the current agent's row (using adjusted widths)
-            col_name, col_role, col_intent, col_status, col_pause, col_resume, col_info = st.columns([1.5, 0.7, 3.0, 0.7, 0.25, 0.25, 0.4])
-
-            with col_name:
-                st.write(name)
-            with col_role:
-                st.write(state.get('eidos_spec', {}).get('role', 'N/A'))
-            with col_intent:
-                st.write(current_intent_display) # Use display version
-            with col_status:
-                st.write(status_text)
-            with col_pause:
-                st.button(
-                    "⏸️",
-                    key=f"pause_{name}", # Unique key for each button
-                    on_click=toggle_agent_pause_from_dashboard,
-                    args=(name, 'pause',), # Pass agent name and action to the callback
-                    disabled=is_paused_status # Disable if agent is already paused
-                )
-            with col_resume:
-                st.button(
-                    "▶️",
-                    key=f"resume_{name}", # Unique key for each button
-                    on_click=toggle_agent_pause_from_dashboard,
-                    args=(name, 'resume',), # Pass agent name and action to the callback
-                    disabled=not is_paused_status # Disable if agent is already active
-                )
-            with col_info:
-                # Store full details in session_state when info button is clicked
-                if st.button("ℹ️", key=f"info_{name}"):
-                    # Get full details including those not in main table
-                    full_details = {
+            # Row
+            c1, c2, c3, c4, c5 = st.columns([1.5, 3, 0.8, 1, 0.5])
+            
+            c1.code(name.replace("ProtoAgent_", "").replace("_instance_1", ""), language="text")
+            c2.write(display_intent)
+            c3.write(status_color)
+            
+            # Controls
+            with c4:
+                b_col1, b_col2 = st.columns(2)
+                if is_paused:
+                    b_col2.button("▶️", key=f"res_{name}", on_click=toggle_agent_pause_from_dashboard, args=(name, 'resume'))
+                else:
+                    b_col1.button("⏸️", key=f"pau_{name}", on_click=toggle_agent_pause_from_dashboard, args=(name, 'pause'))
+            
+            # Info
+            with c5:
+                if st.button("ℹ️", key=f"inf_{name}"):
+                    # Prepare details for the bottom section
+                    memories = state.get('memetic_kernel', {}).get('memories', [])
+                    last_mem = memories[-1].get('content') if memories else "No memories"
+                    
+                    st.session_state.selected_agent_details = {
                         "Name": name,
-                        "Role": state.get('eidos_spec', {}).get('role', 'N/A'),
-                        "Full Current Intent": current_intent_full, # Store full intent
-                        "Location": state.get('location', 'N/A'),
-                        "Gradient": state.get('sovereign_gradient'), # This is the full dict for Gradient
-                        "Last Memory": state.get('memetic_kernel', {}).get('memories', [])[-1].get('content', 'No memories yet.') if state.get('memetic_kernel', {}).get('memories') else 'No memories yet.'
+                        "Full Intent": full_intent,
+                        "Gradient": state.get('sovereign_gradient', {}),
+                        "Last Memory": last_mem,
+                        "Config": state.get('eidos_spec', {})
                     }
-                    st.session_state.selected_agent_details = full_details
-                    st.rerun() # Re-run to display details below
 
-        st.markdown("---") # Separator at the bottom of the table
     else:
-        st.info("No active agents found. Run 'catalyst_vector_alpha.py' to spawn agents.")
+        st.info("No agents detected. Is CVA running?")
 
-    # --- Display Selected Agent Details Section ---
+    # --- Selected Agent Details (Bottom of Left Col) ---
     if st.session_state.selected_agent_details:
-        st.subheader(f"Details for {st.session_state.selected_agent_details['Name']}")
-        
-        details = st.session_state.selected_agent_details
-        
-        # Format gradient for better display in the details section
-        gradient_display = "None"
-        if details.get('Gradient'):
-            g = details['Gradient']
-            gradient_display = (
-                f"**Vector:** {g.get('autonomy_vector', 'N/A')}\n"
-                f"**Ethical Constraints:** {', '.join(g.get('ethical_constraints', []))}\n"
-                f"**Self-Correction Protocol:** {g.get('self_correction_protocol', 'N/A')}\n"
-                f"**Override Threshold:** {g.get('override_threshold', 'N/A')}"
-            )
-
-        st.write(f"**Role:** {details.get('Role')}")
-        st.write(f"**Location:** {details.get('Location')}")
-        st.write(f"**Full Current Intent:**")
-        st.info(details.get('Full Current Intent')) # Use st.info for a visually distinct block
-        st.write(f"**Last Memory:**")
-        st.info(details.get('Last Memory')) # Use st.info for a visually distinct block
-        st.write(f"**Sovereign Gradient:**")
-        st.info(gradient_display) # Use st.info for a visually distinct block
-        
         st.markdown("---")
-        if st.button("Clear Details"):
+        d = st.session_state.selected_agent_details
+        st.subheader(f"🔍 Details: {d['Name']}")
+        st.info(f"**Intent:** {d['Full Intent']}")
+        
+        with st.expander("🧠 Last Memory", expanded=True):
+            st.write(d['Last Memory'])
+            
+        with st.expander("⚙️ Sovereign Gradient"):
+            st.json(d['Gradient'])
+            
+        if st.button("Close Details"):
             st.session_state.selected_agent_details = None
             st.rerun()
 
-# ... (rest of the semantic_dashboard.py code for logs, conflict monitor, etc., remains the same) ...
+# --- RIGHT COLUMN: ALERTS & LOGS ---
+with col2:
+    # --- SYSTEM ALERTS SECTION ---
+    st.subheader("🔥 Active Alerts")
+    
+    if alerts:
+        # Check if we have critical flight updates
+        flight_alerts = [a for a in alerts if a.get('type') == 'flight_update']
+        if flight_alerts:
+            st.error(f"✈️ {len(flight_alerts)} Flight Update(s) Detected!")
+            
+        for alert in reversed(alerts[-5:]): # Show last 5
+            icon = "🚨"
+            atype = alert.get('type', 'unknown')
+            
+            if atype == 'flight_update': icon = "✈️"
+            elif atype == 'invoice': icon = "💰"
+            elif 'cpu' in atype: icon = "💻"
+            
+            with st.expander(f"{icon} {atype.upper()}", expanded=True):
+                st.caption(f"Source: {alert.get('source')}")
+                st.write(f"**Subject:** {alert.get('subject', 'N/A')}")
+                
+                details = alert.get('details', {})
+                if details:
+                    st.json(details)
+                
+                ts = alert.get('timestamp')
+                if ts:
+                    st.caption(f"Time: {time.ctime(ts)}")
+    else:
+        st.success("System Clear. No active alerts.")
+
+    st.markdown("---")
+
+    # --- LIVE LOGS SECTION ---
+    st.subheader("📜 Live Activity Log")
+    
+    log_container = st.container(height=400) # Scrollable container
+    with log_container:
+        for log in logs:
+            # Format log entry
+            event = log.get('event_type', 'UNKNOWN')
+            desc = log.get('description', '')
+            src = log.get('source', '').replace("ProtoAgent_", "").replace("_instance_1", "")
+            
+            # Color coding for log types
+            emoji = "🔹"
+            if "ALERT" in event: emoji = "🚨"
+            elif "TOOL" in event: emoji = "🛠️"
+            elif "PLAN" in event: emoji = "🧠"
+            elif "ERROR" in event or "failed" in desc.lower(): emoji = "❌"
+            elif "SUCCESS" in event or "completed" in desc.lower(): emoji = "✅"
+            elif "CONFLICT" in desc: emoji = "⚠️"
+
+            st.markdown(f"**{emoji} {src}**: `{event}`")
+            st.caption(desc)
+            st.markdown("---")
