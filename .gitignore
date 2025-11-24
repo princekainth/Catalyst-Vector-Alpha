@@ -34,3 +34,6 @@ output/
 snapshots/
 *.db
 .env
+credentials.json
+token.json
+*.json
