@@ -261,7 +261,7 @@ def check_emails_loop(service, llm):
         # We only want to process a few emails at a time to not get rate-limited
         results = service.users().messages().list(
             userId="me", 
-            q="is:unread",
+            q="is:unread newer_than:1d",
             maxResults=5 # Process 5 at a time
         ).execute()
         
