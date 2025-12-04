@@ -81,6 +81,12 @@ except ImportError:
     write_sandbox_file = None
     SANDBOX_AVAILABLE = False
 
+# Toolsmith generation (sandboxed)
+try:
+    from sandbox_toolsmith import generate_tool as toolsmith_generate
+except Exception:
+    toolsmith_generate = None
+
 class ToolCache:
     """Simple TTL cache for expensive tool results."""
     def __init__(self):
@@ -114,8 +120,11 @@ def retry_on_failure(max_retries: int = 3, delay: float = 1.0, backoff: float = 
         def wrapper(*args, **kwargs):
             last_error = None
             current_delay = delay
+            cancel_event = kwargs.get("cancel_event")
             
             for attempt in range(max_retries):
+                if cancel_event and cancel_event.is_set():
+                    return {"ok": False, "error": "cancelled"}
                 try:
                     result = func(*args, **kwargs)
                     # Check if result indicates failure
@@ -135,22 +144,28 @@ def retry_on_failure(max_retries: int = 3, delay: float = 1.0, backoff: float = 
         return wrapper
     return decorator
 
+from config_manager import get_config
+
 # ------------------------------------------------------------------------------
 # Configuration & Constants
 # ------------------------------------------------------------------------------
+_config = get_config()
+_tool_cfg = _config.get("tool_timeouts") or {}
+
+
 class ToolConfig:
-    """Central configuration for all tools"""
-    KUBECTL_TIMEOUT = 15
-    REQUEST_TIMEOUT = 12
-    SCALE_MIN_INTERVAL = float(os.getenv("CVA_SCALE_MIN_INTERVAL_S", "300"))
-    MAX_PROCESS_LIMIT = 100
-    MAX_FILE_SIZE_MB = 50
-    MAX_WEBPAGE_SIZE = 8000
-    MAX_SEARCH_RESULTS = 5
+    """Central configuration for all tools (overridable via config/*.yaml)"""
+    KUBECTL_TIMEOUT = int(_tool_cfg.get("kubectl_timeout", 15))
+    REQUEST_TIMEOUT = int(_tool_cfg.get("request_timeout", 12))
+    SCALE_MIN_INTERVAL = float(_tool_cfg.get("scale_min_interval", float(os.getenv("CVA_SCALE_MIN_INTERVAL_S", "300"))))
+    MAX_PROCESS_LIMIT = int(_tool_cfg.get("max_process_limit", 100))
+    MAX_FILE_SIZE_MB = int(_tool_cfg.get("max_file_size_mb", 50))
+    MAX_WEBPAGE_SIZE = int(_tool_cfg.get("max_webpage_size", 8000))
+    MAX_SEARCH_RESULTS = int(_tool_cfg.get("max_search_results", 5))
     
     # Security limits
-    MAX_SCAN_TARGETS = 10
-    MAX_HASH_TEXT_SIZE = 10 * 1024 * 1024  # 10MB
+    MAX_SCAN_TARGETS = int(_tool_cfg.get("max_scan_targets", 10))
+    MAX_HASH_TEXT_SIZE = int(_tool_cfg.get("max_hash_text_size", 10 * 1024 * 1024))  # 10MB default
     
     @classmethod
     def validate(cls):
@@ -564,10 +579,14 @@ def _parse_kubectl_top_pods(raw: str) -> List[Dict[str, Any]]:
 
 def kubernetes_pod_metrics_tool(namespace: Optional[str] = None,
                                 selector: Optional[str] = None,
-                                limit: int = 50) -> dict:
+                                limit: int = 50,
+                                cancel_event: Optional[threading.Event] = None) -> dict:
     """Get Kubernetes pod metrics using kubectl top"""
     _usage_tracker.track_usage("kubernetes_pod_metrics_tool")
     
+    if cancel_event and cancel_event.is_set():
+        return standardize_response("error", error="cancelled")
+
     if not SafeSubprocess.check_available("kubectl"):
         return standardize_response("error", error="kubectl not found on PATH")
     
@@ -583,7 +602,10 @@ def kubernetes_pod_metrics_tool(namespace: Optional[str] = None,
         success, stdout, stderr = SafeSubprocess.run(cmd, timeout=ToolConfig.KUBECTL_TIMEOUT)
         if not success:
             return standardize_response("error", error=stderr, cmd=" ".join(cmd))
-        
+
+        if cancel_event and cancel_event.is_set():
+            return standardize_response("error", error="cancelled")
+
         rows = _parse_kubectl_top_pods(stdout)
         if limit:
             rows = rows[:max(1, int(limit))]
@@ -619,10 +641,14 @@ def _get_deploy(ns: str, name: str) -> Dict[str, Any]:
 
 def find_wasteful_deployments_tool(namespace: str = "default", 
                                    cpu_threshold: float = 5.0,
-                                   min_replicas: int = 2) -> dict:
+                                   min_replicas: int = 2,
+                                   cancel_event: Optional[threading.Event] = None) -> dict:
     """Find deployments with low CPU utilization but high replica count"""
     _usage_tracker.track_usage("find_wasteful_deployments_tool")
     
+    if cancel_event and cancel_event.is_set():
+        return standardize_response("error", error="cancelled")
+
     if not SafeSubprocess.check_available("kubectl"):
         return standardize_response("error", error="kubectl not found on PATH")
     
@@ -637,6 +663,13 @@ def find_wasteful_deployments_tool(namespace: str = "default",
         wasteful = []
         
         for item in data.get("items", []):
+            if cancel_event and cancel_event.is_set():
+                return standardize_response(
+                    "error",
+                    error="cancelled",
+                    data={"wasteful_deployments": wasteful, "partial": True}
+                )
+
             name = item["metadata"]["name"]
             replicas = item["spec"].get("replicas", 0)
             
@@ -651,6 +684,13 @@ def find_wasteful_deployments_tool(namespace: str = "default",
                 if not success or not top_stdout.strip():
                     continue
                 
+                if cancel_event and cancel_event.is_set():
+                    return standardize_response(
+                        "error",
+                        error="cancelled",
+                        data={"wasteful_deployments": wasteful, "partial": True}
+                    )
+
                 total_cpu_millicores = 0
                 pod_count = 0
                 
@@ -886,10 +926,13 @@ def get_environmental_data_tool(location: Optional[str] = "server_room_3",
     return standardize_response("ok", data=payload, location=location, data_type=data_type, source="simulated")
 
 @retry_on_failure(max_retries=3, delay=1.0)
-def web_search_tool(query: str, max_results: int = 3) -> dict:
+def web_search_tool(query: str, max_results: int = 3, cancel_event: Optional[threading.Event] = None) -> dict:
     """Search the web using DuckDuckGo"""
     _usage_tracker.track_usage("web_search_tool")
     
+    if cancel_event and cancel_event.is_set():
+        return standardize_response("error", error="cancelled")
+
     if not query or _is_placeholder(query):
         return standardize_response("error", error="Query cannot be empty")
     
@@ -898,7 +941,15 @@ def web_search_tool(query: str, max_results: int = 3) -> dict:
     
     try:
         max_results = min(max(1, max_results), ToolConfig.MAX_SEARCH_RESULTS)
-        results = list(DDGS().text(query, max_results=max_results))
+        results = []
+        for res in DDGS().text(query, max_results=max_results):
+            if cancel_event and cancel_event.is_set():
+                return standardize_response(
+                    "error",
+                    error="cancelled",
+                    data={"results": results, "query": query, "count": len(results)}
+                )
+            results.append(res)
         return standardize_response("ok", 
                                   data={"results": results, "query": query, "count": len(results)},
                                   summary=f"Found {len(results)} results for '{query}'")
@@ -949,11 +1000,192 @@ def update_resource_allocation_tool(resource_type: str, target_agent_name: str, 
     
     return standardize_response("ok", data=data, summary=f"Updated {resource_type} for {target_agent_name}")
 
+def long_sleep_tool(seconds: int = 60, cancel_event: Optional[threading.Event] = None) -> dict:
+    """Sleep for N seconds (testing timeout behavior) with cooperative cancel."""
+    try:
+        s = int(seconds)
+    except Exception:
+        return standardize_response("error", error="seconds must be an integer")
+    if s < 1:
+        return standardize_response("error", error="seconds must be >= 1")
+    s = min(s, 900)  # cap to 15 minutes to avoid runaway hangs
+    end_time = time.time() + s
+    while time.time() < end_time:
+        if cancel_event and cancel_event.is_set():
+            return standardize_response("error", error="sleep cancelled")
+        time.sleep(1)
+    return standardize_response("ok", data={"slept_seconds": s}, summary=f"Slept for {s} seconds")
+
+def system_diagnostics_tool(cancel_event: Optional[threading.Event] = None) -> dict:
+    """Return high-level system diagnostics for CVA."""
+    if cancel_event and cancel_event.is_set():
+        return standardize_response("error", error="cancelled")
+
+    diag = {}
+    try:
+        diag["cpu_percent"] = psutil.cpu_percent(interval=0.1)
+        diag["memory_percent"] = psutil.virtual_memory().percent
+    except Exception as e:
+        diag["resource_error"] = str(e)
+
+    try:
+        diag["python_threads"] = threading.active_count()
+    except Exception as e:
+        diag["thread_error"] = str(e)
+
+    # Active agents if orchestrator is available
+    active_agents = None
+    try:
+        cva = globals().get("_cva_instance")
+        if cva:
+            if hasattr(cva, "_agents_lock"):
+                with cva._agents_lock:
+                    active_agents = len(getattr(cva, "agent_instances", {}) or {})
+            else:
+                active_agents = len(getattr(cva, "agent_instances", {}) or {})
+        diag["active_agents"] = active_agents
+    except Exception as e:
+        diag["active_agents_error"] = str(e)
+
+    # DB connectivity (best-effort)
+    try:
+        from db_postgres import health_check
+        if health_check():
+            diag["db_status"] = "ok"
+        else:
+            diag["db_status"] = "error: connection failed"
+    except Exception as e:
+        diag["db_status"] = f"error: {e}"
+
+    # Recent tool timeouts/errors from logs (best-effort tail scan)
+    try:
+        log_path = Path("logs/catalyst.log")
+        timeouts = 0
+        failures = 0
+        if log_path.exists():
+            lines = log_path.read_text(errors="ignore").splitlines()[-500:]
+            for line in lines:
+                if "TOOL TIMEOUT" in line:
+                    timeouts += 1
+                if "TOOL FAILED" in line:
+                    failures += 1
+        diag["recent_tool_timeouts"] = timeouts
+        diag["recent_tool_errors"] = failures
+    except Exception as e:
+        diag["log_scan_error"] = str(e)
+
+    # Tool breaker snapshot (visibility)
+    try:
+        from tool_registry import tool_registry as _global_registry
+        if _global_registry and hasattr(_global_registry, "_breaker_status_tool"):
+            breaker = _global_registry._breaker_status_tool()
+            diag["tool_breakers"] = breaker.get("data")
+    except Exception as e:
+        diag["tool_breakers_error"] = str(e)
+
+    return standardize_response("ok", data=diag, summary="System diagnostics collected")
+
+def self_test_tool(cancel_event: Optional[threading.Event] = None) -> dict:
+    """Quick smoke test: DB ping, registry check, trivial tool call, agent instantiation check."""
+    if cancel_event and cancel_event.is_set():
+        return standardize_response("error", error="cancelled")
+
+    report = {}
+
+    # DB ping
+    try:
+        from db_postgres import health_check
+        if health_check():
+            report["db_ping"] = "ok"
+        else:
+            report["db_ping"] = "error: connection failed"
+    except Exception as e:
+        report["db_ping"] = f"error: {e}"
+
+    # Registry initialized
+    try:
+        from tool_registry import tool_registry
+        report["tool_registry_initialized"] = bool(tool_registry.list_tool_names())
+    except Exception as e:
+        report["tool_registry_initialized"] = f"error: {e}"
+
+    # Trivial tool call
+    try:
+        from tool_registry import tool_registry
+        trivial = tool_registry.safe_call("measure_responsiveness")
+        status = trivial.get("status") if isinstance(trivial, dict) else "unknown"
+        report["trivial_tool_call"] = status
+    except Exception as e:
+        report["trivial_tool_call"] = f"error: {e}"
+
+    # Agent instantiation check (best effort)
+    try:
+        cva = globals().get("_cva_instance")
+        if cva:
+            with getattr(cva, "_agents_lock", threading.Lock()):
+                report["agent_instances_detected"] = len(getattr(cva, "agent_instances", {}) or {})
+        else:
+            report["agent_instances_detected"] = "cva_instance_not_set"
+    except Exception as e:
+        report["agent_instances_detected"] = f"error: {e}"
+
+    status = "ok"
+    if any(isinstance(v, str) and v.startswith("error") for v in report.values()):
+        status = "error"
+    return standardize_response(status, data=report, summary="Self test completed")
+
+def restart_agent_tool(agent_name: str, cancel_event: Optional[threading.Event] = None) -> dict:
+    """Remove an agent from the registry and re-instantiate via AgentFactory."""
+    if cancel_event and cancel_event.is_set():
+        return standardize_response("error", error="cancelled")
+    if not agent_name:
+        return standardize_response("error", error="agent_name is required")
+
+    cva = globals().get("_cva_instance")
+    if not cva:
+        return standardize_response("error", error="CVA instance not available")
+
+    removed = False
+    try:
+        lock = getattr(cva, "_agents_lock", None)
+        if lock:
+            with lock:
+                removed = cva.agent_instances.pop(agent_name, None) is not None
+        else:
+            removed = cva.agent_instances.pop(agent_name, None) is not None
+    except Exception as e:
+        return standardize_response("error", error=f"failed to remove agent: {e}")
+
+    # Attempt re-spawn via AgentFactory if a spec exists
+    respawned = False
+    new_id = None
+    try:
+        if hasattr(cva, "agent_factory"):
+            # Best-effort: reuse a generic spawn (purpose=agent_name)
+            result = cva.agent_factory.spawn_agent(purpose=agent_name, context={}, parent_agent="restart_agent_tool", ttl_hours=24.0)
+            if result and not isinstance(result, dict):
+                respawned = True
+                new_id = getattr(result, "spec", {}).agent_id if hasattr(result, "spec") else None
+                # register into orchestrator
+                lock = getattr(cva, "_agents_lock", None)
+                if lock:
+                    with lock:
+                        cva.agent_instances[result.spec.agent_id] = result
+                else:
+                    cva.agent_instances[result.spec.agent_id] = result
+    except Exception as e:
+        return standardize_response("error", error=f"failed to respawn: {e}", data={"removed": removed})
+
+    return standardize_response("ok", data={"removed": removed, "respawned": respawned, "new_agent_id": new_id}, summary="Agent restart attempted")
+
 @retry_on_failure(max_retries=3, delay=1.0)
-def read_webpage_tool(url: str) -> dict:
+def read_webpage_tool(url: str, cancel_event: Optional[threading.Event] = None) -> dict:
     """Read and extract text content from webpage"""
     _usage_tracker.track_usage("read_webpage_tool")
     
+    if cancel_event and cancel_event.is_set():
+        return standardize_response("error", error="cancelled")
+
     if not url or _is_placeholder(url):
         return standardize_response("error", error="URL cannot be empty")
     
@@ -965,22 +1197,33 @@ def read_webpage_tool(url: str) -> dict:
     
     try:
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Referer': 'https://www.google.com/',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1'
         }
         
-        session = RetrySession.create_session()
-        response = session.get(url, headers=headers, timeout=ToolConfig.REQUEST_TIMEOUT) if session else requests.get(url, headers=headers, timeout=ToolConfig.REQUEST_TIMEOUT)
-        response.raise_for_status()
-        
-        # Basic HTML cleaning
+        if cancel_event and cancel_event.is_set():
+            return standardize_response("error", error="cancelled", data={"content": ""})
+
+        session = requests.Session()
+        timeout = min(ToolConfig.REQUEST_TIMEOUT, 20) if hasattr(ToolConfig, "REQUEST_TIMEOUT") else 20
+        response = session.get(url, headers=headers, timeout=timeout)
+        response.raise_for_status()  # will raise for 4xx/5xx including 401/403/404
+
+        if cancel_event and cancel_event.is_set():
+            return standardize_response("error", error="cancelled", data={"content": ""})
+
+        response.encoding = response.apparent_encoding
         html = response.text
-        text = re.sub('<[^<]+?>', ' ', html)  # Remove HTML tags
-        text = re.sub(r'\s+', ' ', text).strip()  # Normalize whitespace
-        
-        # Truncate if necessary
+        text = re.sub('<[^<]+?>', ' ', html)
+        text = re.sub(r'\s+', ' ', text).strip()
         if len(text) > ToolConfig.MAX_WEBPAGE_SIZE:
             text = text[:ToolConfig.MAX_WEBPAGE_SIZE] + "... [truncated]"
-        
+
         data = {
             "content": text,
             "url": url,
@@ -988,16 +1231,15 @@ def read_webpage_tool(url: str) -> dict:
             "encoding": response.encoding,
             "status_code": response.status_code
         }
-        
+
         return standardize_response("ok", data=data, summary=f"Read {len(text)} characters from {url}")
-    except requests.RequestException as e:
-        _usage_tracker.track_usage("read_webpage_tool", success=False)
-        return standardize_response("error", error=f"HTTP error: {str(e)}")
     except Exception as e:
         _usage_tracker.track_usage("read_webpage_tool", success=False)
+        err_msg = f"Error reading page: {str(e)}"
+        return standardize_response("error", error=err_msg, data={"content": err_msg, "url": url})
         return standardize_response("error", error=str(e))
 
-def send_desktop_notification_tool(title: str, message: str) -> dict:
+def send_desktop_notification_tool(title: str, message: str, cancel_event: Optional[threading.Event] = None) -> dict:
     """
     Send a desktop notification to the user.
     
@@ -1011,22 +1253,36 @@ def send_desktop_notification_tool(title: str, message: str) -> dict:
     import subprocess
     import platform
     
+    if cancel_event and cancel_event.is_set():
+        return standardize_response("error", error="cancelled")
+
     try:
         system = platform.system()
         
         if system == "Linux":
-            # Use notify-send on Linux
-            subprocess.run(
-                ["notify-send", title, message],
-                check=True,
-                timeout=5
-            )
+            proc = subprocess.Popen(["notify-send", title, message])
+            waited = 0
+            while proc.poll() is None and waited < 5:
+                if cancel_event and cancel_event.is_set():
+                    proc.terminate()
+                    return standardize_response("error", error="cancelled")
+                time.sleep(0.1)
+                waited += 0.1
+            if proc.poll() is None:
+                proc.terminate()
+                return standardize_response("error", error="timeout")
         elif system == "Darwin":  # macOS
-            subprocess.run(
-                ["osascript", "-e", f'display notification "{message}" with title "{title}"'],
-                check=True,
-                timeout=5
-            )
+            proc = subprocess.Popen(["osascript", "-e", f'display notification "{message}" with title "{title}"'])
+            waited = 0
+            while proc.poll() is None and waited < 5:
+                if cancel_event and cancel_event.is_set():
+                    proc.terminate()
+                    return standardize_response("error", error="cancelled")
+                time.sleep(0.1)
+                waited += 0.1
+            if proc.poll() is None:
+                proc.terminate()
+                return standardize_response("error", error="timeout")
         elif system == "Windows":
             try:
                 import importlib
@@ -1034,21 +1290,11 @@ def send_desktop_notification_tool(title: str, message: str) -> dict:
                 toaster = win10toast.ToastNotifier()
                 toaster.show_toast(title, message, duration=5)
             except ImportError:
-                return {"ok": False, "error": "win10toast not installed"}
-        return {
-            "ok": True,
-            "success": True,
-            "title": title,
-            "message": message,
-            "platform": system
-        }
+                return standardize_response("ok", data={"simulated": True, "platform": system, "title": title, "message": message}, summary="Simulated Windows toast (win10toast missing)")
+        return standardize_response("ok", data={"title": title, "message": message, "platform": system}, summary="Notification sent")
         
     except Exception as e:
-        return {
-            "ok": False,
-            "success": False,
-            "error": str(e)
-        }
+        return standardize_response("error", error=str(e))
 
 def redact_pii_tool(text: str) -> dict:
     """Redact PII (Personally Identifiable Information) from text"""
@@ -1093,34 +1339,73 @@ def redact_pii_tool(text: str) -> dict:
         _usage_tracker.track_usage("redact_pii_tool", success=False)
         return standardize_response("error", error=str(e))
 
-def check_calendar_tool(time_min_utc: str, time_max_utc: str) -> dict:
+def check_calendar_tool(time_min_utc: str = None, time_max_utc: str = None, **kwargs) -> dict:
     """
     Check Google Calendar for events in a time range.
     
     Args:
         time_min_utc: Start time in ISO format (e.g., "2024-11-20T00:00:00Z")
         time_max_utc: End time in ISO format (e.g., "2024-11-20T23:59:59Z")
+        date: Optional YYYY-MM-DD; if provided and time_min_utc is missing, use full day window
         
     Returns:
         Dict with calendar events
     """
-    try:
-        from gmail_agent import get_calendar_events
-        events = get_calendar_events(time_min_utc, time_max_utc)
+    # 1. Handle synonyms (AI hallucinations)
+    # The AI sometimes uses 'start_time' or 'start_date' instead of strict keys
+    if kwargs.get("start_time") and not time_min_utc:
+        time_min_utc = kwargs.get("start_time")
+    if kwargs.get("start_date") and not time_min_utc:
+        time_min_utc = kwargs.get("start_date")
+        
+    if kwargs.get("end_time") and not time_max_utc:
+        time_max_utc = kwargs.get("end_time")
+    if kwargs.get("end_date") and not time_max_utc:
+        time_max_utc = kwargs.get("end_date")
+
+    # 2. Handle 'date' shortcut (Laziness)
+    if kwargs.get("date") and not time_min_utc:
+        try:
+            day = kwargs.get("date")
+            time_min_utc = f"{day}T00:00:00Z"
+            time_max_utc = f"{day}T23:59:59Z"
+        except Exception:
+            pass
+
+    # 3. Guard Clause
+    if not time_min_utc or not time_max_utc:
         return {
-            "ok": True,
+            "success": False,
+            "data": None,
+            "error": f"Missing required arguments. Received: time_min={time_min_utc}, date={kwargs.get('date')}"
+        }
+
+    # 4. Main Logic
+    try:
+        # Import inside function to avoid circular imports
+        from gmail_agent import get_calendar_events
+        
+        # Call the function you just added to gmail_agent.py
+        events = get_calendar_events(time_min_utc, time_max_utc)
+        
+        # Ensure we always return a dict, even if events is None/Empty
+        safe_events = events if events else []
+        
+        return {
             "success": True,
-            "events": events,
-            "count": len(events) if events else 0
+            "data": {
+                "events": safe_events,
+                "count": len(safe_events)
+            },
+            "error": None
         }
     except Exception as e:
         return {
-            "ok": False,
             "success": False,
-            "error": str(e),
-            "events": []
+            "data": None,
+            "error": str(e)
         }
-
+    
 # ---- Management & Utility Tools ----
 def get_tool_usage_stats_tool() -> dict:
     """Get usage statistics for all tools"""

@@ -835,8 +835,10 @@ def safe_truncate(text: str, max_length: int = 500, suffix: str = "...[truncated
 
 def validate_plan_shape(plan: dict, available_agents: set, available_tools: set) -> tuple[bool, str]:
     """
-    Lenient pre-normalization validation. Only verify basic structure & types.
-    Defer concrete agent/tool resolution to the normalizer.
+    Lenient validation for pre-normalization plans.
+    This first-pass check validates the basic structure and types of a plan
+    before it undergoes full normalization, which resolves concrete agent/tool
+    assignments.
     """
     if not isinstance(plan, dict):
         return False, "Plan must be a dict."

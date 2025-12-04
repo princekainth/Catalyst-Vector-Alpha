@@ -85,6 +85,7 @@ class Tool:
     normalizer: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None
     task_type: Optional[str] = None
     roles_allowed: Set[str] = field(default_factory=set)
+    timeout_seconds: Optional[float] = None  # default: registry fallback
 
     _last_called_at: float = field(default=0.0, init=False, repr=False)
 

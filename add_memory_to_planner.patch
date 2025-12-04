@@ -1,0 +1,39 @@
+--- a/agents.py
++++ b/agents.py
+@@ -3954,6 +3954,32 @@ class ProtoAgent_Planner(ProtoAgent):
+     def _pick_next_mission(self) -> str | None:
+         """
+         Returns the next mission string that is not cooling down.
++        NOW WITH MEMORY: Consults past failures before selecting.
+         """
+         now = int(time.time())
+         # Ensure structures exist
+@@ -3962,6 +3988,28 @@ class ProtoAgent_Planner(ProtoAgent):
+         if not hasattr(self, "_mission_backoff"):     self._mission_backoff = {}
+         if not hasattr(self, "_default_cooldown"):    self._default_cooldown = 30
+         if not hasattr(self, "_max_backoff"):         self._max_backoff = 600
++        
++        # NEW: Query memory about recent mission outcomes
++        try:
++            recent_memories = self.memetic_kernel.retrieve_recent_memories(lookback_period=50)
++            failure_patterns = {}
++            
++            for mem in recent_memories:
++                content_str = str(mem.get('content', ''))
++                # Count failures per mission type
++                for mission in self._mission_queue:
++                    if f"Planning failed for '{mission}'" in content_str:
++                        failure_patterns[mission] = failure_patterns.get(mission, 0) + 1
++            
++            # Log what memory tells us
++            if failure_patterns:
++                sorted_failures = sorted(failure_patterns.items(), key=lambda x: x[1], reverse=True)
++                self._log_agent_activity("MEMORY_INFORMED_DECISION", self.name,
++                    f"Memory shows recent failures: {dict(sorted_failures[:3])}",
++                    {"failure_counts": failure_patterns}, level='info')
++        except Exception as e:
++            print(f"[Planner] Memory query failed: {e}")
++        
+         # Iterate once over the queue looking for a ready mission
+         for _ in range(len(self._mission_queue)):
+             mission = self._mission_queue[0]  # peek

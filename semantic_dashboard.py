@@ -4,6 +4,9 @@ import json
 import os
 import time
 import logging 
+import requests
+import psycopg2
+import pandas as pd
 
 # Configure logging to show info messages in the console/log file
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
@@ -135,6 +138,70 @@ logs = load_swarm_activity_logs()
 # Initializing Session State for 'Info' button
 if 'selected_agent_details' not in st.session_state:
     st.session_state.selected_agent_details = None
+
+# --- Derived telemetry helpers ---
+def _agent_latencies():
+    """Approximate agent responsiveness via agent_state file mtimes."""
+    latencies = {}
+    now = time.time()
+    if not os.path.exists(PERSISTENCE_DIR):
+        return latencies
+    for filename in os.listdir(PERSISTENCE_DIR):
+        if filename.startswith("agent_state_") and filename.endswith(".json"):
+            path = os.path.join(PERSISTENCE_DIR, filename)
+            try:
+                mtime = os.path.getmtime(path)
+                age = max(0, now - mtime)
+                name = filename.replace("agent_state_", "").replace(".json", "")
+                latencies[name] = age
+            except Exception:
+                continue
+    return latencies
+
+def _fetch_tool_breakers():
+    url = "http://localhost:5000/api/tool_breakers"
+    try:
+        resp = requests.get(url, timeout=3)
+        if resp.status_code == 200:
+            return resp.json()
+    except Exception:
+        return None
+    return None
+
+def _stability_counter():
+    """Count restart events from metrics if available; fallback to logs."""
+    # Prefer DB metrics
+    try:
+        from db_postgres import DB_CONFIG
+        conn = psycopg2.connect(**DB_CONFIG)
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT COUNT(*) 
+            FROM metrics 
+            WHERE metric_type IN ('circuit_breaker_reset','circuit_breaker_trip','supervisor_restart')
+              AND timestamp > NOW() - INTERVAL '24 hours'
+        """)
+        row = cur.fetchone()
+        conn.close()
+        if row:
+            return row[0] or 0
+    except Exception:
+        pass
+    # Fallback to log scan
+    count = 0
+    if os.path.exists(SWARM_ACTIVITY_LOG):
+        try:
+            with open(SWARM_ACTIVITY_LOG, "r") as f:
+                for line in f.readlines()[-500:]:
+                    if "RESTART" in line.upper():
+                        count += 1
+        except Exception:
+            pass
+    return count
+
+agent_latencies = _agent_latencies()
+breaker_status = _fetch_tool_breakers()
+stability_count = _stability_counter()
 
 
 # --- MAIN UI COLUMNS ---
@@ -274,3 +341,40 @@ with col2:
             st.markdown(f"**{emoji} {src}**: `{event}`")
             st.caption(desc)
             st.markdown("---")
+
+# --- SECOND ROW: Telemetry & Health ---
+st.markdown("---")
+tele_col1, tele_col2, tele_col3 = st.columns([1.2, 1.2, 1])
+
+with tele_col1:
+    st.subheader("⏱️ Agent Speedometer")
+    if agent_latencies:
+        planner_latency = agent_latencies.get("ProtoAgent_Planner_instance_1")
+        worker_latency = agent_latencies.get("ProtoAgent_Worker_instance_1")
+        st.metric("Planner freshness (s)", f"{planner_latency:.1f}" if planner_latency is not None else "N/A")
+        st.metric("Worker freshness (s)", f"{worker_latency:.1f}" if worker_latency is not None else "N/A")
+        st.caption("Lower is fresher (time since last state write).")
+    else:
+        st.info("No agent state files found.")
+
+with tele_col2:
+    st.subheader("🛠️ Tool Health Board")
+    if breaker_status and breaker_status.get("status") == "ok":
+        tools = breaker_status.get("data", {}).get("tools", [])
+        healthy = [t for t in tools if t.get("status") == "healthy"]
+        broken = [t for t in tools if t.get("status") == "broken"]
+        expired = [t for t in tools if t.get("status") == "expired"]
+        st.success(f"Healthy: {len(healthy)}")
+        if broken:
+            st.error(f"Broken: {len(broken)}")
+            for t in broken[:6]:
+                st.write(f"🔴 {t.get('tool')} (until {int(t.get('broken_until',0))})")
+        if expired:
+            st.warning(f"Expired: {len(expired)} (awaiting reset)")
+    else:
+        st.info("Tool breaker status unavailable (is API up?).")
+
+with tele_col3:
+    st.subheader("🧭 Stability Counter")
+    st.metric("Events (24h)", stability_count)
+    st.caption("Restart / breaker events (metrics preferred, logs fallback).")

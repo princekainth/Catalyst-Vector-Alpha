@@ -1,0 +1,6 @@
+venv/
+logs/
+persistence_data/
+__pycache__/
+*.db
+*.pyc

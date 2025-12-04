@@ -14,6 +14,7 @@ import time
 import uuid
 import json
 import logging
+from supervisor import CognitiveSupervisor
 import threading
 from threading import Thread, Lock
 from collections import deque
@@ -25,7 +26,6 @@ import gmail_agent
 import threading
 from flask import Response
 import time
-from flask_cors import CORS
 
 # --- Environment --------------------------------------------------------------
 try:
@@ -69,6 +69,9 @@ system_thread: Optional[Thread] = None
 tasks: Dict[str, Dict[str, Any]] = {}
 tasks_lock = Lock()
 
+# Recent task outcomes buffer (optional helper)
+RECENT_TASKS = deque(maxlen=100)
+
 # Live UI event feed (thread-safe)
 LIVE_EVENTS = deque(maxlen=50)
 events_lock = Lock()
@@ -77,6 +80,9 @@ events_lock = Lock()
 # Expected keys: task_id, status, action, namespace, deployment, replicas, ts, approval_token
 plan_store: Dict[str, Dict[str, Any]] = {}
 plan_lock = Lock()
+
+# Protect agent instance access from Flask threads
+agent_instances_lock = Lock()
 
 # Mission runner (CPU threshold mission helper)
 _runner = MissionRunner(PROM, K8S, POL, mem_kernel=None)
@@ -102,6 +108,28 @@ file_formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(mess
 file_handler.setFormatter(file_formatter)
 file_handler.setLevel(logging.INFO)
 logger.addHandler(file_handler)
+
+# JSON log handler (parallel structured logs)
+class JsonLogHandler(logging.Handler):
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            log_entry = {
+                "timestamp": getattr(record, "timestamp", time.time()),
+                "level": record.levelname,
+                "name": record.name,
+                "message": record.getMessage(),
+                "event_type": getattr(record, "event_type", None),
+                "source": getattr(record, "source", None),
+                "details": getattr(record, "details", None),
+            }
+            with open("logs/catalyst.jsonl", "a") as f:
+                f.write(json.dumps(log_entry) + "\n")
+        except Exception:
+            pass
+
+json_handler = JsonLogHandler()
+json_handler.setLevel(logging.INFO)
+logger.addHandler(json_handler)
 
 # Confirmation print
 print(f"✅ Logging enabled: Console + File (logs/catalyst.log)")
@@ -165,7 +193,11 @@ def update_task_status(task_id: Optional[str], status: str, result_summary="Task
                 "status": status,
                 "result": {"summary": result_summary, "details": details or {}}
             }
-            logger.info(f"Updated task {task_id}: status={status}")
+            try:
+                RECENT_TASKS.appendleft({"task_id": task_id, "status": status, "summary": result_summary, "details": details or {}})
+            except Exception:
+                pass
+        logger.info(f"Updated task {task_id}: status={status}")
 
 def _safe_get_task_history(limit=15):
     try:
@@ -281,6 +313,9 @@ def run_catalyst_system_in_background():
             tasks_lock_ref=tasks_lock,
             task_update_callback=update_task_status,
         )
+        # Expose running instance to tools that expect a global reference
+        import tools as tools_module
+        tools_module._cva_instance = system_instance
     except Exception as e:
         logger.exception("Fatal: failed to construct CatalystVectorAlpha")
         return
@@ -296,7 +331,12 @@ def run_catalyst_system_in_background():
 
     logger.info("Catalyst Vector Alpha system is starting its cognitive loop...")
     try:
-        system_instance.run_cognitive_loop(tick_sleep=10)
+        supervisor = CognitiveSupervisor(
+            cva_instance=system_instance,
+            database=system_instance.db,
+            logger=logger
+        )
+        supervisor.run_supervised(tick_sleep=10)
     except Exception as e:
         logger.error("Cognitive loop crashed: %s\n%s", e, traceback.format_exc())
     finally:
@@ -311,6 +351,158 @@ CORS(app)  # tighten with resources={r"/api/*": {"origins": "..."}}
 def api_health():
     loop_alive = bool(system_thread and system_thread.is_alive())
     return jsonify({"status": "ok", "data": {"loop_alive": loop_alive, "ts": time.time()}}), 200
+
+@app.get("/api/metrics/stats")
+def api_metrics_stats():
+    """Aggregate basic performance metrics from the metrics table."""
+    try:
+        from db_postgres import execute_query
+        # Average planner latency (last 50)
+        planner_avg = execute_query(
+            """
+            SELECT AVG(value) AS avg_val FROM (
+                SELECT value FROM metrics
+                WHERE metric_type = 'agent_execution_time'
+                  AND agent_name = 'ProtoAgent_Planner_instance_1'
+                ORDER BY timestamp DESC
+                LIMIT 50
+            ) sub
+            """,
+            fetch=True,
+        )
+        worker_avg = execute_query(
+            """
+            SELECT AVG(value) AS avg_val FROM (
+                SELECT value FROM metrics
+                WHERE metric_type = 'agent_execution_time'
+                  AND agent_name = 'ProtoAgent_Worker_instance_1'
+                ORDER BY timestamp DESC
+                LIMIT 50
+            ) sub
+            """,
+            fetch=True,
+        )
+        breaker_trips = execute_query(
+            """
+            SELECT COUNT(*) AS trips
+            FROM metrics
+            WHERE metric_type = 'circuit_breaker_trip'
+              AND timestamp > NOW() - INTERVAL '24 hours'
+            """,
+            fetch=True,
+        )
+
+        resp = {
+            "planner_latency": float(planner_avg[0]["avg_val"]) if planner_avg and planner_avg[0]["avg_val"] is not None else None,
+            "worker_latency": float(worker_avg[0]["avg_val"]) if worker_avg and worker_avg[0]["avg_val"] is not None else None,
+            "breaker_trips": int(breaker_trips[0]["trips"]) if breaker_trips else 0,
+        }
+        return jsonify({"status": "ok", "data": resp}), 200
+    except Exception as e:
+        logger.exception(f"/api/metrics/stats failed: {e}")
+        return jsonify({"status": "error", "error": str(e)}), 500
+
+@app.get("/api/metrics/trends")
+def api_metrics_trends():
+    """Return simple trend data for breakers (by hour) and recent latencies."""
+    try:
+        from db_postgres import execute_query
+        breaker_rows = execute_query(
+            """
+            SELECT date_trunc('hour', timestamp) AS hour, COUNT(*) AS trips
+            FROM metrics
+            WHERE metric_type = 'circuit_breaker_trip'
+              AND timestamp > NOW() - INTERVAL '12 hours'
+            GROUP BY hour
+            ORDER BY hour ASC
+            """,
+            fetch=True,
+        )
+        latency_rows = execute_query(
+            """
+            SELECT timestamp, agent_name, value
+            FROM metrics
+            WHERE metric_type = 'agent_execution_time'
+            ORDER BY timestamp DESC
+            LIMIT 30
+            """,
+            fetch=True,
+        )
+        return jsonify({
+            "status": "ok",
+            "data": {
+                "breaker_by_hour": breaker_rows or [],
+                "latencies": latency_rows or [],
+            }
+        }), 200
+    except Exception as e:
+        logger.exception(f"/api/metrics/trends failed: {e}")
+        return jsonify({"status": "error", "error": str(e)}), 500
+
+@app.post("/api/system/pause")
+def api_pause_system():
+    """Pause the cognitive loop."""
+    try:
+        reason = (request.json or {}).get("reason", "Paused via API")
+        if system_instance:
+            system_instance.pause_system(reason=reason)
+        return jsonify({"status": "ok", "message": "System pause requested"}), 200
+    except Exception as e:
+        logger.exception(f"/api/system/pause failed: {e}")
+        return jsonify({"status": "error", "error": str(e)}), 500
+
+@app.post("/api/system/unpause")
+def api_unpause_system():
+    """Resume the cognitive loop."""
+    try:
+        reason = (request.json or {}).get("reason", "Unpaused via API")
+        if system_instance:
+            system_instance.unpause_system(reason=reason)
+        return jsonify({"status": "ok", "message": "System unpause requested"}), 200
+    except Exception as e:
+        logger.exception(f"/api/system/unpause failed: {e}")
+        return jsonify({"status": "error", "error": str(e)}), 500
+
+@app.get("/api/dashboard/summary")
+def api_dashboard_summary():
+    """Lightweight summary for dashboard cards."""
+    try:
+        if system_instance is None:
+            return jsonify({
+                "status": "ok",
+                "data": {
+                    "agent_count": 0,
+                    "paused_agents": 0,
+                    "dynamic_agents": 0,
+                    "queue_length": 0,
+                }
+            }), 200
+
+        agents_map = getattr(system_instance, "agent_instances", {}) or {}
+        agent_count = len(agents_map)
+        paused = 0
+        for a in agents_map.values():
+            try:
+                if hasattr(a, "is_paused") and a.is_paused():
+                    paused += 1
+            except Exception:
+                continue
+
+        factory = getattr(system_instance, "agent_factory", None)
+        dynamic_count = len(factory.active_agents) if factory and hasattr(factory, "active_agents") else 0
+        queue_len = len(getattr(system_instance, "dynamic_directive_queue", []) or [])
+        return jsonify({
+            "status": "ok",
+            "data": {
+                "agent_count": agent_count,
+                "paused_agents": paused,
+                "dynamic_agents": dynamic_count,
+                "queue_length": queue_len,
+            }
+        }), 200
+    except Exception as e:
+        logger.exception(f"/api/dashboard/summary failed: {e}")
+        return jsonify({"status": "error", "error": str(e)}), 500
 
 @app.route('/')
 def index():
@@ -658,22 +850,145 @@ def api_prom_query():
     res = tool_registry.invoke("prometheus_query", {"query": q})
     return jsonify(res), 200
 
+@app.get('/api/diagnostics')
+def api_diagnostics():
+    """Expose system diagnostics via tool_registry."""
+    try:
+        result = tool_registry.safe_call("system_diagnostics")
+        return jsonify(result.get("data")), 200
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e)}), 500
+
+@app.get('/api/tool_breakers')
+def api_tool_breakers():
+    """Expose tool circuit breaker state via tool_registry."""
+    try:
+        result = tool_registry.safe_call("tool_breaker_status")
+        status_code = 200 if result.get("status") == "ok" else 500
+        return jsonify(result), status_code
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e)}), 500
+
+@app.get('/api/self_test')
+def api_self_test():
+    """Expose a quick self-test via tool_registry."""
+    try:
+        result = tool_registry.safe_call("self_test")
+        return jsonify(result.get("data")), 200
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e)}), 500
+
+@app.get('/api/tasks')
+def api_tasks():
+    """Return active tasks, recent tasks, and failed tasks (best effort)."""
+    try:
+        with tasks_lock:
+            active = {k: v for k, v in tasks.items() if v.get("status") == "processing"}
+            recent = list(RECENT_TASKS)
+        # Failed tasks from logs are not tracked separately; infer from RECENT_TASKS
+        failed = [t for t in recent if t.get("status") not in ("completed", "ok")]
+        return jsonify({
+            "active": active,
+            "recent": recent,
+            "failed": failed
+        })
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e)}), 500
+
+@app.post('/api/restart_agent/<agent_name>')
+def api_restart_agent(agent_name):
+    """Restart an agent via the restart_agent tool."""
+    try:
+        result = tool_registry.safe_call("restart_agent", agent_name=agent_name)
+        status_code = 200 if result.get("status") == "ok" else 400
+        return jsonify(result.get("data")), status_code
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e)}), 500
+
+@app.get("/api/agents")
+def api_list_agents():
+    """List all agents with basic state."""
+    agents = {}
+    try:
+        with getattr(system_instance, "_agents_lock", agent_instances_lock):
+            snapshot = dict(getattr(system_instance, "agent_instances", {}) or {})
+        for name, agent in snapshot.items():
+            agent_state = {}
+            try:
+                if hasattr(agent, "get_state"):
+                    agent_state = agent.get_state()
+                else:
+                    agent_state = getattr(agent, "__dict__", {})
+            except Exception:
+                agent_state = {}
+
+            agents[name] = {
+                "paused": getattr(agent, "is_paused", lambda: False)(),
+                "role": getattr(agent, "role", getattr(agent, "eidos_spec", {}).get("role", "")) if hasattr(agent, "role") else getattr(agent, "eidos_spec", {}).get("role", ""),
+                "last_task_outcome": getattr(agent, "last_task_outcome", None),
+                "state": agent_state,
+            }
+        return jsonify({"agents": agents})
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e)}), 500
+
+@app.get("/api/agents/<agent_name>")
+def api_get_agent(agent_name):
+    """Get details for a single agent."""
+    try:
+        with getattr(system_instance, "_agents_lock", agent_instances_lock):
+            agent = getattr(system_instance, "agent_instances", {}).get(agent_name)
+        if not agent:
+            return jsonify({"status": "error", "error": "agent not found"}), 404
+
+        try:
+            agent_state = agent.get_state() if hasattr(agent, "get_state") else getattr(agent, "__dict__", {})
+        except Exception:
+            agent_state = {}
+
+        data = {
+            "name": agent_name,
+            "paused": getattr(agent, "is_paused", lambda: False)(),
+            "role": getattr(agent, "role", getattr(agent, "eidos_spec", {}).get("role", "")) if hasattr(agent, "role") else getattr(agent, "eidos_spec", {}).get("role", ""),
+            "last_task_outcome": getattr(agent, "last_task_outcome", None),
+            "state": agent_state,
+        }
+        return jsonify(data)
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e)}), 500
+
 # --- Main ---------------------------------------------------------------------
 
 @app.route('/api/agents/factory', methods=['GET'])
 def get_factory_status():
     """Get Agent Factory status and metrics."""
+    if system_instance is None:
+        return jsonify({
+            "status": "ok",
+            "active_agents": [],
+            "metrics": {},
+            "agent_list": [],
+            "last_health_check": {}
+        }), 200
     try:
-        factory = system_instance.agent_factory
-        guardian = system_instance.guardian
+        with agent_instances_lock:
+            factory = system_instance.agent_factory
+            guardian = system_instance.guardian
+            active_agents = factory.list_active()
+            metrics = guardian.get_metrics()
+            last_health_check = guardian.health_check()
+            agent_list = list(getattr(system_instance, "agent_instances", {}).keys())
 
         return jsonify({
-            "active_agents": factory.list_active(),
-            "metrics": guardian.get_metrics(),
-            "last_health_check": guardian.health_check()
-        })
+            "status": "ok",
+            "active_agents": active_agents,
+            "metrics": metrics,
+            "agent_list": agent_list,
+            "last_health_check": last_health_check
+        }), 200
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        logger.exception("/api/agents/factory failed")
+        return jsonify({"status": "error", "error": str(e), "active_agents": []}), 500
 
 @app.route('/api/agents/semantic-tools', methods=['POST'])
 def get_semantic_tool_suggestions():
@@ -698,11 +1013,13 @@ def spawn_agent_api():
         purpose = data.get('purpose', 'Test agent')
         context = data.get('context', {})
 
-        result = system_instance.handle_spawn_request(
-            purpose=purpose,
-            context=context,
-            parent_agent="api_manual"
-        )
+        # Protect factory access
+        with agent_instances_lock:
+            result = system_instance.handle_spawn_request(
+                purpose=purpose,
+                context=context,
+                parent_agent="api_manual"
+            )
 
         # Check if result is a validation error dict
         if isinstance(result, dict):
@@ -733,8 +1050,12 @@ def assign_agent_task():
     if not agent_id or not task_description:
         return jsonify({"error": "Missing agent_id or task"}), 400
     
-    # Get agent from factory
-    agent = system_instance.agent_factory.active_agents.get(agent_id)
+    # Get agent from factory (thread-safe)
+    with agent_instances_lock:
+        agent = system_instance.agent_factory.active_agents.get(agent_id)
+        if not agent:
+            # Fallback to orchestrator registry if present
+            agent = getattr(system_instance, "agent_instances", {}).get(agent_id)
     if not agent:
         return jsonify({"error": f"Agent {agent_id} not found"}), 404
     
@@ -751,6 +1072,20 @@ def assign_agent_task():
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@app.route('/api/agents/kill/<agent_id>', methods=['POST'])
+def api_kill_agent(agent_id):
+    """Kill a dynamic agent by id."""
+    try:
+        factory = getattr(system_instance, "agent_factory", None)
+        if factory:
+            ok = factory.kill_agent(agent_id)
+            if ok:
+                return jsonify({"status": "ok", "agent_id": agent_id}), 200
+        return jsonify({"status": "error", "error": "not found"}), 404
+    except Exception as e:
+        logger.exception(f"/api/agents/kill/{agent_id} failed")
+        return jsonify({"status": "error", "error": str(e)}), 500
 
 if __name__ == '__main__':
     

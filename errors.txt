@@ -1,0 +1,601 @@
+./llm_schemas.py:15:            raise ValueError("Data must be a dictionary.")
+./llm_schemas.py:19:            raise ValueError("'tool_args' must be a dictionary.")
+./tools.py:33:except ImportError:
+./tools.py:41:except ImportError:
+./tools.py:48:except ImportError:
+./tools.py:55:except ImportError:
+./tools.py:62:except ImportError:
+./tools.py:70:except ImportError:
+./tools.py:79:except ImportError:
+./tools.py:123:                        raise Exception(result.get('error', 'Unknown error'))
+./tools.py:125:                except Exception as e:
+./tools.py:159:            raise ValueError("SCALE_MIN_INTERVAL must be positive")
+./tools.py:161:            raise ValueError("MAX_PROCESS_LIMIT must be positive")
+./tools.py:188:        except Exception:
+./tools.py:222:        except subprocess.TimeoutExpired:
+./tools.py:224:        except FileNotFoundError:
+./tools.py:226:        except Exception as e:
+./tools.py:272:    except Exception:
+./tools.py:284:    except (ValueError, TypeError):
+./tools.py:327:        except Exception:
+./tools.py:344:    except Exception:
+./tools.py:369:        response.raise_for_status()
+./tools.py:371:    except Exception as e:
+./tools.py:403:    except Exception as e:
+./tools.py:430:    except Exception as e:
+./tools.py:454:    except Exception as e:
+./tools.py:473:            except (psutil.NoSuchProcess, psutil.AccessDenied):
+./tools.py:492:            except (psutil.NoSuchProcess, psutil.AccessDenied):
+./tools.py:505:    except Exception as e:
+./tools.py:526:    except Exception as e:
+./tools.py:543:            except Exception:
+./tools.py:552:            except Exception:
+./tools.py:605:    except Exception as e:
+./tools.py:613:        raise Exception(stderr)
+./tools.py:666:                        except ValueError:
+./tools.py:685:            except Exception:
+./tools.py:691:    except Exception as e:
+./tools.py:709:    except ValueError:
+./tools.py:767:    except ValueError:
+./tools.py:822:    except Exception as e:
+./tools.py:848:    except Exception as e:
+./tools.py:869:        except Exception as e:
+./tools.py:905:    except Exception as e:
+./tools.py:924:    except Exception as e:
+./tools.py:973:        response.raise_for_status()
+./tools.py:993:    except requests.RequestException as e:
+./tools.py:996:    except Exception as e:
+./tools.py:1036:            except ImportError:
+./tools.py:1046:    except Exception as e:
+./tools.py:1092:    except Exception as e:
+./tools.py:1116:    except Exception as e:
+./tools.py:1171:    except Exception as e:
+./tools.py:1195:    except Exception as e:
+./tools.py:1250:    except Exception as e:
+./tools.py:1272:    except Exception as e:
+./tools.py:1298:    except ImportError:
+./tools.py:1300:    except Exception as e:
+./tools.py:1407:    except Exception as e:
+./agents.py:143:    except Exception:
+./agents.py:149:    except Exception:
+./agents.py:196:except Exception:
+./agents.py:223:    except (IOError, json.JSONDecodeError):
+./agents.py:296:        except Exception as _e:
+./agents.py:537:        except Exception as e:
+./agents.py:538:            print(f"  [Agent Error] Could not check system resources: {e}")
+./agents.py:566:        except Exception as e:
+./agents.py:567:            print(f"  [Agent Reasoning] Error generating reasoning log: {e}")
+./agents.py:589:                    except TypeError:
+./agents.py:621:        except Exception as e:
+./agents.py:623:                f"Failed to generate LLM reflection for cycle. Error: {e}",
+./agents.py:744:                                   "AdaptiveToolUseFailed", "LLM_Error", "PatternInsight",
+./agents.py:889:                    except Exception:
+./agents.py:906:                    except Exception:
+./agents.py:1005:                except ValueError:
+./agents.py:1007:                    print(f"  [Memory Parse Error] Could not parse timestamp: {mem_timestamp_str}")
+./agents.py:1180:                except Exception: progress = 1.0 if outcome == "completed" else 0.0
+./agents.py:1210:        except Exception as e:
+./agents.py:1221:            except Exception as e:
+./agents.py:1274:            except Exception as e:
+./agents.py:1291:                except Exception as e:
+./agents.py:1298:        except Exception as e:
+./agents.py:1312:                self.memetic_kernel.add_memory("TaskError", error_details)
+./agents.py:1313:            except Exception:
+./agents.py:1440:            self.memetic_kernel.add_memory("SystemError", "Orchestrator not available for escalation.", {"agent": self.name})
+./agents.py:1496:                self.memetic_kernel.add_memory("ToolExecutionError", error_msg, {"tool_name": tool_name, "tool_args": tool_args})
+./agents.py:1513:            except TypeError as e:
+./agents.py:1516:                self.memetic_kernel.add_memory("ToolExecutionError", error_msg, {"tool_name": tool_name, "tool_args": tool_args, "error": str(e)})
+./agents.py:1518:            except Exception as e:
+./agents.py:1521:                self.memetic_kernel.add_memory("ToolExecutionError", error_msg, {"tool_name": tool_name, "tool_args": tool_args, "error": str(e)})
+./agents.py:1531:            except RuntimeError:
+./agents.py:1668:        try: # Added try-except for robust file operations
+./agents.py:1675:        except Exception as e:
+./agents.py:1677:            # Optionally re-raise if saving state is critical and should halt
+./agents.py:1828:        except Exception as e:
+./agents.py:1979:        except Exception as e:
+./agents.py:1981:                f"Failed to find patterns using LLM. Error: {e}",
+./agents.py:1984:            print(f"  [Patt.Insight Error] Failed to find patterns: {e}")
+./agents.py:2063:                        except ValueError:
+./agents.py:2153:            except Exception as e:
+./agents.py:2154:                print(f"  Error during LLM pattern analysis for {self.name}: {e}")
+./agents.py:2198:            except (ValueError, KeyError, AttributeError):
+./agents.py:2217:                    except ValueError:
+./agents.py:2237:                    except ValueError:
+./agents.py:2239:            except Exception as e:
+./agents.py:2240:                print(f"[Pattern Detection] Error processing event: {str(e)}")
+./agents.py:2345:        except Exception as e:
+./agents.py:2346:            print(f"  [Agent Error] LLM brainstorming failed: {e}")
+./agents.py:2347:            self.memetic_kernel.add_memory("LLM_Error", f"Brainstorming failed: {e}")
+./agents.py:2348:            self._log_agent_activity("LLM_BRAINSTORM_FAILED_EXCEPTION", self.name, f"LLM brainstorm failed for intent: {self.current_intent}. Error: {e}")
+./agents.py:2405:                self.memetic_kernel.add_memory("ToolProposalError", {"message": "No valid JSON found in LLM response.", "raw_response": full_llm_response})
+./agents.py:2431:                self.memetic_kernel.add_memory("ToolProposalError", {"message": f"LLM proposed unknown tool: {tool_proposal_validated.tool_name}", "raw_response": raw_response})
+./agents.py:2436:        except json.JSONDecodeError as e:
+./agents.py:2438:            self.memetic_kernel.add_memory("ToolProposalError", {"message": f"LLM output invalid JSON for tool proposal.", "error": str(e), "raw_response": raw_response})
+./agents.py:2442:        except ValueError as e:
+./agents.py:2444:            self.memetic_kernel.add_memory("ToolProposalError", {"message": f"LLM output did not conform to schema.", "error": str(e), "raw_response": raw_response})
+./agents.py:2448:        except Exception as e:
+./agents.py:2450:            self.memetic_kernel.add_memory("ToolProposalError", {"message": f"Unexpected error during tool proposal.", "error": str(e), "full_llm_response": full_llm_response})
+./agents.py:2726:            except Exception as e:
+./agents.py:2755:                except Exception as e:
+./agents.py:2838:        except Exception as e:
+./agents.py:2841:            failure_reason = f"Unhandled exception during collection: {str(e)}"
+./agents.py:2972:                self.memetic_kernel.add_memory("SystemError", "Orchestrator not available for human input request.", {"event_type": "HumanInputRequestFailed"})
+./agents.py:3056:        except Exception as e:
+./agents.py:3058:            failure_reason = f"Unhandled exception during optimization simulation: {str(e)}"
+./agents.py:3315:                    except Exception as e:
+./agents.py:3335:        except Exception as e:
+./agents.py:3385:        except Exception as e:
+./agents.py:3450:        except json.JSONDecodeError as e:
+./agents.py:3457:        except Exception as e:
+./agents.py:3602:            except Exception as e:
+./agents.py:3707:                except Exception as e:
+./agents.py:3715:        except Exception as e:
+./agents.py:3735:                    raise ValueError("Notification target was not set by _check_system_alerts")
+./agents.py:3762:            except Exception as e:
+./agents.py:3861:        except Exception as e:
+./agents.py:4111:        except Exception as e:
+./agents.py:4250:                    except TypeError:
+./agents.py:4270:        except Exception as e:
+./agents.py:4606:                raise ValueError("Resource monitor not available.")
+./agents.py:4639:        except Exception as e:
+./agents.py:4640:            self._log_agent_activity("STABILITY_METRICS_ERROR", self.name, f"Error creating stability metrics: {e}", level="error")
+./agents.py:4717:        except Exception as e:
+./agents.py:4723:            except Exception:
+./agents.py:4747:        except Exception as e:
+./agents.py:4757:        except Exception as e:
+./agents.py:4767:        except Exception as e:
+./agents.py:4781:        except Exception as e:
+./agents.py:4791:        except Exception as e:
+./agents.py:4866:        except Exception as e:
+./agents.py:4926:                raise ValueError("LLM did not return a valid JSON object for self-assessment.")
+./agents.py:4928:        except Exception as e:
+./agents.py:4987:        except Exception as e:
+./agents.py:5060:        except Exception as e:
+./agents.py:5061:            self._log_agent_activity("HISTORICAL_DATA_ERROR", self.name, f"Error gathering historical data: {e}", level="error")
+./agents.py:5124:                raise ValueError("LLM did not return a valid JSON object for knowledge synthesis.")
+./agents.py:5126:        except Exception as e:
+./agents.py:5128:            return {"summary": f"Knowledge synthesis failed: {e}", "knowledge_gaps": ["Error in LLM response parsing."]}
+./agents.py:5166:        except Exception as e:
+./agents.py:5167:            self._log_agent_activity("INSIGHT_EXTRACTION_ERROR", self.name, f"Error extracting insights: {e}", level="error")
+./agents.py:5208:                raise ValueError("LLM did not return a valid JSON list for insight assessment.")
+./agents.py:5210:        except Exception as e:
+./agents.py:5245:                raise ValueError("MemeticKernel or its collection is not initialized.")
+./agents.py:5276:                raise ValueError("LLM did not return a valid JSON object for KG analysis.")
+./agents.py:5286:        except Exception as e:
+./agents.py:5287:            self._log_agent_activity("KG_ANALYSIS_ERROR", self.name, f"Error analyzing knowledge graph: {e}", level="error")
+./agents.py:5363:        except Exception as e:
+./agents.py:5436:                raise ValueError("LLM did not return a valid JSON object for framework design.")
+./agents.py:5438:        except Exception as e:
+./agents.py:5534:        except Exception as e:
+./agents.py:5546:        except Exception:
+./agents.py:5554:        except Exception:
+./agents.py:5562:        except Exception:
+./agents.py:5570:        except Exception:
+./agents.py:5600:        except Exception as e:
+./agents.py:5683:        except Exception as e:
+./agents.py:5742:        except Exception as e:
+./agents.py:5810:            except Exception as e:
+./agents.py:5838:        except Exception as e:
+./agents.py:5885:        except Exception as e:
+./agents.py:5967:        except Exception as e:
+./agents.py:5991:        except Exception as e:
+./agents.py:6032:            except Exception as e:
+./agents.py:6069:        except Exception:
+./agents.py:6070:            return False # Any exception during a dry run means verification failed.
+./agents.py:6106:        except Exception as e:
+./agents.py:6120:            except json.JSONDecodeError:
+./agents.py:6162:        except Exception:
+./agents.py:6195:        except Exception as e:
+./agents.py:6234:        except Exception as e:
+./agents.py:6252:        except Exception as e:
+./agents.py:6263:        except Exception as e:
+./agents.py:6291:        except Exception as e:
+./agents.py:6340:                raise ValueError("LLM did not return a valid JSON object for prioritization.")
+./agents.py:6342:        except Exception as e:
+./agents.py:6374:        except Exception as e:
+./agents.py:6436:        except Exception:
+./agents.py:6469:        except Exception as e:
+./agents.py:6520:                raise ValueError("LLM did not return valid JSON for analysis.")
+./agents.py:6521:        except Exception as e:
+./agents.py:6560:        except Exception as e:
+./agents.py:6590:        except Exception as e:
+./agents.py:6868:        except Exception as e:
+./agents.py:6959:            except (KeyError, IndexError):
+./agents.py:7014:        except Exception as e:
+./agents.py:7015:            self._log_agent_activity("CONTEXT_ANALYSIS_ERROR", self.name, f"Error gathering system context: {e}")
+./agents.py:7055:        except Exception as e:
+./agents.py:7056:            self._log_agent_activity("SECURITY_EVENTS_ERROR", self.name, f"Error gathering security events: {e}")
+./agents.py:7067:        except Exception as e:
+./agents.py:7068:            self._log_agent_activity("MEMORY_RETRIEVAL_ERROR", self.name, f"Error retrieving memories: {e}")
+./agents.py:7127:                if new_intent and "Error" not in new_intent:
+./agents.py:7188:                raise ValueError("LLM did not return a valid JSON object.")
+./agents.py:7198:        except Exception as e:
+./agents.py:7212:        except Exception as e:
+./agents.py:7230:        except Exception as e:
+./agents.py:7271:        except Exception as e:
+./agents.py:7316:        except:
+./agents.py:7598:            except Exception:
+./agents.py:7669:        except Exception as e:
+./agents.py:7686:        except Exception as e:
+./agents.py:8136:   b) If "ModuleNotFoundError" -> pip install the missing module
+./agents.py:8138:   d) If "SyntaxError" -> rewrite with proper formatting
+./agents.py:8142:5. ALWAYS wrap code in try/except blocks.
+./agents.py:8150:   1. NEVER write single-line loops or "with" statements. They cause SyntaxErrors.
+./agents.py:8201:                except Exception as e:
+./agents.py:8210:                except Exception as e:
+./agents.py:8251:                except Exception as e:
+./agents.py:8322:            except Exception as e:
+./agents.py:8409:            except Exception as e:
+./agents.py:8426:            except Exception as e:
+./agents.py:8473:        except Exception as e:
+./agents.py:8500:            except Exception as e:
+./agents.py:8511:                except Exception as e:
+./agents.py:8641:        except Exception as e:
+./agents.py:8642:            error_source = plan_source if plan_source != "Unknown" else "Unassigned/EarlyError"
+./agents.py:8643:            print(f"  [Planner Error] Failed to generate directives for goal '{high_level_goal}': {str(e)}. Error Source: {error_source}.")
+./agents.py:8750:        except Exception as e:
+./agents.py:8778:        except Exception as e:
+./agents.py:9072:            except Exception as e:
+./agents.py:9111:        except Exception:
+./agents.py:9126:        except Exception:
+./agents.py:9145:        except Exception:
+./agents.py:9161:        except Exception:
+./agents.py:9181:        - Schema-aware arg translation & filtering (prevents unexpected kwarg TypeErrors)
+./agents.py:9203:            except Exception as e:
+./agents.py:9268:            except Exception as e:
+./agents.py:9275:                except Exception:
+./agents.py:9299:                    raise RuntimeError("No LLM generator available on agent.")
+./agents.py:9306:            except Exception:
+./agents.py:9348:        except Exception as e:
+./agents.py:9367:                except Exception:
+./agents.py:9374:                except Exception:
+./agents.py:9378:                except Exception:
+./agents.py:9385:                except Exception:
+./agents.py:9416:                    except Exception:
+./agents.py:9458:        except Exception as e:
+./agents.py:9495:            except Exception as e:
+./agents.py:9498:        except Exception as e:
+./agents.py:9499:            err = f"Tool execution raised: {e}"
+./agents.py:9503:                "Tool execution failed (exception).",
+./agents.py:9508:                    "exception": str(e),
+./agents.py:9531:            except Exception as e:
+./agents.py:9540:        except Exception as e:
+./agents.py:9548:            except Exception:
+./agents.py:9582:        except Exception as e:
+./agents.py:9595:            except Exception as e:
+./agent_factory.py:20:except ImportError:
+./agent_factory.py:182:        except Exception as e:
+./agent_factory.py:222:        except Exception as e:
+./agent_factory.py:275:            except Exception as e:
+./agent_factory.py:364:            except Exception as e:
+./agent_factory.py:408:        except Exception as e:
+./agent_factory.py:545:                raise ValueError(f"Missing required fields in LLM response: {design.keys()}")
+./agent_factory.py:583:        except Exception as e:
+./core/policy.py:257:        except Exception:
+./core/policy.py:260:            raise RuntimeError("Empty TOOL_TASK_TYPES")
+./core/policy.py:270:        except Exception:
+./core/policy.py:273:    except Exception:
+./core/mission_runner.py:59:        except Exception as e:
+./core/smoke_normalizer.py:52:            raise SystemExit(f"Policy mapping missing entries for tools: {sorted(missing)}")
+./core/mission_policy.py:157:    except Exception:
+./core/mission_policy.py:169:    except Exception:
+./core/mission_policy.py:181:                except Exception:
+./core/mission_policy.py:186:    except Exception:
+./core/mission_policy.py:213:        except Exception:
+./core/mission_policy.py:224:        except Exception:
+./core/mission_policy.py:238:    except Exception:
+./logging_config.py:42:    # Error-only log
+./cycle_controller.py:46:    except Exception as e:
+./cycle_controller.py:73:    except Exception as e:
+./cycle_controller.py:119:            except json.JSONDecodeError:
+./cycle_controller.py:123:            except Exception as e:
+./cycle_controller.py:124:                print(f"[Controller] Error processing log line: {e}")
+./cycle_controller.py:126:    except FileNotFoundError:
+./cycle_controller.py:128:    except Exception as e:
+./cycle_controller.py:129:        print(f"[Controller] Error reading swarm activity log: {e}")
+./sandbox_tools.py:24:    except Exception:
+./sandbox_tools.py:46:    except subprocess.TimeoutExpired:
+./sandbox_tools.py:48:    except Exception as e:
+./sandbox_tools.py:77:    except Exception as e:
+./memory_store.py:16:        except Exception as e:
+./memory_store.py:59:            except Exception as e:
+./memory_store.py:68:        Fixes: TypeError: 'collections.deque' object is not callable
+./brain_monitor.py:67:        except KeyboardInterrupt:
+./brain_monitor.py:70:        except Exception as e:
+./brain_monitor.py:71:            print(f"Error: {e}")
+./notify_agent.py:74:        except Exception as e:
+./notify_agent.py:75:            msg = f"Error calling notification tool: {e}"
+./gmail_agent.py:15:from googleapiclient.errors import HttpError
+./gmail_agent.py:49:            except Exception as e:
+./gmail_agent.py:69:    except HttpError as error:
+./gmail_agent.py:107:             raise ValueError("LLM returned an empty response.")
+./gmail_agent.py:125:    except Exception as e:
+./gmail_agent.py:154:             raise ValueError("LLM returned an empty response for extraction.")
+./gmail_agent.py:164:    except Exception as e:
+./gmail_agent.py:249:    except HttpError as error:
+./gmail_agent.py:250:        logger.error(f"An HttpError occurred processing email {msg_id}: {error}")
+./gmail_agent.py:251:    except Exception as e:
+./gmail_agent.py:279:    except HttpError as error:
+./gmail_agent.py:298:            raise ConnectionError("Failed to connect to Ollama.")
+./gmail_agent.py:300:    except Exception as e:
+./gmail_agent.py:309:        except KeyboardInterrupt:
+./gmail_agent.py:312:        except Exception as e:
+./scenarios/cyber_attack.py:58:        except json.JSONDecodeError as e:
+./scenarios/cyber_attack.py:61:        except Exception as e:
+./app.py:34:except Exception:
+./app.py:54:except ImportError as e:
+./app.py:145:            except Exception as e:
+./app.py:174:    except Exception as e:
+./app.py:182:    except Exception as e:
+./app.py:192:        raise ValueError("Missing 'deployment' in params.")
+./app.py:195:    except Exception:
+./app.py:196:        raise ValueError("'replicas' must be an integer.")
+./app.py:216:        except Exception as e:
+./app.py:252:        raise ValueError(f"Unsupported action for queue_pending_mission: {action}")
+./app.py:284:    except Exception as e:
+./app.py:285:        logger.exception("Fatal: failed to construct CatalystVectorAlpha")
+./app.py:292:        except Exception as _e:
+./app.py:300:    except Exception as e:
+./app.py:343:    except Exception as e:
+./app.py:380:        except Exception as e:
+./app.py:425:    except Exception as e:
+./app.py:444:    except Exception:
+./app.py:478:    Try tool_registry 'k8s_scale'. If unavailable or raises, simulate success so the loop keeps flowing.
+./app.py:490:    except Exception as e:
+./app.py:530:        except Exception as e:
+./app.py:552:    except Exception as e:
+./app.py:604:        except Exception:
+./app.py:625:    except Exception as e:
+./app.py:639:    except Exception as e:
+./app.py:675:    except Exception as e:
+./app.py:690:    except Exception as e:
+./app.py:723:    except Exception as e:
+./app.py:752:    except Exception as e:
+./app.py:778:    except ImportError:
+./catalyst_vector_alpha.py:16:import collections # Import the full module to resolve NameError
+./catalyst_vector_alpha.py:256:        except Exception as e:
+./catalyst_vector_alpha.py:262:            except Exception as e2:
+./catalyst_vector_alpha.py:385:        except Exception:
+./catalyst_vector_alpha.py:389:        except Exception as _e:
+./catalyst_vector_alpha.py:501:        except Exception as e:
+./catalyst_vector_alpha.py:508:        except Exception as e:
+./catalyst_vector_alpha.py:523:            except Exception as e:
+./catalyst_vector_alpha.py:550:                except Exception as e:
+./catalyst_vector_alpha.py:556:        except Exception as e:
+./catalyst_vector_alpha.py:593:            except Exception:
+./catalyst_vector_alpha.py:605:                except Exception:
+./catalyst_vector_alpha.py:674:            except Exception as e:
+./catalyst_vector_alpha.py:675:                print(f"  Error loading or rehydrating swarm state: {e}. Starting fresh.")
+./catalyst_vector_alpha.py:777:            except Exception as e:
+./catalyst_vector_alpha.py:802:        except ImportError as e:
+./catalyst_vector_alpha.py:804:            raise
+./catalyst_vector_alpha.py:868:        except Exception as e:
+./catalyst_vector_alpha.py:880:            print(f"  Error saving swarm state: {e}")
+./catalyst_vector_alpha.py:959:        except json.JSONDecodeError as e:
+./catalyst_vector_alpha.py:962:                                     f"Malformed human response file '{os.path.basename(response_file_path)}'. Error: {e}",
+./catalyst_vector_alpha.py:965:        except Exception as e:
+./catalyst_vector_alpha.py:968:                                     f"Failed to process human response file '{os.path.basename(response_file_path)}'. Error: {e}",
+./catalyst_vector_alpha.py:1071:            except Exception as e:
+./catalyst_vector_alpha.py:1074:                                         f"Error processing directive {directive_type}",
+./catalyst_vector_alpha.py:1143:            raise ValueError(f"Swarm '{swarm_name}' not found for task coordination.")
+./catalyst_vector_alpha.py:1157:            raise ValueError(f"EIDOS '{eidos_name}' not asserted yet. Define it first.")
+./catalyst_vector_alpha.py:1189:            except Exception as e:
+./catalyst_vector_alpha.py:1205:            raise ValueError(f"Swarm '{swarm_name}' not established. Cannot add agent '{agent_name_to_add}'.")
+./catalyst_vector_alpha.py:1207:            raise ValueError(f"Agent instance '{agent_name_to_add}' not found. Cannot add to swarm.")
+./catalyst_vector_alpha.py:1226:            raise ValueError(f"Target entity '{target_ref}' (type {target_type}) not found for ASSERT_GRADIENT_TRAJECTORY.")
+./catalyst_vector_alpha.py:1250:            raise ValueError(f"Target agent instance '{target_agent_instance_name}' not found for CATALYZE_TRANSFORMATION.")
+./catalyst_vector_alpha.py:1271:            raise ValueError(f"Swarm '{swarm_name}' not found for BROADCAST_SWARM_INTENT.")
+./catalyst_vector_alpha.py:1341:            raise ValueError(f"Unsupported EIDOS type: {eidos_name}.")
+./catalyst_vector_alpha.py:1466:            raise ValueError(error_msg)
+./catalyst_vector_alpha.py:1545:                except Exception as e:
+./catalyst_vector_alpha.py:1548:        except Exception as e:
+./catalyst_vector_alpha.py:1586:            # Re-raise the exception to maintain existing error handling behavior
+./catalyst_vector_alpha.py:1587:            raise
+./catalyst_vector_alpha.py:1596:                raise ValueError(f"Swarm '{swarm_name}' not found for task coordination.")
+./catalyst_vector_alpha.py:1611:            raise ValueError(f"Agent '{reporting_agent_name_from_manifest}' not found for REPORTING_AGENT_SUMMARIZE.")
+./catalyst_vector_alpha.py:1615:            raise ValueError(f"Agent '{reporting_agent_name_from_manifest}' is not an Observer. Only Observer agents can summarize reports.")
+./catalyst_vector_alpha.py:1628:            raise ValueError(f"Agent '{agent_name}' not found for AGENT_ANALYZE_AND_ADAPT.")
+./catalyst_vector_alpha.py:1645:            raise ValueError(f"Target agent '{target_agent}' not found for BROADCAST_COMMAND.")
+./catalyst_vector_alpha.py:1667:            raise ValueError("INITIATE_PLANNING_CYCLE directive missing 'planner_agent_name' or 'high_level_goal'.")
+./catalyst_vector_alpha.py:1670:            raise ValueError(f"Planner agent '{planner_agent_name}' not found.")
+./catalyst_vector_alpha.py:1748:        except Exception as e:
+./catalyst_vector_alpha.py:1751:                                    f"Failed to initiate system pause. Error: {e}",
+./catalyst_vector_alpha.py:1771:            except Exception as e:
+./catalyst_vector_alpha.py:1774:                                          f"Failed to unpause system. Error: {e}",
+./catalyst_vector_alpha.py:1918:                except json.JSONDecodeError as e:
+./catalyst_vector_alpha.py:1921:                                            f"Level 2: Malformed human response file '{os.path.basename(response_file_path)}'. Error: {e}",
+./catalyst_vector_alpha.py:1929:                except Exception as e:
+./catalyst_vector_alpha.py:1932:                                            f"Level 2: Failed to process human response file '{os.path.basename(response_file_path)}'. Error: {e}",
+./catalyst_vector_alpha.py:2155:                        print(f"Error loading agent state from {filename}: Missing key 'eidos_spec'. Skipping this old state file.")
+./catalyst_vector_alpha.py:2157:                except json.JSONDecodeError:
+./catalyst_vector_alpha.py:2158:                    print(f"Error loading agent state from {filename}: Invalid JSON format. Skipping.")
+./catalyst_vector_alpha.py:2160:                except Exception as e:
+./catalyst_vector_alpha.py:2192:                    except Exception as e:
+./catalyst_vector_alpha.py:2193:                        print(f"Error re-instantiating agent '{agent_name}' from loaded state: {e}. Skipping.")
+./catalyst_vector_alpha.py:2194:                        self.external_log_sink.error(f"Error re-instantiating agent '{agent_name}': {e}.")
+./catalyst_vector_alpha.py:2227:                except (json.JSONDecodeError, FileNotFoundError, KeyError) as e:
+./catalyst_vector_alpha.py:2228:                    print(f"Error loading swarm state from {file_path}: {e}. Skipping.")
+./catalyst_vector_alpha.py:2229:                    self.external_log_sink.error(f"Error loading swarm state from {file_path}: {e}.")
+./catalyst_vector_alpha.py:2230:                except Exception as e:
+./catalyst_vector_alpha.py:2310:        except Exception as e:
+./catalyst_vector_alpha.py:2312:            self._log_swarm_activity("SYSTEM_SAVE_ERROR", "CatalystVectorAlpha", f"Error saving swarm state: {e}", {"error": str(e)}, level='error')
+./catalyst_vector_alpha.py:2376:                        print(f"  Override Error: Target '{target_name}' not found for intent override.")
+./catalyst_vector_alpha.py:2381:                    print(f"  Override Error: Malformed override data in '{filename}'.")
+./catalyst_vector_alpha.py:2389:            except Exception as e:
+./catalyst_vector_alpha.py:2390:                print(f"  Error processing override file '{filename}': {e}")
+./catalyst_vector_alpha.py:2392:                                         f"Error processing intent override file '{filename}': {e}",
+./catalyst_vector_alpha.py:2473:                analysis["inferred_cause"] = f"System failed to process directive '{directive_type_errored}'. Error: {error_details}."
+./catalyst_vector_alpha.py:2508:        except FileNotFoundError:
+./catalyst_vector_alpha.py:2510:        except json.JSONDecodeError as e:
+./catalyst_vector_alpha.py:2511:            print(f"Error decoding JSON from log file {log_file}: {e}")
+./catalyst_vector_alpha.py:2962:            except Exception as e:
+./catalyst_vector_alpha.py:3028:        except Exception as e:
+./catalyst_vector_alpha.py:3029:            return f"System Status: OPERATIONAL (Error generating details: {str(e)})"
+./catalyst_vector_alpha.py:3041:        except:
+./catalyst_vector_alpha.py:3135:        except Exception as e:
+./catalyst_vector_alpha.py:3153:            except Exception:
+./catalyst_vector_alpha.py:3193:            except Exception as e:
+./catalyst_vector_alpha.py:3210:        except Exception as e:
+./catalyst_vector_alpha.py:3224:            except:
+./catalyst_vector_alpha.py:3242:                except Exception as e:
+./catalyst_vector_alpha.py:3247:                except Exception as e:
+./catalyst_vector_alpha.py:3273:                        except TypeError:
+./catalyst_vector_alpha.py:3277:                            except Exception as e:
+./catalyst_vector_alpha.py:3278:                                print(f"Error calling perform_task for {agent_name}: {e}")
+./catalyst_vector_alpha.py:3302:                            except:
+./catalyst_vector_alpha.py:3310:                                except:
+./catalyst_vector_alpha.py:3319:                            except Exception as e:
+./catalyst_vector_alpha.py:3322:                    except Exception as e:
+./catalyst_vector_alpha.py:3323:                        print(f"Error processing agent {agent_name}: {e}")
+./catalyst_vector_alpha.py:3344:                            except Exception as e:
+./catalyst_vector_alpha.py:3353:                    except Exception as e:
+./catalyst_vector_alpha.py:3359:            except KeyboardInterrupt:
+./catalyst_vector_alpha.py:3363:            except Exception as e:
+./alert_store.py:35:        except Exception as e:
+./alert_store.py:42:        except Exception:
+./alert_store.py:62:        except Exception as e:
+./integrations/prometheus_tool.py:13:            raise ValueError("PROMETHEUS_URL not set")
+./integrations/prometheus_tool.py:20:        r.raise_for_status()
+./integrations/prometheus_tool.py:23:            raise RuntimeError(f"Prometheus query failed: {data}")
+./integrations/k8s_actions_tool.py:17:        except Exception:
+./integrations/k8s_actions_tool.py:36:        except ApiException as e:
+./integrations/k8s_actions_tool.py:92:            except ApiException as e:
+./integrations/k8s_actions_tool.py:97:                    # Re-raise other API exceptions
+./integrations/k8s_actions_tool.py:98:                    raise e
+./integrations/k8s_actions_tool.py:141:        except ApiException as e:
+./integrations/k8s_actions_tool.py:148:                except (json.JSONDecodeError, KeyError):
+./integrations/k8s_actions_tool.py:154:        except Exception as e:
+./integrations/k8s_actions_tool.py:254:        except ApiException as e:
+./integrations/k8s_actions_tool.py:263:        except Exception as e:
+./tool_types.py:119:            except Exception:
+./tool_types.py:126:                raise ValueError(f"Validation failed for tool '{self.name}' with args={args}")
+./tool_registry.py:24:except Exception as e:
+./tool_registry.py:31:except Exception as e:
+./tool_registry.py:38:except Exception as e:
+./tool_registry.py:129:except Exception as e:
+./tool_registry.py:135:except Exception as e:
+./tool_registry.py:141:except Exception as e:
+./tool_registry.py:153:    """Resolve a tool function from tools module; raise clear error if missing."""
+./tool_registry.py:156:        raise RuntimeError(f"Missing tool function: tools.{name}")
+./tool_registry.py:178:    except Exception:
+./tool_registry.py:209:        except Exception:
+./tool_registry.py:450:        except Exception:
+./tool_registry.py:677:            raise KeyError(f"Cannot alias to unknown tool '{canonical_name}'.")
+./tool_registry.py:755:            raise KeyError(f"Unknown tool '{tool_name}'")
+./tool_registry.py:781:            except Exception as e:
+./tool_registry.py:782:                logger.exception("Tool normalizer failed for %s", canonical)
+./tool_registry.py:810:        except Exception as e:
+./tool_registry.py:812:            logger.exception("[TOOL FAIL] %s (%.1f ms)", canonical, dt)
+./swarm_console.py:32:    except FileNotFoundError:
+./swarm_console.py:34:    except json.JSONDecodeError:
+./swarm_console.py:37:    except Exception:
+./swarm_console.py:48:    except Exception:
+./swarm_console.py:53:        except Exception:
+./swarm_console.py:59:        except Exception:
+./swarm_console.py:148:            print(f"Error: Could not load state for agent '{target}'.")
+./swarm_console.py:161:            print(f"Error: Swarm state not found at '{SWARM_STATE_FILE}'.")
+./swarm_console.py:185:    print(f"Error: '{target}' is not an agent or the supported swarm 'AlphaEcoSwarm'.")
+./swarm_console.py:229:    print(f"Error: '{target}' is not recognized.")
+./swarm_console.py:238:        print(f"Error: Broadcast target '{target}' not found or not supported.")
+./swarm_console.py:316:                except Exception:
+./swarm_console.py:325:                except Exception:
+./swarm_console.py:339:                except Exception:
+./swarm_console.py:371:            except Exception:
+./swarm_console.py:455:        except (EOFError, KeyboardInterrupt):
+./swarm_console.py:513:                except Exception:
+./semantic_dashboard.py:45:        except Exception as e:
+./semantic_dashboard.py:46:            logging.error(f"Dashboard: Error loading {filename}: {e}")
+./semantic_dashboard.py:63:                except json.JSONDecodeError:
+./semantic_dashboard.py:65:    except Exception as e:
+./semantic_dashboard.py:66:        logging.error(f"Error reading logs: {e}")
+./semantic_dashboard.py:78:    except (json.JSONDecodeError, FileNotFoundError):
+./semantic_dashboard.py:88:        except json.JSONDecodeError:
+./semantic_dashboard.py:97:    except Exception as e:
+./semantic_dashboard.py:98:        st.error(f"Dashboard: Error saving paused agents list: {e}")
+./shared_models.py:39:except Exception:  # Fallback keeps type checkers happy
+./shared_models.py:208:except Exception:
+./shared_models.py:294:                raise RuntimeError("chromadb not available")
+./shared_models.py:304:        except Exception as e:
+./shared_models.py:320:        except Exception as e:
+./shared_models.py:335:        except Exception as e:
+./shared_models.py:344:        Raises RuntimeError on failure (caller handles fallback).
+./shared_models.py:349:            raise RuntimeError(error_msg)
+./shared_models.py:371:        except Exception as e:
+./shared_models.py:384:            raise RuntimeError(error_msg)
+./shared_models.py:391:            except IOError as e:
+./shared_models.py:399:        except Exception as e:
+./shared_models.py:410:        except Exception as e:
+./shared_models.py:514:        except Exception as e:
+./shared_models.py:531:        except ValueError:
+./shared_models.py:638:            except RuntimeError:
+./shared_models.py:649:        except Exception as e:
+./shared_models.py:923:                raise ValueError("ISL schema must be a dict with a top-level 'directives' key.")
+./shared_models.py:927:        except FileNotFoundError:
+./shared_models.py:928:            raise ValueError(f"ISL Schema file not found at: {schema_path}")
+./shared_models.py:929:        except yaml.YAMLError as e:
+./shared_models.py:930:            raise ValueError(f"Error parsing ISL Schema YAML: {e}")
+./shared_models.py:931:        except jsonschema.exceptions.SchemaError as e:
+./shared_models.py:932:            raise ValueError(f"Invalid ISL Schema itself: {e.message} at {list(e.path)}")
+./shared_models.py:937:        Raises ValueError with detailed error messages if validation fails.
+./shared_models.py:940:            raise ValueError("Manifest must be an object.")
+./shared_models.py:942:            raise ValueError("Manifest must contain a top-level 'directives' key.")
+./shared_models.py:944:            raise ValueError("'directives' in manifest must be a list of directive objects.")
+./shared_models.py:948:                raise ValueError(f"Directive at index {i} must be an object.")
+./shared_models.py:951:                raise ValueError(f"Directive at index {i} is missing the 'type' field.")
+./shared_models.py:953:                raise ValueError(f"Directive at index {i} has unknown type: '{dtype}'. Not defined in ISL schema.")
+./shared_models.py:958:            except jsonschema.exceptions.ValidationError as e:
+./shared_models.py:960:                raise ValueError(
+./shared_models.py:964:            except Exception as e:
+./shared_models.py:965:                raise ValueError(
+./shared_models.py:1020:        except Exception as e:
+./shared_models.py:1069:        except Exception as e:
+./shared_models.py:1123:        except Exception as e:
+./shared_models.py:1164:        except Exception as e:
+./shared_models.py:1290:    except Exception as e:
+./shared_models.py:1304:        except Exception as e:
+./shared_models.py:1338:    except Exception as e:
+./shared_models.py:1387:    except ollama.ResponseError as e:
+./shared_models.py:1389:        print(f"ERROR: Ollama Response Error (API or Model issue): {e}")
+./shared_models.py:1391:    except Exception as e:
+./shared_models.py:1392:        # Catch any other general exceptions that might occur during the process
+./shared_models.py:1393:        print(f"ERROR: General exception failed to call LLM for summary: {e}")
+./shared_models.py:1405:        except json.JSONDecodeError:
+./shared_models.py:1408:        except FileNotFoundError: # This exception is technically redundant if os.path.exists is checked first, but harmless.
+./shared_models.py:1473:    except Exception as e:
+./shared_models.py:1494:            except json.JSONDecodeError:
+./shared_models.py:1497:    except FileNotFoundError:
+./shared_models.py:1499:    except Exception as e:
+./shared_models.py:1500:        logger.error(f"Error reading log file {log_file_path}: {e}")
+./persistence_data/sandbox/coding_rule.py:1:print('When writing Python scripts using write_sandbox_file, NEVER use single-line loops or with-statements. Always use proper indentation and newlines to avoid SyntaxError.')
+./rewards.py:38:        raise NotImplementedError
+./rewards.py:55:    except Exception:
+./rewards.py:67:    except Exception:
+./test_memory.py:19:except Exception as e:
+./utils.py:157:    except Exception as e:
+./utils.py:271:        raise TimeoutError(f"Operation timed out after {seconds} seconds")
+./utils.py:610:        await asyncio.gather(*tasks, return_exceptions=True)
+./utils.py:626:    except RuntimeError:
+./utils.py:703:        except json.JSONDecodeError:
+./utils.py:707:            except json.JSONDecodeError:
+./utils.py:728:    except (json.JSONDecodeError, TypeError):
+./utils.py:741:    from requests.exceptions import RequestException, Timeout
+./utils.py:755:        resp.raise_for_status()
+./utils.py:779:    except Timeout:
+./utils.py:780:        raise TimeoutError(f"Ollama request timed out after {timeout_seconds} seconds")
+./utils.py:781:    except RequestException as e:
+./utils.py:786:        except Exception:
+./utils.py:788:        raise ConnectionError(f"Ollama connection failed: {e}{body}")
+./utils.py:789:    except Exception as e:
+./utils.py:790:        raise RuntimeError(f"Unexpected error during Ollama call: {str(e)}")
+./utils.py:823:    except Exception as e:
+./SwarmMonitor.py:20:except Exception:
+./SwarmMonitor.py:90:    except Exception:
+./SwarmMonitor.py:91:        logger.exception("Failed writing JSONL to %s", path)
+./SwarmMonitor.py:267:            except Exception:
+./SwarmMonitor.py:268:                logger.exception("intervention during analyze_system_state failed")
+./SwarmMonitor.py:330:            except Exception:
+./SwarmMonitor.py:331:                logger.exception("detect/intervene failed")
+./SwarmMonitor.py:351:        except Exception:
+./SwarmMonitor.py:488:            except Exception:
+./SwarmMonitor.py:489:                logger.exception("Failed injecting directives during intervention")
+./SwarmMonitor.py:520:            except Exception:

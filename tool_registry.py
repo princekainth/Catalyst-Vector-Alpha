@@ -1,14 +1,25 @@
-# tool_registry.py
+# tool_registry.py  
 from __future__ import annotations
-
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 import os
 import time
 import logging
 from typing import Optional, Dict, List, Any, Tuple, Set
 from urllib.parse import urlparse
 
+def _is_standard_response(res: Any) -> bool:
+    """Detect if result already matches CVA's standardize_response shape."""
+    if not isinstance(res, dict):
+        return False
+    return set(res.keys()) >= {"status", "data", "error"}
+import threading
+import inspect
+
 # Use the unified Tool model + policy helpers
 from tool_types import Tool, derive_task_type, validate_role_task_assignment
+from config_manager import get_config
+import tools
+import sandbox_toolsmith
 
 # Logging
 logger = logging.getLogger("CatalystLogger")
@@ -455,9 +466,20 @@ def _normalize_k8s_deploy_args(a: dict) -> dict:
 # Tool Registry
 # -----------------------------
 class ToolRegistry:
-    def __init__(self):
+    def __init__(self, db: Any = None):
         self._tools: Dict[str, Tool] = {}
         self._aliases: Dict[str, str] = {}
+        self._cooldown_lock = threading.Lock()
+        self._failure_lock = threading.Lock()
+        # Track consecutive failures and circuit breaker windows
+        self._failure_counts: Dict[str, int] = {}
+        self._last_failure_ts: Dict[str, float] = {}
+        self._broken_until: Dict[str, float] = {}
+        self.db = db
+        cfg = get_config()
+        timeouts_cfg = cfg.get("tool_timeouts", {}) if isinstance(cfg, dict) else {}
+        self._per_tool_timeouts = (timeouts_cfg.get("per_tool") or {})
+        self.toolsmith_enabled = bool((cfg.get("features", {}) if isinstance(cfg, dict) else {}).get("toolsmith_enabled", False))
         self._initialize_default_tools()
 
     # --- Registration ---
@@ -593,6 +615,46 @@ class ToolRegistry:
             Tool("shuffle_roles_and_tasks", "Generates exploratory tasks for stagnant agents.", SHUFFLE_ROLES_PARAMS, _tf("shuffle_roles_and_tasks_tool"),
                  validator=lambda a: isinstance(a.get("stagnant_agents"), list) and len(a.get("stagnant_agents")) > 0,
                  task_type="GenericTask", roles_allowed={"Planner"}),
+
+            # Testing / diagnostics
+            Tool("long_sleep", "Sleep for N seconds (testing timeout handling).",
+                 {"type": "object", "properties": {"seconds": {"type": "integer", "minimum": 1, "maximum": 900, "default": 60}}},
+                 _tf("long_sleep_tool"),
+                 task_type="GenericTask",
+                 roles_allowed={"Worker", "Planner", "Observer"},
+                 timeout_seconds=0),
+
+            Tool("system_diagnostics", "Return system diagnostics (CPU/mem/threads/agents/logs/db).",
+                 {},
+                 _tf("system_diagnostics_tool"),
+                 task_type="Observation",
+                 roles_allowed={"Planner", "Observer"},
+                 timeout_seconds=10),
+
+            Tool("self_test", "Run a quick CVA self-test (DB, registry, trivial tool, agents).",
+                 {},
+                 _tf("self_test_tool"),
+                 task_type="Observation",
+                 roles_allowed={"Planner", "Observer"},
+                 timeout_seconds=10),
+
+            Tool("restart_agent", "Restart a named agent via AgentFactory.",
+                 {"type": "object", "properties": {"agent_name": {"type": "string"}}},
+                 _tf("restart_agent_tool"),
+                 task_type="GenericTask",
+                 roles_allowed={"Planner", "Worker"}),
+
+            Tool("tool_breaker_status", "Inspect tool circuit breaker state (failure counts and backoffs).",
+                 {},
+                 lambda **kw: self._breaker_status_tool(),
+                 task_type="Observation",
+                 roles_allowed={"Planner", "Observer", "Worker"}),
+
+            Tool("toolsmith_generate", "Generate a sandboxed tool on the fly for unmet tasks.",
+                 {"type": "object", "properties": {"task": {"type": "string"}, "code_hint": {"type": "string"}}},
+                 _tf("toolsmith_generate"),
+                 task_type="GenericTask",
+                 roles_allowed={"Planner", "Worker"}),
 
             # Environment (synthetic)
             Tool("get_environmental_data", "Fetches synthetic environmental sensor data.", GET_ENVIRONMENTAL_DATA_PARAMS, _tf("get_environmental_data_tool"),
@@ -755,67 +817,206 @@ class ToolRegistry:
             raise KeyError(f"Unknown tool '{tool_name}'")
         return t.func(**kwargs)
 
-    def safe_call(self, tool_name: str, **kwargs) -> Any:
-        canonical = self._resolve_name(tool_name)
-        tool = self.get_tool(canonical)
-        if not tool:
-            return f"[ERROR] Unknown tool '{tool_name}'."
+    def safe_call(self, tool_name: str, timeout_seconds: Optional[int] = None, **kwargs) -> Any:
+        tool = self.get_tool(tool_name)
+        canonical = tool.name
+        now = time.time()
 
-        # cooldown
+        # Circuit breaker: short-circuit if tool is marked broken and still in backoff
+        with self._failure_lock:
+            broken_until = self._broken_until.get(canonical, 0.0)
+            last_fail = self._last_failure_ts.get(canonical, 0.0)
+            # Reset stale counters after 5 minutes without failures
+            if self._failure_counts.get(canonical, 0) > 0 and (now - last_fail) > 300:
+                self._failure_counts[canonical] = 0
+            if broken_until and now < broken_until:
+                wait_s = int(broken_until - now)
+                logger.warning(f"[TOOL BREAKER] '{canonical}' short-circuited; wait ~{wait_s}s before retry.")
+                return {
+                    "status": "error",
+                    "data": None,
+                    "error": f"Tool '{canonical}' temporarily disabled after repeated failures. Retry after {wait_s}s.",
+                    "summary": None
+                }
+            elif broken_until and now >= broken_until:
+                # Backoff expired; clear breaker and start fresh
+                self._broken_until.pop(canonical, None)
+                self._failure_counts[canonical] = 0
+                logger.info(f"[TOOL BREAKER] '{canonical}' reset after backoff window.")
+
+        # Cooldown check
         if getattr(tool, "cooldown_seconds", 0.0) > 0:
             now = time.time()
-            last = getattr(tool, "_last_called_ts", 0.0)
-            if now - last < tool.cooldown_seconds:
-                wait = max(0.0, tool.cooldown_seconds - (now - last))
-                return f"[ERROR] Cooldown active for '{canonical}'. Try again in {wait:.2f}s."
-            setattr(tool, "_last_called_ts", now)
-
-        # defaults + coercion
-        args = _merge_defaults(kwargs or {}, tool.parameters)
+            with self._cooldown_lock:
+                last = getattr(tool, "_last_called_ts", 0.0)
+                if now - last < tool.cooldown_seconds:
+                    wait = max(0.0, tool.cooldown_seconds - (now - last))
+                    return f"[ERROR] Cooldown active for '{canonical}'. Try again in {wait:.2f}s."
+                setattr(tool, "_last_called_ts", now)
+        
+        # Merge defaults + validate
+        args = _merge_defaults(kwargs, tool.parameters)
         args = _coerce_types_per_schema(args, tool.parameters)
-
-        # normalizer
         if tool.normalizer:
-            try:
-                args = tool.normalizer(args) or args
-            except Exception as e:
-                logger.exception("Tool normalizer failed for %s", canonical)
-                return f"[ERROR] Normalization failed for '{canonical}': {e}"
-
-        # schema validation
+            args = tool.normalizer(args)
         ok, err = _light_jsonschema_validate(args, tool.parameters)
         if not ok:
             return f"[ERROR] {canonical}: {err}"
-
-        # basic guards
-        for k, v in args.items():
-            if isinstance(v, str) and _is_placeholder(v):
-                return f"[ERROR] {canonical}: Arg '{k}' looks like a placeholder."
-        if "url" in (tool.parameters.get("properties") or {}):
-            u = args.get("url")
-            if isinstance(u, str) and not _looks_like_url(u):
-                return f"[ERROR] {canonical}: 'url' must be a valid http(s) URL."
-        if tool.validator and not tool.validator(args):
-            return f"[ERROR] {canonical}: arguments failed tool-specific validation."
-
-        # call
-        t0 = time.time()
+        
+        # Execute with timeout
+        def _execute():
+            return tool.func(**args)
+        
+        # Resolve timeout: caller arg wins; else tool-level setting; 0/negative means no timeout
+        eff_timeout = timeout_seconds
+        if eff_timeout is None:
+            eff_timeout = getattr(tool, "timeout_seconds", 30)
+        # Config-driven per-tool override (if provided)
+        override = None
         try:
-            log_args = _redact({**args, **{k: "***" for k in getattr(tool, "redact_fields", set())}})
-            logger.info("[TOOL CALL] %s args=%s", canonical, log_args)
-            result = tool.func(**args)
+            override = self._per_tool_timeouts.get(canonical)
+        except Exception:
+            override = None
+        if override is not None:
+            try:
+                eff_timeout = float(override)
+            except Exception:
+                pass
+        if isinstance(eff_timeout, (int, float)) and eff_timeout <= 0:
+            eff_timeout = None  # wait indefinitely (agent-level timeouts may still apply)
+
+        t0 = time.time()
+        logger.info(f"[TOOL CALL] {canonical} args={_redact(args)} timeout={eff_timeout if eff_timeout is not None else 'none'}")
+        
+        try:
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(_execute)
+                result = future.result(timeout=eff_timeout) if eff_timeout is not None else future.result()
             dt = (time.time() - t0) * 1000.0
-            logger.info("[TOOL OK] %s (%.1f ms)", canonical, dt)
-            return result
+            logger.info(f"[TOOL OK] {canonical} ({dt:.1f} ms)")
+            self._record_tool_success(canonical)
+            # Record success metric
+            try:
+                exec_time = dt / 1000.0
+                if hasattr(self, "db") and self.db:
+                    self.db.record_metric(
+                        metric_type="tool_execution",
+                        tool_name=tool_name,
+                        value=1.0,  # success
+                        metadata={"execution_time": exec_time, "status": "success"}
+                    )
+            except Exception:
+                pass
+            
+            # Normalize to standard schema if needed
+            if _is_standard_response(result):
+                return result
+            if isinstance(result, dict) and "success" in result and set(result.keys()) <= {"success","data","error"}:
+                # legacy success envelope; convert
+                status = "ok" if result.get("success") else "error"
+                if status != "ok":
+                    self._record_tool_failure(canonical)
+                return {"status": status, "data": result.get("data"), "error": result.get("error"), "summary": None}
+            # Fallback: wrap raw result
+            return {"status": "ok", "data": result, "error": None, "summary": None}
+            
+        except FutureTimeoutError:
+            dt = (time.time() - t0) * 1000.0
+            logger.error(f"[TOOL TIMEOUT] {canonical} exceeded {eff_timeout}s")
+            self._record_tool_failure(canonical)
+            return {"status": "error", "data": None, "error": f"timeout after {eff_timeout}s", "summary": None}
+            
         except Exception as e:
             dt = (time.time() - t0) * 1000.0
-            logger.exception("[TOOL FAIL] %s (%.1f ms)", canonical, dt)
-            return f"[ERROR] {canonical} failed: {e}"
+            logger.error(f"[TOOL FAILED] {canonical} in {dt:.1f}ms: {e}")
+            self._record_tool_failure(canonical)
+            # Record failure metric
+            try:
+                if hasattr(self, "db") and self.db:
+                    self.db.record_metric(
+                        metric_type="tool_execution",
+                        tool_name=tool_name,
+                        value=0.0,  # failure
+                        metadata={"error": str(e), "status": "failure"}
+                    )
+            except Exception:
+                pass
+            return {"status": "error", "data": None, "error": str(e), "summary": None}
 
+    # --- Circuit breaker helpers ---
+    def _record_tool_success(self, tool_name: str) -> None:
+        with self._failure_lock:
+            if self._broken_until.get(tool_name):
+                logger.info(f"[TOOL BREAKER] '{tool_name}' recovered; clearing breaker.")
+                try:
+                    if getattr(self, "db", None):
+                        self.db.record_metric(
+                            metric_type="circuit_breaker_reset",
+                            value=1.0,
+                            tool_name=tool_name,
+                            metadata={"reason": "recovered"}
+                        )
+                except Exception:
+                    pass
+            self._failure_counts[tool_name] = 0
+            self._last_failure_ts.pop(tool_name, None)
+            self._broken_until.pop(tool_name, None)
+
+    def _record_tool_failure(self, tool_name: str) -> None:
+        now = time.time()
+        with self._failure_lock:
+            # Reset stale counters after 5 minutes without failures
+            last_fail = self._last_failure_ts.get(tool_name, 0.0)
+            if last_fail and (now - last_fail) > 300:
+                self._failure_counts[tool_name] = 0
+            self._last_failure_ts[tool_name] = now
+            self._failure_counts[tool_name] = self._failure_counts.get(tool_name, 0) + 1
+
+            if self._failure_counts[tool_name] >= 3:
+                # Mark tool as broken for 5 minutes
+                self._broken_until[tool_name] = now + 300
+                logger.warning(f"[TOOL BREAKER] '{tool_name}' marked broken after {self._failure_counts[tool_name]} consecutive failures; backoff 300s.")
+                try:
+                    if getattr(self, "db", None):
+                        self.db.record_metric(
+                            metric_type="circuit_breaker_trip",
+                            value=1.0,
+                            tool_name=tool_name,
+                            metadata={"reason": "max_failures", "cooldown": 300}
+                        )
+                except Exception:
+                    pass
+
+    # --- Diagnostics ---
+    def _breaker_status_tool(self) -> Dict[str, Any]:
+        """Return breaker state for all tools."""
+        now = time.time()
+        with self._failure_lock:
+            data = []
+            for name in self._tools.keys():
+                cnt = self._failure_counts.get(name, 0)
+                broken_until = self._broken_until.get(name)
+                status = "broken" if broken_until and broken_until > now else "healthy"
+                if broken_until and broken_until <= now:
+                    # expired but not yet cleared
+                    status = "expired"
+                data.append({
+                    "tool": name,
+                    "failure_count": cnt,
+                    "broken_until": broken_until,
+                    "status": status,
+                })
+        return {
+            "status": "ok",
+            "data": {"tools": data, "timestamp": now},
+            "error": None,
+            "summary": "Breaker status snapshot"
+        }
 # -----------------------------
 # Single, importable instance + legacy TOOLS dict
 # -----------------------------
-tool_registry = ToolRegistry()
+from database import cva_db
+tool_registry = ToolRegistry(db=cva_db)
 
 def _wrap_safe(name: str):
     return (lambda n: (lambda **kw: tool_registry.safe_call(n, **kw)))(name)

@@ -1,4 +1,4 @@
-import sqlite3
+from db_postgres import get_db_connection, execute_query
 import json
 import time
 import os
@@ -14,8 +14,8 @@ def clear_screen():
 def view_brain():
     while True:
         try:
-            conn = get_db()
-            cursor = conn.cursor()
+            with get_db_connection() as conn:
+                cursor = conn.cursor()
             
             cursor.execute("SELECT value_json FROM system_state WHERE key='swarm_state'")
             row = cursor.fetchone()

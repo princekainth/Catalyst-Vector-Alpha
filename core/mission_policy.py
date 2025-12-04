@@ -18,6 +18,7 @@ MISSION_TOOL_POLICY = {
             "top_processes",
             "measure_responsiveness",
             "update_resource_allocation",
+            "check_calendar",  # ADD THIS
             "create_pdf",
             "generate_report_pdf",
             "k8s_scale",
@@ -34,6 +35,7 @@ MISSION_TOOL_POLICY = {
             "deploy_recovery_protocol", 
             "create_pdf", 
             "generate_report_pdf",
+            "check_calendar",  # ADD THIS
             "k8s_scale",
             "k8s_restart"
         },
@@ -47,6 +49,7 @@ MISSION_TOOL_POLICY = {
             "get_system_resource_usage",
             "top_processes",
             "measure_responsiveness",
+            "check_calendar",  # ADD THIS
             "create_pdf",
             "generate_report_pdf",
         },
@@ -67,6 +70,7 @@ MISSION_TOOL_POLICY = {
             "execute_terminal_command",  # Primary tool for this mission
             "create_pdf",
             "generate_report_pdf",
+            "check_calendar",  # ADD THIS
         },
         "deny": {
             "k8s_scale",
@@ -77,7 +81,41 @@ MISSION_TOOL_POLICY = {
             "update_resource_allocation",
         },
         "fallback": "execute_terminal_command",
+    },    
+    "general_planning": {
+        "allow": {
+            "get_system_cpu_load",
+            "get_system_resource_usage",
+            "top_processes",
+            "measure_responsiveness",
+            "check_calendar",
+            "create_pdf",
+            "generate_report_pdf",
+        },
+        "deny": set(),
+        "fallback": "measure_responsiveness",
     },
+    
+    "scale_on_cpu_threshold": {
+        "allow": {
+            "get_system_cpu_load",
+            "get_system_resource_usage",
+            "top_processes",
+            "measure_responsiveness",
+            "check_calendar",
+            "k8s_scale",
+            "k8s_restart",
+            "create_pdf",
+            "generate_report_pdf",
+        },
+        "deny": {
+            "analyze_threat_signature",
+            "isolate_network_segment",
+            "deploy_recovery_protocol",
+        },
+        "fallback": "get_system_cpu_load",
+    },
+
 }
 
 # ==============================================================================

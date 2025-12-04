@@ -1,0 +1,3 @@
+./agents.py:3350:                    # TODO: Make this LLM-driven once user alerts are proven stable
+./agents.py:6716:        # TODO: In the future, this will check directive['task_type'] against self.tool_registry.
+./agent_factory.py:22:    logging.warning("sentence-transformers not installed - semantic matching disabled")

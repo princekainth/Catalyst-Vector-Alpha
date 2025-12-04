@@ -104,12 +104,61 @@
         </div>
       </div>
 
+      <!-- System Health -->
+      <div class="metric-card">
+        <h2 class="text-xl font-semibold text-blue-300 mb-4">System Health</h2>
+        <div class="space-y-2 text-sm text-slate-300" id="system-health">
+          <p class="text-slate-500">Loading...</p>
+        </div>
+      </div>
+
+      <!-- Performance -->
+      <div class="metric-card">
+        <h2 class="text-xl font-semibold text-cyan-300 mb-4">Performance</h2>
+        <div class="grid grid-cols-2 gap-4 text-sm" id="performance-card">
+          <div class="p-3 rounded-lg bg-slate-900/60 border border-slate-700">
+            <p class="text-slate-400">Planner latency (s)</p>
+            <p class="text-2xl font-semibold text-cyan-400" id="perf-planner">--</p>
+          </div>
+          <div class="p-3 rounded-lg bg-slate-900/60 border border-slate-700">
+            <p class="text-slate-400">Worker latency (s)</p>
+            <p class="text-2xl font-semibold text-green-400" id="perf-worker">--</p>
+          </div>
+        </div>
+        <div class="mt-3 text-xs text-slate-400" id="latency-trend"></div>
+      </div>
+
+      <!-- Tool Status -->
+      <div class="metric-card">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="text-xl font-semibold text-amber-300">Tool Status</h2>
+          <span class="text-xs text-slate-500" id="tool-status-updated"></span>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="text-slate-400 border-b border-slate-700">
+                <th class="text-left py-2">Tool</th>
+                <th class="text-left py-2">Status</th>
+                <th class="text-left py-2">Breaker</th>
+              </tr>
+            </thead>
+            <tbody id="tool-status-body">
+              <tr><td colspan="3" class="py-3 text-slate-500">Loading...</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="mt-3 text-xs text-slate-400" id="breaker-trend"></div>
+      </div>
+
       <!-- Quick Actions -->
       <div class="metric-card">
         <h2 class="text-lg font-semibold text-slate-300 mb-3">Quick Actions</h2>
         <div class="space-y-2">
           <button id="refresh-btn" class="btn btn-secondary w-full btn-sm">🔄 Refresh Agents</button>
           <button id="clear-expired-btn" class="btn btn-secondary w-full btn-sm">🗑️ Clear Expired</button>
+          <button id="pause-btn" class="btn btn-secondary w-full btn-sm">⏸️ Pause System</button>
+          <button id="unpause-btn" class="btn btn-secondary w-full btn-sm">▶️ Resume System</button>
         </div>
       </div>
 
@@ -144,10 +193,14 @@
   <!-- Toast Container -->
   <div id="toast-container"></div>
 
-  <script>
+  <script>// v2.0
+
   const App = {
     agents: [],
     taskHistory: {},
+    metrics: {},
+    breakers: [],
+    summary: {},
     
     init() {
       // Event listeners
@@ -161,14 +214,45 @@
       // Initial load
       this.fetchAgents();
       this.updateStats();
+      this.fetchBreakers();
+      this.fetchMetricsStats();
+      this.fetchSummary();
+      this.fetchTrends();
+      setInterval(() => {
+        this.fetchBreakers();
+        this.fetchMetricsStats();
+        this.fetchSummary();
+        this.fetchTrends();
+      }, 5000);
+    },
+
+    async killAgent(agentId) {
+      if(!agentId) return;
+      try {
+        const r = await fetch(`/api/agents/kill/${agentId}`, {method: 'POST'});
+        if(!r.ok) throw new Error('Kill failed');
+        this.toast(`Killed ${agentId}`);
+        this.fetchAgents();
+      } catch(e) {
+        this.toast(`Kill failed: ${e.message}`, true);
+      }
     },
 
     async fetchAgents() {
+      console.log('fetchAgents called');
       try {
-        const r = await fetch('/api/agents/factory');
+        const r = await fetch('/api/agents');
         if(!r.ok) throw new Error('Failed to fetch agents');
         const data = await r.json();
-        this.agents = data.active_agents || [];
+        console.log('Fetched data:', data);
+        this.agents = Object.entries(data.agents || {}).map(([name, info]) => ({
+          agent_id: name,
+          name: name,
+          purpose: info.role || 'Agent',
+          tools: info.state?.tools || [],
+          expires_at: null
+        }));
+        console.log('Mapped agents:', this.agents.length, this.agents);
         this.renderAgents();
         this.updateStats();
       } catch(e) {
@@ -177,6 +261,7 @@
     },
 
     renderAgents() {
+      console.log('renderAgents called with', this.agents.length, 'agents');
       const container = document.getElementById('agents-container');
       
       if(!this.agents.length) {
@@ -192,10 +277,21 @@
         return;
       }
 
-      container.innerHTML = this.agents.map(agent => {
+      // Prefer detailed agents list from /api/agents if available
+      let agentsToRender = this.agents;
+      try {
+        if (this.summary && this.summary.agent_list && this.summary.agent_list.length) {
+          // Merge with existing agent objects when possible
+          const map = Object.fromEntries(this.agents.map(a => [a.name || a.agent_id, a]));
+          agentsToRender = this.summary.agent_list.map(name => map[name] || { name, agent_id: name, tools: [], purpose: 'Dynamic Agent' });
+        }
+      } catch(_) {}
+
+      container.innerHTML = agentsToRender.map(agent => {
         const lastResult = this.taskHistory[agent.agent_id];
-        const expiresAt = new Date(agent.expires_at);
+        const expiresAt = agent.expires_at ? new Date(agent.expires_at) : new Date(Date.now() + 60*60*1000);
         const timeLeft = Math.max(0, Math.floor((expiresAt - new Date()) / 1000 / 60));
+        const tools = agent.tools || agent.available_tools || [];
         
         return `
           <div class="agent-card rounded-xl p-5">
@@ -207,13 +303,14 @@
               <div class="flex items-center space-x-2">
                 <span class="badge badge-success">Active</span>
                 <span class="text-xs text-slate-500">${timeLeft}m left</span>
+                ${agent.agent_id ? `<button class="btn btn-secondary btn-sm" onclick="App.killAgent('${agent.agent_id}')">🛑 Kill</button>` : ''}
               </div>
             </div>
 
             <div class="mb-4">
               <div class="text-xs text-slate-500 mb-2">Tools Available:</div>
               <div class="flex flex-wrap gap-1">
-                ${agent.tools.map(t => `<span class="tool-tag">${t}</span>`).join('')}
+                ${tools.map(t => `<span class="tool-tag">${t}</span>`).join('')}
               </div>
             </div>
 
@@ -229,7 +326,7 @@
             </div>
 
             ${lastResult ? `
-              <div class="task-result">
+             <div class="task-result">
                 <div class="flex justify-between items-start mb-2">
                   <span class="text-xs font-semibold text-green-400">Last Result:</span>
                   <span class="text-xs text-slate-500">${new Date(lastResult.timestamp).toLocaleTimeString()}</span>
@@ -240,6 +337,25 @@
           </div>
         `;
       }).join('');
+    },
+
+    extractPrice(results) {
+      try {
+        // Prefer currency-like numbers between $10 and $10,000 (avoid years)
+        const pattern = /\$?\b(\d{1,3}(?:[.,]\d{3})*(?:\.\d+)?)/;
+        for(const item of results) {
+          const text = `${item.title || ''} ${item.body || ''}`;
+          const m = text.match(pattern);
+          if(m && m[1]) {
+            const raw = m[1].replace(/,/g, '');
+            const val = parseFloat(raw);
+            if(!isNaN(val) && val >= 10 && val <= 10000 && Math.abs(val - new Date().getFullYear()) > 5) {
+              return `$${val.toFixed(2)}`;
+            }
+          }
+        }
+      } catch(e) {}
+      return null;
     },
 
     formatResult(result) {
@@ -273,7 +389,10 @@
 
         // Web search results
         if(data.results && Array.isArray(data.results)) {
+          const priceGuess = this.extractPrice(data.results);
+          const priceLine = priceGuess ? `Live price guess: ${priceGuess}\n\n` : '';
           return `✅ Found ${data.count} results:\n\n` +
+            priceLine +
             data.results.slice(0, 3).map((item, i) =>
               `${i+1}. ${item.title}\n   ${item.href}`
             ).join('\n\n');
@@ -290,12 +409,26 @@
         }
 
         // Generic data
-        return '✅ ' + JSON.stringify(data, null, 2);
+        try {
+          if(typeof data === 'string') return data;
+          if(Array.isArray(data)) return data.map((d,i) => `${i+1}. ${JSON.stringify(d)}`).join('\n');
+          const pretty = Object.entries(data).map(([k,v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`).join('\n');
+          return `✅ ${pretty}`;
+        } catch(e) {
+          return '✅ ' + JSON.stringify(data, null, 2);
+        }
       }
 
       // Check for ok flag in result
       if(r.result && r.result.ok) {
-        return '✅ ' + JSON.stringify(r.result.data || r.result, null, 2);
+        try {
+          const data = r.result.data || r.result;
+          if(typeof data === 'string') return data;
+          const pretty = Object.entries(data).map(([k,v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`).join('\n');
+          return `✅ ${pretty}`;
+        } catch(e) {
+          return '✅ ' + JSON.stringify(r.result.data || r.result, null, 2);
+        }
       }
 
       return JSON.stringify(r, null, 2);
@@ -420,24 +553,186 @@
     },
 
     async updateStats() {
+      // Populate defaults even before fetch completes
+      const healthEl = document.getElementById('system-health');
+      healthEl.innerHTML = `
+        <div class="flex items-center justify-between">
+          <span>Agents</span><span class="font-semibold text-cyan-400">${this.agents.length || 0}</span>
+        </div>
+        <div class="flex items-center justify-between">
+          <span>Breaker trips (24h)</span><span class="font-semibold text-amber-400">${this.metrics.breaker_trips ?? '--'}</span>
+        </div>
+      `;
+
       try {
-        const r = await fetch('/api/agents/factory');
+        const r = await fetch('/api/agents');
         if(!r.ok) return;
         const data = await r.json();
-        
-        document.getElementById('agent-count').textContent = data.metrics?.currently_active || 0;
-        
-        // Get task history
-        const tasks = await fetch('/persistence_data/cva.db'); // This won't work, need proper endpoint
-        // For now, estimate from taskHistory
+        const agentsObj = data.agents || {};
+        const agentList = Object.values(agentsObj);
+
+        document.getElementById('agent-count').textContent = this.summary.agent_count ?? agentList.length ?? this.agents.length ?? 0;
         const completedTasks = Object.keys(this.taskHistory).length;
         document.getElementById('task-count').textContent = completedTasks;
-        
-        // Success rate
-        if(completedTasks > 0) {
-          document.getElementById('success-rate').textContent = '90%'; // Placeholder
+        document.getElementById('success-rate').textContent = completedTasks > 0 ? '—' : '--';
+
+        // System health summary
+        healthEl.innerHTML = `
+          <div class="flex items-center justify-between">
+            <span>Agents</span><span class="font-semibold text-cyan-400">${agentList.length || 0}</span>
+          </div>
+          <div class="flex items-center justify-between">
+            <span>Breaker trips (24h)</span><span class="font-semibold text-amber-400">${this.metrics.breaker_trips ?? '--'}</span>
+          </div>
+        `;
+      } catch(e) {
+        // keep defaults if fetch fails
+      }
+    },
+
+    async fetchSummary() {
+      try {
+        const r = await fetch('/api/dashboard/summary');
+        if(!r.ok) throw new Error('Failed');
+        const data = await r.json();
+        if(data.status === 'ok') {
+          this.summary = data.data || {};
+          const summaryEl = document.getElementById('system-health');
+          summaryEl.innerHTML = `
+            <div class="flex items-center justify-between">
+              <span>Agents</span><span class="font-semibold text-cyan-400">${this.summary.agent_count ?? '--'}</span>
+            </div>
+            <div class="flex items-center justify-between">
+              <span>Paused</span><span class="font-semibold text-amber-400">${this.summary.paused_agents ?? 0}</span>
+            </div>
+            <div class="flex items-center justify-between">
+              <span>Dynamic</span><span class="font-semibold text-slate-300">${this.summary.dynamic_agents ?? 0}</span>
+            </div>
+            <div class="flex items-center justify-between">
+              <span>Queue</span><span class="font-semibold text-slate-300">${this.summary.queue_length ?? 0}</span>
+            </div>
+            <div class="flex items-center justify-between">
+              <span>Breaker trips (24h)</span><span class="font-semibold text-amber-400">${this.metrics.breaker_trips ?? '--'}</span>
+            </div>
+          `;
         }
-      } catch(e) {}
+      } catch(e) {
+        // ignore
+      }
+    },
+
+    async fetchBreakers() {
+      try {
+        const r = await fetch('/api/tool_breakers');
+        if(!r.ok) throw new Error('Failed');
+        const data = await r.json();
+        if(data.status === 'ok') {
+          this.renderBreakers(data.data?.tools || []);
+        }
+      } catch(e) {
+        // ignore
+      }
+    },
+
+    renderBreakers(tools) {
+      const tbody = document.getElementById('tool-status-body');
+      if(!tools || !tools.length) {
+        tbody.innerHTML = `<tr><td colspan="3" class="py-3 text-slate-500">No data</td></tr>`;
+        return;
+      }
+      const rows = tools.slice(0, 15).map(t => {
+        const status = (t.status || '').toLowerCase();
+        const color = status === 'healthy' ? 'text-green-400' : (status === 'expired' ? 'text-amber-400' : 'text-red-400');
+        const until = t.broken_until ? new Date(t.broken_until * 1000).toLocaleTimeString() : '—';
+        return `<tr class="border-b border-slate-800">
+          <td class="py-2">${t.tool}</td>
+          <td class="py-2 ${color} capitalize">${t.status || 'unknown'}</td>
+          <td class="py-2 text-slate-400">${until}</td>
+        </tr>`;
+      }).join('');
+      tbody.innerHTML = rows;
+      const upd = document.getElementById('tool-status-updated');
+      upd.textContent = 'Updated ' + new Date().toLocaleTimeString();
+    },
+
+    async fetchMetricsStats() {
+      try {
+        const r = await fetch('/api/metrics/stats');
+        if(!r.ok) throw new Error('Failed');
+        const data = await r.json();
+        if(data.status === 'ok') {
+          this.metrics = data.data || {};
+          this.renderPerformance();
+          this.updateStats();
+        }
+      } catch(e) {
+        // ignore
+      }
+    },
+
+    renderPerformance() {
+      const p = document.getElementById('perf-planner');
+      const w = document.getElementById('perf-worker');
+      p.textContent = this.metrics.planner_latency != null ? this.metrics.planner_latency.toFixed(2) : '--';
+      w.textContent = this.metrics.worker_latency != null ? this.metrics.worker_latency.toFixed(2) : '--';
+    },
+
+    async fetchTrends() {
+      try {
+        const r = await fetch('/api/metrics/trends');
+        if(!r.ok) throw new Error('Failed');
+        const data = await r.json();
+        if(data.status === 'ok') {
+          this.renderTrends(data.data || {});
+        }
+      } catch(e) {
+        // ignore
+      }
+    },
+
+    renderTrends(trends) {
+      const breakerList = (trends.breaker_by_hour || []).slice(-6);
+      const latencies = trends.latencies || [];
+      const latBox = document.getElementById('latency-trend');
+      if(latBox) {
+        const plannerSamples = latencies.filter(r => r.agent_name === 'ProtoAgent_Planner_instance_1').slice(0,5);
+        const workerSamples = latencies.filter(r => r.agent_name === 'ProtoAgent_Worker_instance_1').slice(0,5);
+        latBox.innerHTML = `
+          <p class="text-xs text-slate-400">Latest planner times: ${plannerSamples.map(r => r.value.toFixed(2)).join(', ') || '—'}</p>
+          <p class="text-xs text-slate-400 mt-1">Latest worker times: ${workerSamples.map(r => r.value.toFixed(2)).join(', ') || '—'}</p>
+        `;
+      }
+      const breakerBox = document.getElementById('breaker-trend');
+      if(breakerBox) {
+        if(!breakerList.length) {
+          breakerBox.innerHTML = `<p class="text-xs text-slate-500">No trips in last 12h</p>`;
+        } else {
+          breakerBox.innerHTML = breakerList.map(b => {
+            const ts = b.hour ? new Date(b.hour).toLocaleTimeString() : '--';
+            return `<div class="flex justify-between text-xs text-slate-300">
+              <span>${ts}</span><span class="font-semibold text-amber-400">${b.trips}</span>
+            </div>`;
+          }).join('');
+        }
+      }
+    },
+
+    async pauseSystem() {
+      try {
+        await fetch('/api/system/pause', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({reason: 'Dashboard request'})});
+        this.toast('System pause requested');
+      } catch(e) {
+        this.toast('Pause failed: ' + e.message, true);
+      }
+    },
+
+    async unpauseSystem() {
+      try {
+        await fetch('/api/system/unpause', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({reason: 'Dashboard request'})});
+        this.toast('System unpause requested');
+      } catch(e) {
+        this.toast('Unpause failed: ' + e.message, true);
+      }
     },
 
     toast(message, isError = false) {
@@ -451,6 +746,10 @@
   };
 
   document.addEventListener('DOMContentLoaded', () => App.init());
+  const pauseBtn = document.getElementById('pause-btn');
+  const unpauseBtn = document.getElementById('unpause-btn');
+  if (pauseBtn) pauseBtn.addEventListener('click', () => App.pauseSystem());
+  if (unpauseBtn) unpauseBtn.addEventListener('click', () => App.unpauseSystem());
   </script>
 </body>
 </html>

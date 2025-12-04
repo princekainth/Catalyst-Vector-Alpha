@@ -13,6 +13,7 @@ if PROJECT_ROOT not in sys.path:
 # --- Standard Library ---
 import logging
 import json
+import threading
 import random
 import re
 import textwrap
@@ -255,7 +256,8 @@ class ProtoAgent(ABC):
                  paused_agents_file_path: str,
                  world_model: 'SharedWorldModel',
                  reporting_agents: str | list | None = None,
-                 tool_registry: Any = None):
+                 tool_registry: Any = None,
+                 db: Any = None):
 
         # --- Core Attributes & Dependencies ---
         self.name = name
@@ -265,6 +267,7 @@ class ProtoAgent(ABC):
         self.event_monitor = event_monitor
         self.external_log_sink = external_log_sink
         self.tool_registry = tool_registry
+        self.cva_db = db
         self.world_model = world_model
         self.orchestrator = getattr(message_bus, "catalyst_vector_ref", None)
 
@@ -521,7 +524,7 @@ class ProtoAgent(ABC):
             )
             return False # Indicate that critical override failed, proceed to human escalation
 
-    def _is_resource_constrained(self, cpu_threshold=80.0, memory_threshold=85.0) -> bool:
+    def _is_resource_constrained(self, cpu_threshold=90.0, memory_threshold=95.0) -> bool:
         """Checks if system resources are above critical thresholds."""
         try:
             usage = self.tool_registry.get_tool('get_system_resource_usage').func()
@@ -886,8 +889,8 @@ class ProtoAgent(ABC):
                             completed_at=datetime.now(timezone.utc).isoformat(),
                             execution_time=0
                         )
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print(f"[DEBUG] Failed to record task: {e}")
                 else:
                     # If any task fails, the plan is considered failed.
                     print(f"  [{self.name}] Task '{task_desc}' from plan '{self.last_plan_id}' FAILED. Aborting plan.")
@@ -903,8 +906,8 @@ class ProtoAgent(ABC):
                             completed_at=datetime.now(timezone.utc).isoformat(),
                             execution_time=0
                         )
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print(f"[DEBUG] Failed to record task: {e}")
                     self.reset_after_plan_failure()
 
     def reset_after_plan_success(self):
@@ -1128,6 +1131,7 @@ class ProtoAgent(ABC):
         cycle_id: Optional[str] = None,
         reporting_agents: Optional[Union[str, list]] = None,
         context_info: Optional[dict] = None,
+        cancel_event: Optional[threading.Event] = None,
         **kwargs
     ) -> tuple:
         """
@@ -1138,6 +1142,10 @@ class ProtoAgent(ABC):
         import time
         start_time = time.time()
         task_id = f"task_{int(start_time)}_{abs(hash((task_description, self.name))) % 100000:05d}"
+
+        # Early cancel gate
+        if cancel_event and cancel_event.is_set():
+            return "failed", "cancelled", {"task": task_description, "task_id": task_id}, 0.0
 
         # --- helpers ---
         def _normalize_sg_eval(res, original_task: str):
@@ -1213,6 +1221,7 @@ class ProtoAgent(ABC):
 
         # sovereign gradient (single call; never re-call)
         final_task_description = task_description
+        original_task_description = final_task_description
         sg_compliant, sg_meta = True, {}
         if self.sovereign_gradient:
             try:
@@ -1231,19 +1240,79 @@ class ProtoAgent(ABC):
                     "task": task_description, "task_id": task_id, "blocked": True, "sg": sg_meta
                 }, 0.0
 
+        # --- Memory Consultation: Learn from past ---
+        try:
+            from database import cva_db
+            from datetime import datetime, timezone
+            similar_tasks = cva_db.query_similar_tasks(self.name, final_task_description, limit=3)
+            success_rate = cva_db.get_agent_success_rate(self.name)
+            
+            if similar_tasks:
+                memory_context = "\n[Memory Recall] You've done similar tasks before:\n"
+                for i, task in enumerate(similar_tasks, 1):
+                    outcome = task['outcome']
+                    exec_time = task['execution_time_seconds']
+                    memory_context += f"{i}. Outcome: {outcome}, Time: {exec_time:.1f}s"
+                    if task.get('error_message'):
+                        error_msg = str(task['error_message'])[:50]
+                        memory_context += f", Error: {error_msg}"
+                    memory_context += "\n"
+                
+                success_pct = success_rate['success_rate'] * 100
+                success_count = success_rate['successful_tasks']
+                total_count = success_rate['total_tasks']
+                memory_context += f"Your overall success rate: {success_pct:.1f}% ({success_count}/{total_count} tasks)\n"
+                # Pattern recognition: warn about repeated failures
+                failed_tasks = [t for t in similar_tasks if t['outcome'] == 'failed']
+                if len(failed_tasks) >= 2:
+                    memory_context += f"\n⚠️  WARNING: You've failed {len(failed_tasks)} similar tasks recently. Common errors:\n"
+                    for task in failed_tasks[:2]:
+                        if task.get('error_message'):
+                            memory_context += f"  - {task['error_message'][:80]}\n"
+                    memory_context += "Consider a different approach this time.\n"
+                # Pattern recognition: reinforce successful patterns
+                successful_tasks = [t for t in similar_tasks if t['outcome'] == 'completed']
+                if len(successful_tasks) >= 2:
+                    avg_success_time = sum(t['execution_time_seconds'] for t in successful_tasks) / len(successful_tasks)
+                    memory_context += f"\n✓ SUCCESS PATTERN: You've completed {len(successful_tasks)} similar tasks successfully (avg {avg_success_time:.1f}s)\n"
+                
+                # Inject memory context into task description for LLM awareness
+                final_task_description = memory_context + "\n" + final_task_description
+                print(f"[{self.name}] Consulted memory: {len(similar_tasks)} similar tasks found")
+        except Exception as e:
+            print(f"[DEBUG] Memory consultation failed for {self.name}: {e}")
+
         # execute
         try:
-            exec_raw = self._execute_agent_specific_task(
-                task_description=final_task_description,
-                cycle_id=cycle_id,
-                reporting_agents=reporting_agents_list,
-                context_info=context_info,
-                text_content=kwargs.get("text_content"),
-                task_type=kwargs.get("task_type", "GenericTask"),
-                task_id=task_id,
-                **{k: v for k, v in kwargs.items() if k not in ["text_content","task_type"]}
-            )
+            try:
+                exec_raw = self._execute_agent_specific_task(
+                    task_description=final_task_description,
+                    cycle_id=cycle_id,
+                    reporting_agents=reporting_agents_list,
+                    context_info=context_info,
+                    text_content=kwargs.get("text_content"),
+                    task_type=kwargs.get("task_type", "GenericTask"),
+                    task_id=task_id,
+                    cancel_event=cancel_event,
+                    **{k: v for k, v in kwargs.items() if k not in ["text_content","task_type"]}
+                )
+            except TypeError:
+                # Fallback for subclasses that don't accept cancel_event explicitly
+                exec_raw = self._execute_agent_specific_task(
+                    task_description=final_task_description,
+                    cycle_id=cycle_id,
+                    reporting_agents=reporting_agents_list,
+                    context_info=context_info,
+                    text_content=kwargs.get("text_content"),
+                    task_type=kwargs.get("task_type", "GenericTask"),
+                    task_id=task_id,
+                    **{k: v for k, v in kwargs.items() if k not in ["text_content","task_type"]}
+                )
             outcome, reason, report, progress = _normalize_exec_result(exec_raw)
+            try:
+                self.last_task_outcome = outcome
+            except Exception:
+                pass
 
             # build outcome details
             execution_time = time.time() - start_time
@@ -1292,6 +1361,56 @@ class ProtoAgent(ABC):
                     self._log_agent_activity("MESSAGE_SEND_FAILED", self.name,
                         f"Failed to send message to {agent_ref}: {e}",
                         {"task_id": task_id, "target_agent": agent_ref}, level="warning")
+
+            # Record task to database
+            try:
+                from database import cva_db
+                from datetime import datetime, timezone
+                execution_time = time.time() - start_time
+                print(f"[DEBUG TASK RECORD] Agent: {self.name}, Original: '{original_task_description[:60]}', Final: '{final_task_description[:60]}'")
+                cva_db.record_task(
+                    task_id=task_id,
+                    agent_name=self.name,
+                    description=original_task_description,
+                    outcome=outcome,
+                    started_at=datetime.fromtimestamp(start_time, tz=timezone.utc).isoformat(),
+                    completed_at=datetime.now(timezone.utc).isoformat(),
+                    execution_time=execution_time,
+                    error=reason if outcome == "failed" else None,
+                    metadata={"progress": progress, "cycle_id": cycle_id}
+                )
+            except Exception as e:
+                print(f"[DEBUG] Failed to record task {task_id}: {e}")
+
+            # Save agent state
+            try:
+                from database import cva_db
+                agent_state = {
+                    "last_task": task_description,
+                    "last_outcome": outcome,
+                    "last_updated": datetime.now(timezone.utc).isoformat()
+                }
+                cva_db.save_agent_state(self.name, agent_state)
+            except Exception as e:
+                print(f"[DEBUG] Failed to save agent state for {self.name}: {e}")
+
+            # Record metrics (right before final return)
+            try:
+                if hasattr(self, "cva_db") and self.cva_db:
+                    execution_time = time.time() - start_time
+                    self.cva_db.record_metric(
+                        metric_type="agent_execution_time",
+                        agent_name=self.name,
+                        value=execution_time,
+                        metadata={
+                            "outcome": outcome,
+                            "task_type": kwargs.get("task_type", "GenericTask"),
+                            "progress": progress
+                        }
+                    )
+            except Exception:
+                # Don't let metrics recording break task execution
+                pass
 
             return outcome, reason, report if isinstance(report, dict) else {"summary": str(report)}, float(progress)
 
@@ -3261,12 +3380,25 @@ class ProtoAgent_Planner(ProtoAgent):
         """
         Check for urgent system alerts and use LLM to autonomously decide the response.
         
-        This is the "cognitive loop" - where CVA demonstrates true intelligence
-        by reasoning about alerts rather than following pre-programmed rules.
+        NOW WITH INTELLIGENT FILTERING:
+        - Ignores promotional spam
+        - Prioritizes urgent issues
+        - Balances emails vs background missions (2:1 ratio)
         
         Returns:
             tuple: (goal_description, mission_type, complexity) or (None, None, None)
         """
+        
+        # Initialize mission balance counter
+        if not hasattr(self, "_mission_balance_counter"):
+            self._mission_balance_counter = 0
+        
+        # --- MISSION BALANCING: Force background missions every 3 cycles ---
+        self._mission_balance_counter += 1
+        if self._mission_balance_counter >= 3:
+            self._mission_balance_counter = 0
+            print("  [Balance] Skipping alerts this cycle - running background mission")
+            return None, None, None  # Let background missions run
         
         # --- 1. Check AlertStore (User-facing Alerts: Email, Calendar, etc.) ---
         try:
@@ -3276,6 +3408,7 @@ class ProtoAgent_Planner(ProtoAgent):
 
             for alert in recent_alerts:
                 alert_type = alert.get("type")
+                subject = alert.get("subject", "")
                 
                 # Initialize deduplication tracker
                 if not hasattr(self, "_processed_alert_ids"):
@@ -3286,6 +3419,24 @@ class ProtoAgent_Planner(ProtoAgent):
                 if alert_id in self._processed_alert_ids:
                     continue
                 
+                # === INTELLIGENT SPAM FILTERING ===
+                spam_keywords = [
+                    "free", "earn", "offer", "promotion", "promo", "deal",
+                    "referral", "discount", "save", "trial", "win", "prize",
+                    "click here", "limited time", "act now", "special offer"
+                ]
+                
+                is_spam = any(keyword in subject.lower() for keyword in spam_keywords)
+                
+                # === URGENCY CLASSIFICATION ===
+                urgent_keywords = ["invoice", "payment", "due", "urgent", "action required", "security", "alert", "overdue"]
+                is_urgent = any(keyword in subject.lower() for keyword in urgent_keywords)
+                
+                if is_spam and not is_urgent:
+                    print(f"  [Filter] Ignoring spam: {subject[:60]}...")
+                    self._processed_alert_ids.add(alert_id)
+                    continue
+                
                 # Process new alerts with LLM reasoning
                 if alert_type:
                     self._processed_alert_ids.add(alert_id)
@@ -3294,7 +3445,9 @@ class ProtoAgent_Planner(ProtoAgent):
                         "type": alert_type,
                         "source": "AlertStore",
                         "alert_id": alert_id,
-                        "subject": alert.get("subject", "N/A")
+                        "subject": subject,
+                        "urgency": "urgent" if is_urgent else "normal",
+                        "spam_filtered": is_spam
                     })
 
                     try:
@@ -3323,7 +3476,7 @@ class ProtoAgent_Planner(ProtoAgent):
                         # Fallback to basic notification
                         self._current_notification_target = {
                             "title": f"Alert: {alert_type}",
-                            "message": f"Subject: {alert.get('subject', 'Unknown')}\n\n(AI processing failed - raw alert)"
+                            "message": f"Subject: {subject}\n\n(AI processing failed - raw alert)"
                         }
                         
                         return (
@@ -3337,7 +3490,7 @@ class ProtoAgent_Planner(ProtoAgent):
                 "error": str(e)
             }, level="error")
         
-        # --- 2. Check Memetic Kernel (System Alerts: K8s, Infrastructure) ---
+        # --- 2. Check Memetic Kernel (System Alerts: K8s, Infrastructure) - LLM-DRIVEN ---
         try:
             recent_memories = self.memetic_kernel.get_recent_memories(limit=30)
             
@@ -3346,41 +3499,93 @@ class ProtoAgent_Planner(ProtoAgent):
                     content = memory.get('content', {})
                     alert_type = content.get('type')
                     
-                    # For now, keep K8s logic procedural for stability
-                    # TODO: Make this LLM-driven once user alerts are proven stable
-                    if alert_type == 'high_cpu_load':
+                    # LLM-driven K8s decision making
+                    if alert_type in ['high_cpu_load', 'low_cpu_load']:
                         avg_cpu = content.get('avg_cpu', 0)
                         target_deployment = content.get('target_deployment', 'nginx')
-                        recommended_replicas = content.get('recommended_replicas', 4)
+                        current_replicas = content.get('current_replicas', 2)
                         
-                        self._current_scaling_target = {
-                            'deployment': target_deployment,
-                            'replicas': recommended_replicas,
-                            'reason': f'high_cpu_{avg_cpu:.0f}pct'
-                        }
+                        decision_prompt = f"""You are CVA's infrastructure optimizer. Analyze this Kubernetes alert and decide the best action.
+
+    ALERT DATA:
+    - Alert Type: {alert_type}
+    - Deployment: {target_deployment}
+    - Current CPU: {avg_cpu:.1f}%
+    - Current Replicas: {current_replicas}
+
+    DECISION RULES:
+    - High CPU (>70%): Consider scale up for performance
+    - Low CPU (<20%): Consider scale down for cost savings
+    - Minimum replicas: 1
+    - Maximum replicas: 10
+    - Balance cost vs performance
+
+    DECIDE:
+    1. Should we scale? (yes/no)
+    2. If yes, to how many replicas?
+    3. What's the reasoning?
+
+    Respond ONLY with valid JSON:
+    {{
+        "action": "scale_up" | "scale_down" | "monitor_only",
+        "target_replicas": <number 1-10>,
+        "reasoning": "brief explanation",
+        "urgency": "high" | "medium" | "low"
+    }}"""
                         
-                        return (
-                            f"Scale {target_deployment} to {recommended_replicas} replicas (CPU: {avg_cpu:.1f}%)",
-                            "performance_optimization",
-                            0.9
-                        )
-                    
-                    elif alert_type == 'low_cpu_load':
-                        avg_cpu = content.get('avg_cpu', 0)
-                        target_deployment = content.get('target_deployment', 'nginx')
-                        recommended_replicas = content.get('recommended_replicas', 1)
-                        
-                        self._current_scaling_target = {
-                            'deployment': target_deployment,
-                            'replicas': recommended_replicas,
-                            'reason': f'low_cpu_{avg_cpu:.0f}pct'
-                        }
-                        
-                        return (
-                            f"Scale down {target_deployment} to {recommended_replicas} replicas (CPU: {avg_cpu:.1f}%)",
-                            "cost_optimization",
-                            0.7
-                        )
+                        try:
+                            response = self.ollama_inference_model.generate_text(
+                                prompt=decision_prompt,
+                                temperature=0.1,
+                                json_mode=True,
+                                max_tokens=300
+                            )
+                            decision = json.loads(response)
+                            
+                            if decision['action'] in ['scale_up', 'scale_down']:
+                                target_replicas = decision['target_replicas']
+                                
+                                # Validate replica count
+                                target_replicas = max(1, min(10, target_replicas))
+                                
+                                self._current_scaling_target = {
+                                    'deployment': target_deployment,
+                                    'replicas': target_replicas,
+                                    'reason': decision['reasoning']
+                                }
+                                
+                                intent_type = "performance_optimization" if decision['action'] == 'scale_up' else "cost_optimization"
+                                urgency_map = {'high': 0.9, 'medium': 0.7, 'low': 0.5}
+                                urgency = urgency_map.get(decision['urgency'], 0.7)
+                                
+                                self._log_agent_activity("K8S_LLM_DECISION", self.name, {
+                                    "action": decision['action'],
+                                    "from_replicas": current_replicas,
+                                    "to_replicas": target_replicas,
+                                    "reasoning": decision['reasoning']
+                                })
+                                
+                                return (
+                                    f"Scale {target_deployment} to {target_replicas} replicas: {decision['reasoning']}",
+                                    intent_type,
+                                    urgency
+                                )
+                            else:
+                                # LLM decided to monitor only
+                                self._log_agent_activity("K8S_DECISION", self.name, {
+                                    "action": "monitor_only",
+                                    "reasoning": decision['reasoning'],
+                                    "cpu": avg_cpu
+                                })
+                                continue  # Check next alert
+                                
+                        except Exception as e:
+                            self._log_agent_activity("LLM_K8S_DECISION_ERROR", self.name, {
+                                "error": str(e),
+                                "alert_type": alert_type
+                            }, level="error")
+                            # Fallback to safe default: do nothing on LLM failure
+                            continue
         
         except Exception as e:
             self._log_agent_activity("KERNEL_ALERT_ERROR", self.name, {
@@ -3389,7 +3594,7 @@ class ProtoAgent_Planner(ProtoAgent):
         
         # No alerts found
         return None, None, None
-
+     
 
     def _reason_about_alert(self, alert: dict) -> tuple:
         """
@@ -3459,7 +3664,7 @@ class ProtoAgent_Planner(ProtoAgent):
                 "error": str(e),
                 "error_type": type(e).__name__
             }, level="error")
-            return None
+            raise  # Re-raise instead of returning None
 
 
     def _build_alert_reasoning_prompt(self, alert: dict) -> str:
@@ -3488,6 +3693,8 @@ class ProtoAgent_Planner(ProtoAgent):
     1. check_calendar(time_min_utc, time_max_utc)
     - Checks user's Google Calendar for events in a time window
     - Args must be ISO 8601 format: "YYYY-MM-DDTHH:MM:SSZ"
+    - Required keys: time_min_utc, time_max_utc
+      Example: {"tool": "check_calendar", "args": {"time_min_utc": "2025-01-01T09:00:00Z", "time_max_utc": "2025-01-01T12:00:00Z"}}
     - Returns: {{"status": "conflict"|"clear", "events": [...]}}
     
     2. send_desktop_notification(title, message)
@@ -3512,6 +3719,10 @@ class ProtoAgent_Planner(ProtoAgent):
     3. Decide on the notification message (will be enhanced with calendar results)
     4. Consider urgency and user impact
 
+    CRITICAL: When using check_calendar, you MUST calculate actual dates based on the alert.
+    DO NOT copy the example dates below - they are only format examples!
+    Use the current date/time and calculate relative to the alert's context.
+    
     RESPONSE FORMAT (MUST BE VALID JSON):
     {{
         "reasoning": "Explain your thought process (2-3 sentences)",
@@ -3569,7 +3780,13 @@ class ProtoAgent_Planner(ProtoAgent):
             try:
                 if tool_name == "check_calendar":
                     # Execute calendar check immediately
-                    result = self.tool_registry.safe_call("check_calendar", **args)
+                    envelope = self.tool_registry.safe_call("check_calendar", **args)
+                    
+                    # Handle envelope
+                    if envelope.get("status") == "ok":
+                        result = envelope.get("data")
+                    else:
+                        result = f"[ERROR] {envelope.get('error', 'Unknown error')}"
                     
                     self._log_agent_activity("LLM_ACTION_EXECUTED", self.name, {
                         "action_index": idx,
@@ -3675,14 +3892,62 @@ class ProtoAgent_Planner(ProtoAgent):
             
             # If no alerts, choose via historical rewards (epsilon-greedy)
             if not goal:
-                # --- NEW: Try mission_runner for specific missions ---
-                # (Your existing MissionRunner code was here, let's keep it)
                 try:
                     from core.mission_runner import MissionRunner
                     from core.mission_policy import select_next_mission
                     
                     memh = getattr(self, "memdb", None)
                     mission_type = select_next_mission(memh)
+                    original_mission = mission_type  # Store for avoidance logic
+                    
+                    # === MEMORY-DRIVEN MISSION SELECTION ===
+                    try:
+                        recent_memories = self.memetic_kernel.retrieve_recent_memories(lookback_period=50)
+                        failure_patterns = {}
+                        success_patterns = {}
+                        
+                        for mem in recent_memories:
+                            content_str = str(mem.get('content', ''))
+                            # Count mission outcomes
+                            if f"Planning failed for '{mission_type}'" in content_str:
+                                failure_patterns[mission_type] = failure_patterns.get(mission_type, 0) + 1
+                            elif f"Planned and dispatched" in content_str and mission_type in content_str:
+                                success_patterns[mission_type] = success_patterns.get(mission_type, 0) + 1
+                        
+                        # Log memory insights
+                        if failure_patterns or success_patterns:
+                            self._log_agent_activity("MEMORY_CONSULTATION", self.name,
+                                f"Mission '{mission_type}' - Failures: {failure_patterns.get(mission_type, 0)}, Successes: {success_patterns.get(mission_type, 0)}",
+                                {"mission": mission_type, "failures": failure_patterns, "successes": success_patterns}, 
+                                level='info')
+                            print(f"  [Memory] Mission '{mission_type}' - Failures: {failure_patterns.get(mission_type, 0)}, Successes: {success_patterns.get(mission_type, 0)}")
+                        
+                        # Mission avoidance based on failure patterns
+                        if mission_type in failure_patterns:
+                            failure_count = failure_patterns[mission_type] 
+                            success_count = success_patterns.get(mission_type, 0)
+                            
+                            if failure_count > success_count * 2:  # 2:1 failure ratio
+                                self._log_agent_activity("MISSION_AVOIDED", self.name, f"Skipping '{mission_type}' - {failure_count}F vs {success_count}S")
+                                
+                                # Try alternatives
+                                alternatives = ["health_audit", "security_audit", "performance_optimization"]
+                                for alt in alternatives:
+                                    if not self._is_on_cooldown(alt)[0]:
+                                        mission_type = alt
+                                        goal = f"Run mission '{mission_type}' (alternative due to failure pattern)"
+                                        self._log_agent_activity("MISSION_SUBSTITUTED", self.name, {"from": original_mission, "to": alt})
+                                        break
+                                else:
+                                    # No alternatives, extend cooldown and return
+                                    if not hasattr(self, "_mission_cooldown"):
+                                        self._mission_cooldown = {}
+                                    self._mission_cooldown[original_mission] = time.time() + 600  # 10 min penalty
+                                    return "skipped", "Mission avoided due to failure pattern", {"summary": f"Avoided failing mission '{original_mission}'"}, 0.0
+                    
+                    except Exception as e:
+                        print(f"  [Memory] Consultation failed: {e}")
+                    # === END MEMORY INTEGRATION ===
                     
                     if mission_type == "scale_on_cpu_threshold":
                         self._log_agent_activity("MISSION_RUNNER_ATTEMPT", self.name, {"mission": mission_type})
@@ -3897,6 +4162,7 @@ class ProtoAgent_Planner(ProtoAgent):
         """
         Returns the next mission string that is not cooling down.
         Respects per-mission cooldowns with exponential backoff.
+        NOW WITH MEMORY: Consults past failures/successes before selecting.
         If none are ready, returns None.
         """
         now = int(time.time())
@@ -3907,6 +4173,33 @@ class ProtoAgent_Planner(ProtoAgent):
         if not hasattr(self, "_mission_backoff"):     self._mission_backoff = {}
         if not hasattr(self, "_default_cooldown"):    self._default_cooldown = 30
         if not hasattr(self, "_max_backoff"):         self._max_backoff = 600
+
+        # === MEMORY-DRIVEN DECISION MAKING ===
+        # Query past mission outcomes to inform selection
+        try:
+            recent_memories = self.memetic_kernel.retrieve_recent_memories(lookback_period=50)
+            failure_patterns = {}
+            success_patterns = {}
+            
+            for mem in recent_memories:
+                content_str = str(mem.get('content', ''))
+                # Count failures and successes per mission
+                for mission in self._mission_queue:
+                    if f"Planning failed for '{mission}'" in content_str:
+                        failure_patterns[mission] = failure_patterns.get(mission, 0) + 1
+                    elif f"Planned and dispatched" in content_str and mission in content_str:
+                        success_patterns[mission] = success_patterns.get(mission, 0) + 1
+            
+            # Log memory insights
+            if failure_patterns or success_patterns:
+                self._log_agent_activity("MEMORY_CONSULTATION", self.name,
+                    f"Memory analysis - Failures: {failure_patterns}, Successes: {success_patterns}",
+                    {"failures": failure_patterns, "successes": success_patterns}, level='info')
+                print(f"  [Memory] Recent failures: {failure_patterns}")
+                print(f"  [Memory] Recent successes: {success_patterns}")
+        except Exception as e:
+            print(f"  [Memory] Query failed: {e}")
+        # === END MEMORY INTEGRATION ===
 
         # Iterate once over the queue looking for a ready mission
         for _ in range(len(self._mission_queue)):
@@ -3922,7 +4215,6 @@ class ProtoAgent_Planner(ProtoAgent):
 
         # nothing available
         return None
-
 
     def _mark_mission_success(self, mission: str) -> None:
         """
@@ -8099,11 +8391,30 @@ class ProtoAgent_Planner(ProtoAgent):
         Constructs the System Prompt for the General Planner.
         UPDATED: Enables Toolsmith capabilities and enforces strict tool syntax.
         """
+        # Surface the current registry tools so the LLM uses real names
+        tool_list_preview = ""
+        if getattr(self, "tool_registry", None):
+            try:
+                names = sorted(self.tool_registry.list_tool_names())
+                preview = names[:30]
+                suffix = "" if len(names) <= 30 else f" ... (+{len(names)-30} more)"
+                tool_list_preview = "\nAVAILABLE TOOLS (live registry): " + ", ".join(preview) + suffix
+            except Exception:
+                tool_list_preview = ""
+
+        from datetime import datetime, timezone
+        current_utc = datetime.now(timezone.utc).isoformat()
+        current_date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
         prompt = f"""You are the Master Planner for Catalyst Vector Alpha (CVA).
         Your goal is to decompose high-level objectives into atomic, executable steps.
 
         CURRENT MISSION TYPE: {mission_type}
         COMPLEXITY SCORE: {complexity}
+
+        CURRENT DATE/TIME: {current_utc}
+        TODAY'S DATE: {current_date_str}
+        When calculating times for check_calendar, use these values as your reference point.
 
         AVAILABLE AGENTS:
         - ProtoAgent_Worker_instance_1: Executes terminal commands, file I/O, scripts. (The "Hands")
@@ -8128,6 +8439,7 @@ class ProtoAgent_Planner(ProtoAgent):
         3. AGENT ASSIGNMENT:
         - Terminal commands/Scripts -> Assign to 'ProtoAgent_Worker_instance_1'
         - Notifications -> Assign to 'ProtoAgent_Notifier_instance_1'
+{tool_list_preview}
 
 TOOLSMITH MODE (Self-Evolution):
 1. ALWAYS search procedural memory first (`recall_memory`) to see if you have solved this before.
@@ -9481,8 +9793,15 @@ class ProtoAgent_Worker(ProtoAgent):
                 {"tool": tool_name, "args": tool_args, "source": source},
             )
 
-            result = registry.safe_call(tool_name, **tool_args)
+            envelope = registry.safe_call(tool_name, **tool_args)
 
+            # Handle envelope - defensive check for string errors
+            if isinstance(envelope, str):
+                result = envelope  # Already formatted as error string
+            elif isinstance(envelope, dict) and envelope.get("status") == "ok":
+                result = envelope.get("data")
+            else:
+                result = f"[ERROR] {envelope.get('error', 'Unknown error') if isinstance(envelope, dict) else envelope}"
             # Record executions that Observer uses
             try:
                 if tool_name in {"top_processes", "get_system_resource_usage", "get_system_cpu_load"}:

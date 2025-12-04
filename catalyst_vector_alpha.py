@@ -9,6 +9,7 @@ import logging
 import os
 import random
 import re
+import threading
 import sys
 import time
 import traceback
@@ -20,6 +21,9 @@ from collections.abc import Iterable
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Union, Tuple, List, Dict
 from SwarmMonitor import SwarmHealthMonitor, SystemResourceMonitor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from queue import Queue
+
 from core.intent_guard import enforce_intent
 # --- Third-Party Libraries ---
 import yaml
@@ -30,7 +34,7 @@ import chromadb
 import jsonschema
 import numpy as np
 import inspect
-
+from typing import Any
 
 # --- Project-Specific (Local Application) ---
 from shared_models import (
@@ -43,7 +47,7 @@ from shared_models import (
 from database import CVADatabase
 from guardian_agent import GuardianAgent
 from agent_factory import AgentFactory
-from tool_registry import ToolRegistry
+from tool_registry import ToolRegistry, tool_registry as GLOBAL_TOOL_REGISTRY
 
 # CORRECTED: Add the new ProtoAgent_Security
 from agents import (
@@ -60,6 +64,8 @@ from scenarios.cyber_attack import CyberAttackScenario
 import prompts
 import llm_schemas
 from ccn_monitor_mock import MockCCNMonitor
+from supervisor import CognitiveSupervisor
+from config_manager import get_config
 from tools import (
     get_system_cpu_load_tool,
     initiate_network_scan_tool,
@@ -68,44 +74,40 @@ from tools import (
     get_environmental_data_tool,
 )
 
+_GLOBAL_CONFIG = get_config()
+
 # --- Logging Setup (Must be after imports) ---
 # It's good practice to get a specific logger rather than configuring the root.
 logger = logging.getLogger("CatalystLogger")
 # The basicConfig should ideally be in your main execution block, but this works.
 logging.basicConfig(level=logging.INFO, handlers=[], force=True)
 
-# --- Communication Channel ---
-class MessageBus:
-    def __init__(self):
-        self.messages = {}
-        self.catalyst_vector_ref = None # Will be set by CatalystVectorAlpha
+# Add JSON log handler (structured logs) alongside any configured handlers
+class JsonLogHandler(logging.Handler):
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            import json, time as _time
+            log_entry = {
+                "timestamp": getattr(record, "timestamp", _time.time()),
+                "level": record.levelname,
+                "name": record.name,
+                "message": record.getMessage(),
+                "event_type": getattr(record, "event_type", None),
+                "source": getattr(record, "source", None),
+                "details": getattr(record, "details", None),
+            }
+            os.makedirs("logs", exist_ok=True)
+            with open("logs/catalyst.jsonl", "a") as f:
+                f.write(json.dumps(log_entry) + "\n")
+        except Exception:
+            pass
 
-    # --- FIX: Updated the method signature and logic ---
-    def send_message(self, sender: str, recipient: str, message_type: str, content: any, 
-                     task_description: str = None, status: str = "pending", cycle_id: str = None):
-        """Sends a structured message from one agent to another."""
-        if recipient not in self.messages:
-            self.messages[recipient] = []
-        
-        self.messages[recipient].append({
-            "sender": sender,
-            "message_type": message_type,
-            "content": content,
-            "task_description": task_description,
-            "status": status,
-            "cycle_id": cycle_id,
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        })
-    # --- END FIX ---
+json_handler = JsonLogHandler()
+json_handler.setLevel(logging.INFO)
+if (_GLOBAL_CONFIG.get("features", {}) if isinstance(_GLOBAL_CONFIG, dict) else {}).get("structured_logging", True):
+    logger.addHandler(json_handler)
 
-    def send_directive(self, directive):
-        if self.catalyst_vector_ref:
-            self.catalyst_vector_ref.dynamic_directive_queue.append(directive)
 
-    def get_messages_for_agent(self, agent_name):
-        messages_for_agent = self.messages.get(agent_name, [])
-        self.messages[agent_name] = [] # Clear inbox after retrieval
-        return messages_for_agent
         
 # --- Swarm Protocol ---
 class SwarmProtocol:
@@ -281,6 +283,8 @@ class CatalystVectorAlpha:
              tasks_dict_ref: dict = None,
              tasks_lock_ref=None,
              task_update_callback=None):
+        self.config = get_config()
+        agent_cfg = self.config.get("agent_params", {}) if isinstance(self.config, dict) else {}
         # --- Base Persistence Directory (Must be set first) ---
         self.persistence_dir = persistence_dir
         os.makedirs(self.persistence_dir, exist_ok=True)
@@ -290,6 +294,7 @@ class CatalystVectorAlpha:
         self.message_bus = message_bus
         self.tool_registry = tool_registry
         self.event_monitor = event_monitor
+        self._worker_threads = []
 
         # --- LLM & system kernel ---
         self.llm_integration = OllamaLLMIntegration()
@@ -329,10 +334,11 @@ class CatalystVectorAlpha:
         # --- Internal registries and queues ---
         self.eidos_registry = {}
         self.agent_instances = {}
+        self._agents_lock = threading.Lock()
         
         # --- Database & Agent Factory ---
-        db_path = os.path.join(self.persistence_dir, "cva.db")
-        self.db = CVADatabase(db_path=db_path)
+        from database import cva_db
+        self.db = cva_db  # Use global PostgreSQL instance
         self.agent_factory = AgentFactory(
             db=self.db,
             tool_registry=self.tool_registry,
@@ -346,7 +352,9 @@ class CatalystVectorAlpha:
         self.external_log_sink.info("Guardian Agent initialized")
         self.swarm_protocols = {}
         self.dynamic_directive_queue = deque()
+        self._directive_lock = threading.Lock()
         self.current_action_cycle_id = None
+        self._agent_last_seen = {}
 
         # --- System state and flags ---
         self.is_running = True
@@ -364,6 +372,14 @@ class CatalystVectorAlpha:
         # --- System-wide thresholds ---
         self.SWARM_RESET_THRESHOLD = 3
         self.NO_PATTERN_AGENT_THRESHOLD = 0.6
+        try:
+            self.SWARM_RESET_THRESHOLD = int(agent_cfg.get("swarm_reset_threshold", self.SWARM_RESET_THRESHOLD))
+            self.NO_PATTERN_AGENT_THRESHOLD = float(agent_cfg.get("no_pattern_agent_threshold", self.NO_PATTERN_AGENT_THRESHOLD))
+            self.dead_agent_threshold_seconds = int(agent_cfg.get("dead_agent_threshold_seconds", 300))
+            self.zombie_thread_warn_seconds = int(agent_cfg.get("zombie_thread_warn_seconds", 60))
+        except Exception:
+            self.dead_agent_threshold_seconds = 300
+            self.zombie_thread_warn_seconds = 60
 
         # --- Resource monitor + shims ---
         self.resource_monitor = SystemResourceMonitor()
@@ -782,6 +798,9 @@ class CatalystVectorAlpha:
         self._log_swarm_activity("AGENTS_INSTANTIATED", "CatalystVectorAlpha",
                                 "Rehydrated live agent instances.",
                                 {"agents": list(self.agent_instances.keys())})
+        now = time.time()
+        for name in self.agent_instances.keys():
+            self._agent_last_seen[name] = now
 
     # --- Add this: factory for agent classes ---
     def _instantiate_agent(self, agent_name: str, agent_conf: dict):
@@ -822,7 +841,8 @@ class CatalystVectorAlpha:
             "message_bus": self.message_bus, "event_monitor": self.event_monitor,
             "external_log_sink": self.external_log_sink, "chroma_db_path": self.chroma_db_full_path,
             "persistence_dir": self.persistence_dir, "paused_agents_file_path": self.paused_agents_file_full_path,
-            "world_model": self.world_model, "tool_registry": self.tool_registry
+            "world_model": self.world_model, "tool_registry": self.tool_registry,
+            "db": self.db
         }
 
         # --- NEW: Use the superior filtering logic ---
@@ -1353,6 +1373,7 @@ class CatalystVectorAlpha:
             "persistence_dir": persistence_dir,
             "paused_agents_file_path": paused_agents_file_path,
             "world_model": world_model,
+            "db": self.db,
             "tool_registry": None 
         }
 
@@ -1392,7 +1413,7 @@ class CatalystVectorAlpha:
         state = {
             'current_action_cycle_id': self.current_action_cycle_id,
             'eidos_registry': self.eidos_registry,
-            'dynamic_directive_queue': list(self.dynamic_directive_queue),
+            'dynamic_directive_queue': self._get_directive_queue_snapshot(),
             'scenario_state': self.scenario.get_scenario_state() if self.scenario else None,
             'pending_human_interventions': self.pending_human_interventions,
             'event_monitor_state': self.event_monitor.get_state(),
@@ -1436,6 +1457,51 @@ class CatalystVectorAlpha:
                 "params": {}
             }
         }
+
+    def _cleanup_runaway_threads(self):
+        """Join finished worker threads and warn on long-running ones."""
+        now = time.time()
+        survivors = []
+        for info in list(self._worker_threads):
+            t = info.get("thread")
+            if not t:
+                continue
+            if t.is_alive():
+                started = info.get("started_at", now)
+                if (now - started) > self.zombie_thread_warn_seconds:
+                    self.external_log_sink.warning(
+                        f"[THREAD_WARN] {info.get('agent')} task thread alive for {now - started:.1f}s"
+                    )
+                survivors.append(info)
+            else:
+                try:
+                    t.join(timeout=0.1)
+                except Exception:
+                    pass
+        self._worker_threads = survivors
+
+    def _detect_dead_agents(self):
+        """Mark and log agents that have been inactive beyond the configured threshold."""
+        now = time.time()
+        threshold = getattr(self, "dead_agent_threshold_seconds", 300) or 0
+        if threshold <= 0:
+            return
+        for name, agent in list(self.agent_instances.items()):
+            last_seen = self._agent_last_seen.get(name, 0)
+            if last_seen and (now - last_seen) > threshold:
+                if hasattr(agent, "mark_paused"):
+                    try:
+                        agent.mark_paused(reason="unresponsive")
+                    except Exception:
+                        pass
+                self._log_swarm_activity(
+                    "AGENT_UNRESPONSIVE",
+                    name,
+                    f"Agent idle > {threshold}s; marking as paused/unresponsive.",
+                    {"last_seen_ts": last_seen, "idle_seconds": now - last_seen},
+                    level="warning"
+                )
+                self._agent_last_seen[name] = now
     
    
     def _handle_agent_perform_task(self, directive: dict):
@@ -2269,7 +2335,7 @@ class CatalystVectorAlpha:
         system_state_data = {
             'current_action_cycle_id': self.current_action_cycle_id,
             'eidos_registry': convert_to_serializable_recursive(self.eidos_registry),
-            'dynamic_directive_queue': list(self.dynamic_directive_queue), # Explicitly converted
+            'dynamic_directive_queue': self._get_directive_queue_snapshot(), # Explicitly converted
             'scenario_state': convert_to_serializable_recursive(self.active_scenario.get_scenario_state()) if self.active_scenario else None,
             'pending_human_interventions': convert_to_serializable_recursive(self.pending_human_interventions),
             'is_running': self.is_running,
@@ -2282,12 +2348,14 @@ class CatalystVectorAlpha:
             'NO_PATTERN_AGENT_THRESHOLD': self.NO_PATTERN_AGENT_THRESHOLD,
             'event_monitor_state': convert_to_serializable_recursive(self.event_monitor.get_state()),
             'swarm_protocols': {name: convert_to_serializable_recursive(swarm.get_state()) for name, swarm in self.swarm_protocols.items()} if self.swarm_protocols else {},
-            'agent_instances': {} # Populated in the loop below
+            'agent_instances': {} # Populated below
             
         }
 
         # Handle agent instances and ensure their states are serializable
-        for agent_name, agent_instance in self.agent_instances.items():
+        with self._agents_lock:
+            agent_items = list(self.agent_instances.items())
+        for agent_name, agent_instance in agent_items:
             if hasattr(agent_instance, 'get_state'): # Prefer agent's own get_state if available
                 agent_state = convert_to_serializable_recursive(agent_instance.get_state()) # Apply recursive conversion
             else: # Fallback to __dict__ but apply recursive conversion and filter
@@ -2831,22 +2899,35 @@ class CatalystVectorAlpha:
         all_recent_memories.sort(key=lambda m: m.get('timestamp', ''))
         return all_recent_memories
 
+    def enqueue_directive(self, directive: dict) -> None:
+        """Thread-safe enqueue for dynamic directives arriving from other threads (API, agents)."""
+        if directive is None:
+            return
+        with self._directive_lock:
+            self.dynamic_directive_queue.append(directive)
+
+    def _get_directive_queue_snapshot(self) -> list:
+        """Thread-safe snapshot of pending directives for persistence/state reporting."""
+        with self._directive_lock:
+            return list(self.dynamic_directive_queue)
+
     def _process_dynamic_directives(self):
         """Processes directives from the dynamic queue, with special handling for user commands."""
-        if not self.dynamic_directive_queue:
-            return
+        with self._directive_lock:
+            if not self.dynamic_directive_queue:
+                return
+            snapshot = list(self.dynamic_directive_queue)
+            self.dynamic_directive_queue.clear()
 
-        print(f"--- Processing {len(self.dynamic_directive_queue)} Injected Directives ---")
+        print(f"--- Processing {len(snapshot)} Injected Directives ---")
 
         actionable_directives = [
-            task for task in self.dynamic_directive_queue if enforce_intent(task)
+            task for task in snapshot if enforce_intent(task)
         ]
         
-        num_dropped = len(self.dynamic_directive_queue) - len(actionable_directives)
+        num_dropped = len(snapshot) - len(actionable_directives)
         if num_dropped > 0:
             self.logger.info(f"Dropped {num_dropped} tasks with no actionable intent.")
-
-        self.dynamic_directive_queue.clear()
 
         for directive in actionable_directives:
             task_id = directive.get('task_id')
@@ -3247,10 +3328,26 @@ class CatalystVectorAlpha:
                 except Exception as e:
                     print(f"Warning: Dynamic directive processing error: {e}")
 
+                # Periodic cleanup of expired dynamic agents to prevent leaks
+                try:
+                    if hasattr(self, "agent_factory"):
+                        removed = self.agent_factory.cleanup_expired()
+                        # Also prune orchestrator registry for any stragglers
+                        if removed:
+                            self.agent_instances = {
+                                k: v for k, v in self.agent_instances.items()
+                                if not getattr(v, "is_expired", False)
+                            }
+                except Exception as e:
+                    print(f"Warning: Dynamic agent cleanup error: {e}")
+
                 # Process each agent
                 work_done_this_cycle = False
                 
-                for agent_name, agent in list(self.agent_instances.items()):
+                with self._agents_lock:
+                    agent_snapshot = list(self.agent_instances.items())
+
+                for agent_name, agent in agent_snapshot:
                     print(f"\nProcessing Agent: {agent_name}")
                     
                     try:
@@ -3263,20 +3360,64 @@ class CatalystVectorAlpha:
                         if not current_intent:
                             current_intent = "No specific intent"
                         
-                        # Call perform_task with proper context
-                        try:
-                            raw_result = agent.perform_task(
-                                current_intent,
-                                cycle_id=self.current_action_cycle_id,
-                                context_info={"cycle_id": self.current_action_cycle_id}
-                            )
-                        except TypeError:
-                            # Handle older signatures
+                        # Execute with real timeout that doesn't block the loop
+                        cancel_event = threading.Event()
+
+                        def _execute_agent():
                             try:
-                                raw_result = agent.perform_task(current_intent)
-                            except Exception as e:
-                                print(f"Error calling perform_task for {agent_name}: {e}")
-                                continue
+                                return agent.perform_task(
+                                    current_intent,
+                                    cycle_id=self.current_action_cycle_id,
+                                    context_info={"cycle_id": self.current_action_cycle_id},
+                                    cancel_event=cancel_event
+                                )
+                            except TypeError:
+                                return agent.perform_task(current_intent)
+
+                        result_holder = {}
+                        done_evt = threading.Event()
+
+                        def _run_and_capture():
+                            try:
+                                result_holder["value"] = _execute_agent()
+                            except Exception as exc:  # capture exceptions so the loop can continue
+                                result_holder["exc"] = exc
+                            finally:
+                                done_evt.set()
+
+                        worker_thread = threading.Thread(
+                            target=_run_and_capture,
+                            name=f"{agent_name}-task",
+                            daemon=True,
+                        )
+                        worker_thread.start()
+                        self._worker_threads.append({"thread": worker_thread, "agent": agent_name, "started_at": time.time()})
+
+                        if not done_evt.wait(timeout=180):  # 180s per agent max
+                            print(f"  ⚠️  {agent_name}: TIMEOUT after 180s - marking as failed")
+                            cancel_event.set()  # cooperative cancellation signal
+                            if hasattr(agent, "mark_paused"):
+                                agent.mark_paused(reason="task_timeout")
+                            self._log_swarm_activity(
+                                "AGENT_TIMEOUT",
+                                agent_name,
+                                f"Agent exceeded 180s timeout on task: {current_intent}"
+                            )
+                            # Mark as stale for detection
+                            self._agent_last_seen[agent_name] = time.time()
+                            # Do not block on the runaway thread; continue loop
+                            continue
+
+                        if "exc" in result_holder:
+                            raise result_holder["exc"]
+
+                        raw_result = result_holder.get("value")
+                        # Mark activity
+                        self._agent_last_seen[agent_name] = time.time()
+                        try:
+                            worker_thread.join(timeout=0.1)
+                        except Exception:
+                            pass
 
                         # Normalize the result
                         outcome, reason, report, progress = _normalize_task_result(raw_result)
@@ -3324,6 +3465,13 @@ class CatalystVectorAlpha:
                         import traceback
                         traceback.print_exc()
 
+                # Maintenance: clean up worker threads and detect stale agents
+                try:
+                    self._cleanup_runaway_threads()
+                    self._detect_dead_agents()
+                except Exception as _e:
+                    self.external_log_sink.warning(f"[Maintenance] cleanup/detection failed: {_e}")
+
                 # Handle idle cycles
                 if not work_done_this_cycle:
                     consecutive_idle_cycles += 1
@@ -3368,11 +3516,6 @@ class CatalystVectorAlpha:
 
         print("\nCognitive loop terminated.")
 # --- Main Execution --
-class GlobalToolRegistry(ToolRegistry): # Assuming ToolRegistry is the base
-    def __init__(self):
-        super().__init__()
-        # self._initialize_default_tools() # Call this if it auto-registers tools
-GLOBAL_TOOL_REGISTRY = GlobalToolRegistry() # Instantiate it once
 
 if __name__ == "__main__":
     # --- Define initial configuration parameters here ---
@@ -3585,10 +3728,10 @@ if __name__ == "__main__":
     
     from tool_registry import Tool
     GLOBAL_TOOL_REGISTRY.register_tool(Tool(
-        name="spawn_specialized_agent",
-        func=spawn_specialized_agent,
-        description="Spawn a specialized agent for a specific task",
-        category="agent_management"
+    name="spawn_specialized_agent",
+    func=spawn_specialized_agent,
+    description="Spawn a specialized agent for a specific task",
+    parameters={}
     ))
     central_logger.info("Spawn tool registered")
         
@@ -3603,6 +3746,11 @@ if __name__ == "__main__":
     catalyst_alpha._load_system_state()
     # --- END CRITICAL ---
 
-    # Start the continuous cognitive loop
-    catalyst_alpha.run_cognitive_loop()
+    # Start the continuous cognitive loop with supervisor protection
+    supervisor = CognitiveSupervisor(
+        cva_instance=catalyst_alpha,
+        database=catalyst_alpha.cva_db,
+        logger=catalyst_alpha.external_log_sink
+    )
+    supervisor.run_supervised(tick_sleep=10)
     print("\nCatalyst Vector Alpha (Phase 11) Execution Finished.")

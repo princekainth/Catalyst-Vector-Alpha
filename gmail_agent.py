@@ -279,6 +279,52 @@ def check_emails_loop(service, llm):
     except HttpError as error:
         logger.error(f"An error occurred in check_emails_loop: {error}")
 
+def get_calendar_events(time_min_utc, time_max_utc):
+    """
+    Standalone function to fetch calendar events.
+    Used by tools.py for the 'check_calendar' tool.
+    """
+    import os
+    from google.oauth2.credentials import Credentials
+    from googleapiclient.discovery import build
+    from google.auth.transport.requests import Request
+
+    SCOPES = [
+        'https://www.googleapis.com/auth/gmail.readonly',
+        'https://www.googleapis.com/auth/calendar.readonly'
+    ]
+
+    creds = None
+    # 1. Load existing token
+    if os.path.exists('token.json'):
+        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+
+    # 2. Refresh if needed
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            # If we can't refresh, we can't run headless. 
+            # Ideally, this should trigger a re-auth flow, but for now we raise an error.
+            raise Exception("Creds invalid or expired. Run 'python3 gmail_agent.py' to re-auth manually.")
+
+    # 3. Build Calendar Service
+    service = build('calendar', 'v3', credentials=creds)
+
+    # 4. Query API
+    print(f"[Calendar] Fetching events from {time_min_utc} to {time_max_utc}...")
+    events_result = service.events().list(
+        calendarId='primary', 
+        timeMin=time_min_utc,
+        timeMax=time_max_utc,
+        singleEvents=True,
+        orderBy='startTime'
+    ).execute()
+    
+    events = events_result.get('items', [])
+    print(f"[Calendar] Found {len(events)} events.")
+    return events
+
 # --- Main Thread Function (Called by app.py) ---
 
 def main_loop():

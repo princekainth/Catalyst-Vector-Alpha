@@ -1,39 +1,36 @@
+# Logs
+*.log
+logs/
+output/
+
 # Python
 __pycache__/
 *.pyc
-.Python
 venv/
-.env/
 
-# Persistence Data (runtime generated, don't commit)
+# Data
 persistence_data/
-
-# IDE/Editor files
-.vscode/
-*.sublime-project
-*.sublime-workspace
-
-# Logs
-logs/
-*.log.venv/
-venv/
-__pycache__/
-*.pyc
-.venv/
-venv/
-results/*/*.json
-__pycache__/
-*.pyc
-.venv/
-venv/
-results/*/*.json
-__pycache__/
-*.pyc
-*.log
-output/
-snapshots/
 *.db
+.chromadb/
+
+# Test files
+baseline_*.json
+baseline_*.csv
+test_*.py
+sandbox_*.py
+
+# Results
+results/
+snapshots/
+scenarios/
+
+# IDE
+.vscode/
+.claude/
+config/
+persistence_data/
+venv/
+__pycache__/
 .env
 credentials.json
 token.json
-*.json

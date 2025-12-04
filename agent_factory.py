@@ -1,5 +1,6 @@
 # agent_factory.py - Dynamic agent spawning and lifecycle management
 import logging
+import os
 import uuid
 from datetime import datetime, timezone, timedelta
 import json
@@ -8,6 +9,7 @@ from typing import Dict, List, Optional, Any, Union, Tuple
 from dataclasses import dataclass
 import threading
 import numpy as np
+from config_manager import get_config
 
 from database import CVADatabase
 from agents import ProtoAgent
@@ -20,6 +22,10 @@ try:
 except ImportError:
     SEMANTIC_MATCHING_ENABLED = False
     logging.warning("sentence-transformers not installed - semantic matching disabled")
+
+_config = get_config()
+_features = _config.get("features", {})
+_semantic_matching_enabled = _features.get("semantic_tool_matching", True) and SEMANTIC_MATCHING_ENABLED
 
 logger = logging.getLogger("CatalystLogger")
 
@@ -134,8 +140,24 @@ class DynamicAgent(ProtoAgent):
             
             # STEP 2: Execute based on decision
             if decision.get("decision") == "TOOLSMITH_MODE":
-                # PHASE 4: DISABLED - Toolsmith fallback causes more harm than good
-                # Instead of generating broken code, fail fast with helpful message
+                # Try toolsmith generation if enabled
+                if getattr(self.tool_registry, "toolsmith_enabled", False):
+                    try:
+                        gen = self.tool_registry.safe_call("toolsmith_generate", task=task_description)
+                        if isinstance(gen, dict) and gen.get("status") == "ok":
+                            gen_name = gen["data"].get("tool_name")
+                            if gen_name:
+                                self.spec.tools.append(gen_name)
+                                result = self.tool_registry.safe_call(gen_name)
+                                self.db.record_dynamic_agent_task(
+                                    agent_id=self.spec.agent_id,
+                                    task=task,
+                                    result=result
+                                )
+                                return {"success": True, "result": result}
+                    except Exception:
+                        pass
+                # If toolsmith not used or failed, return helpful error
                 return {
                     "success": False,
                     "error": "No matching tool available for this task",
@@ -161,14 +183,35 @@ class DynamicAgent(ProtoAgent):
                             time_max = f"{current_date}T23:59:59Z"
                             result = self.tool_registry.safe_call(tool_name, time_min_utc=time_min, time_max_utc=time_max)
                 else:
-                    # PHASE 4: Tool not available - fail fast instead of toolsmith
-                    available = ", ".join(self.spec.tools)
-                    return {
-                        "success": False,
-                        "error": f"Tool '{tool_name}' not available for this agent",
-                        "suggestion": f"This agent has: {available}",
-                        "hint": "Try a task that uses one of these tools, or spawn a new agent with different purpose"
-                    }
+                    # Tool not available - try a smart fallback before failing
+                    result = None
+                    if "web_search" in self.spec.tools:
+                        result = self.tool_registry.safe_call("web_search", query=task_description)
+                    elif "read_webpage" in self.spec.tools:
+                        # heuristically extract a URL
+                        import re
+                        url_match = re.search(r"https?://\\S+", task_description)
+                        if url_match:
+                            result = self.tool_registry.safe_call("read_webpage", url=url_match.group(0))
+                    # Toolsmith fallback (sandboxed codegen)
+                    if result is None and getattr(self.tool_registry, "toolsmith_enabled", False):
+                        try:
+                            gen = self.tool_registry.safe_call("toolsmith_generate", task=task_description)
+                            if isinstance(gen, dict) and gen.get("status") == "ok":
+                                gen_name = gen["data"].get("tool_name")
+                                if gen_name:
+                                    self.spec.tools.append(gen_name)
+                                    result = self.tool_registry.safe_call(gen_name)
+                        except Exception:
+                            result = None
+                    if result is None:
+                        available = ", ".join(self.spec.tools)
+                        return {
+                            "success": False,
+                            "error": f"Tool '{tool_name}' not available for this agent",
+                            "suggestion": f"This agent has: {available}",
+                            "hint": "Try a task that uses one of these tools, or spawn a new agent with different purpose"
+                        }
             
             # Track in database
             self.db.record_dynamic_agent_task(
@@ -266,14 +309,17 @@ class AgentFactory:
         # PHASE 2: Initialize semantic matching
         self.semantic_model = None
         self.tool_embeddings = {}
-        if SEMANTIC_MATCHING_ENABLED:
+        if _semantic_matching_enabled:
+            import os
+            os.environ['CUDA_VISIBLE_DEVICES'] = ''  # Force CPU
             try:
-                logger.info("Loading sentence-transformers model for semantic tool matching...")
-                self.semantic_model = SentenceTransformer('all-MiniLM-L6-v2')
+                logger.info("Loading Ollama embedding model for semantic tool matching...")
+                # Use the same embedding model as the rest of CVA
+                self.semantic_model = self.llm  # Use existing Ollama LLM integration
                 self._precompute_tool_embeddings()
                 logger.info(f"Semantic tool matching ready ({len(self.tool_embeddings)} tools embedded)")
             except Exception as e:
-                logger.warning(f"Failed to initialize semantic matching: {e}")
+                logger.error(f"Failed to load semantic model: {e}")
                 self.semantic_model = None
 
         # Initialize factory table
@@ -324,11 +370,15 @@ class AgentFactory:
 
         # Check for actionable verbs
         actionable_verbs = [
-            "monitor", "search", "track", "find", "check", "analyze", "scan",
+            "monitor", "search", "track", "tracker", "tracking", "find", "check", "analyze", "scan",
             "watch", "detect", "alert", "notify", "report", "fetch", "query",
             "research", "investigate", "audit", "verify", "validate"
         ]
-        has_action = any(verb in purpose_lower for verb in actionable_verbs)
+        # Allow stem matches (e.g., "tracker"/"tracking" counts for "track")
+        has_action = any(
+            verb in purpose_lower.split() or any(w.startswith(verb) for w in purpose_lower.split())
+            for verb in actionable_verbs
+        )
 
         if not has_action:
             return {
@@ -356,7 +406,7 @@ class AgentFactory:
             # Create rich description for better semantic matching
             description = f"{tool_name}: {spec.get('description', '')}".strip()
             try:
-                embedding = self.semantic_model.encode(description, convert_to_numpy=True)
+                embedding = self.semantic_model.generate_embedding(description)
                 self.tool_embeddings[tool_name] = {
                     'embedding': embedding,
                     'description': description
@@ -371,6 +421,24 @@ class AgentFactory:
         if norm_a == 0 or norm_b == 0:
             return 0.0
         return float(np.dot(a, b) / (norm_a * norm_b))
+
+    def cleanup_expired_agents(self):
+        """Remove expired DynamicAgents from registry."""
+        expired = []
+        
+        for agent_id, agent in list(self.active_agents.items()):
+            if hasattr(agent, 'check_expiration') and agent.check_expiration():
+                expired.append(agent_id)
+        
+        for agent_id in expired:
+            agent = self.active_agents.pop(agent_id)
+            logger.info(f"[CLEANUP] Removed expired agent: {agent_id}")
+            
+            # Remove from orchestrator if registered
+            if self.orchestrator and hasattr(self.orchestrator, 'agent_instances'):
+                self.orchestrator.agent_instances.pop(agent_id, None)
+        
+        return len(expired)
 
     def find_semantic_tools(self, purpose: str, top_k: int = 5, threshold: float = 0.35) -> List[Tuple[str, float]]:
         """
@@ -390,7 +458,7 @@ class AgentFactory:
 
         try:
             # Embed the purpose
-            purpose_embedding = self.semantic_model.encode(purpose, convert_to_numpy=True)
+            purpose_embedding = self.semantic_model.generate_embedding(purpose)
 
             # Compute similarities
             scores = []
@@ -426,7 +494,12 @@ class AgentFactory:
     # ============== End Semantic Tool Matching ==============
 
     def _init_db(self):
-        """Create factory tracking table."""
+        """Create factory tracking table (PostgreSQL handles this in schema)."""
+        # Table already created in PostgreSQL schema
+        pass
+    
+    def _init_db_old(self):
+        """Legacy table creation - no longer needed."""
         conn = self.db._get_connection()
         cursor = conn.cursor()
         cursor.execute('''
@@ -633,6 +706,15 @@ class AgentFactory:
             tools = [t for t in tools if t in ["check_calendar", "send_desktop_notification"]]
             if not tools:
                 tools = ["check_calendar", "send_desktop_notification"]
+
+        # Rule 7: Trackers/news/prices - ensure web tools + notifier
+        if any(k in purpose_lower for k in ["track", "tracker", "price", "monitor", "news"]):
+            if "web_search" not in tools:
+                tools.append("web_search")
+            if "read_webpage" not in tools:
+                tools.append("read_webpage")
+            if "send_desktop_notification" not in tools:
+                tools.append("send_desktop_notification")
         
         # Limit to 5 tools maximum
         design["required_tools"] = tools[:5]
@@ -685,13 +767,12 @@ class AgentFactory:
     def _persist_spec(self, spec: AgentSpec, reasoning: str):
         """Save agent spec to database."""
         import json
-        conn = self.db._get_connection()
-        cursor = conn.cursor()
-        cursor.execute('''
+        from db_postgres import execute_query
+        execute_query('''
             INSERT INTO dynamic_agents 
             (agent_id, name, purpose, specialized_prompt, tools_json, 
              ttl_hours, created_at, expires_at, parent_agent, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ''', (
             spec.agent_id,
             spec.name,
@@ -704,7 +785,6 @@ class AgentFactory:
             spec.parent_agent,
             "active"
         ))
-        conn.commit()
     
     def kill_agent(self, agent_id: str) -> bool:
         """Terminate an agent."""
@@ -714,14 +794,12 @@ class AgentFactory:
                 agent.is_expired = True
                 
                 # Update DB
-                conn = self.db._get_connection()
-                cursor = conn.cursor()
-                cursor.execute('''
+                from db_postgres import execute_query
+                execute_query('''
                     UPDATE dynamic_agents 
-                    SET status = 'terminated', terminated_at = ?
-                    WHERE agent_id = ?
+                    SET status = 'terminated', terminated_at = %s
+                    WHERE agent_id = %s
                 ''', (datetime.now(timezone.utc).isoformat(), agent_id))
-                conn.commit()
                 
                 logger.info(f"Killed agent {agent.spec.name}")
                 return True

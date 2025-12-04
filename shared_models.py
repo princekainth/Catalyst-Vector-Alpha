@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 import re
 import copy
+from threading import Lock
 
 # --- Project Imports ---
 from tool_registry import ToolRegistry
@@ -95,52 +96,56 @@ class BusMessage:
     cycle_id: str
     timestamp: str
 
+
 class MessageBus:
-    """A central message queue for inter-agent communication."""
     def __init__(self):
-        self.messages = deque()
+        self.messages = {}
+        self.lock = Lock()
         self.catalyst_vector_ref = None
-        self.current_cycle_id = "initialization"
-        self.message_queue = {} 
 
-
-    def send_message(self, sender: str, recipient: str, message_type: str, content: any,
-                     task_description: str | None = None, status: str = "pending",
-                     cycle_id: str | None = None) -> None:
-        self._q.append(BusMessage(
-            sender=sender,
-            recipient=recipient,
-            message_type=message_type,
-            content=content,
-            task_description=task_description,
-            status=status,
-            cycle_id=cycle_id or self.current_cycle_id,
-            timestamp=utc_now_iso(),
-        ))
-
-    def get_messages_for(self, agent_name: str) -> List[Dict]:
-        out: List[Dict] = []
-        keep: Deque[BusMessage] = deque()
-        while self._q:
-            m = self._q.popleft()
-            if m.recipient == agent_name:
-                out.append(m.__dict__)
-            else:
-                keep.append(m)
-        self._q = keep
-        return out
-
-    def clear_all(self) -> None:
-        self._q.clear()
+    def send_message(self, sender: str, recipient: str, message_type: str, content: any, 
+                     task_description: str = None, status: str = "pending", cycle_id: str = None):
+        """Thread-safe message sending."""
+        with self.lock:
+            if recipient not in self.messages:
+                self.messages[recipient] = []
+            
+            self.messages[recipient].append({
+                "sender": sender,
+                "message_type": message_type,
+                "content": content,
+                "task_description": task_description,
+                "status": status,
+                "cycle_id": cycle_id,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            })
+    
+    def get_messages_for(self, agent_name: str):
+        """Thread-safe message retrieval - matches what agents expect."""
+        with self.lock:
+            msgs = self.messages.get(agent_name, [])
+            self.messages[agent_name] = []
+            return msgs
         
+    def send_directive(self, directive):
+        if self.catalyst_vector_ref:
+            enqueue_fn = getattr(self.catalyst_vector_ref, "enqueue_directive", None)
+            if enqueue_fn:
+                enqueue_fn(directive)
+            else:
+                # Hard fail to avoid unsynchronized writes
+                raise RuntimeError("enqueue_directive not available on catalyst_vector_ref")
+
 class EventMonitor:
     def __init__(self):
         self.event_history = []
         self.agent_responses = defaultdict(list) # This is the defaultdict
         self.current_cycle_id = None
+        self._lock = Lock()
 
     def set_current_cycle(self, cycle_id: str):
-        self.current_cycle_id = cycle_id
+        with self._lock:
+            self.current_cycle_id = cycle_id
 
     def log_event(self, event_type: str, event_id: str, payload: dict):
         event_record = {
@@ -152,7 +157,8 @@ class EventMonitor:
             'timestamp': datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             'cycle_id': self.current_cycle_id
         }
-        self.event_history.append(event_record)
+        with self._lock:
+            self.event_history.append(event_record)
         print(f"  [EventMonitor] Logged event: {event_record['event_id'][:8]} ({event_record['type']})")
 
     def log_agent_response(self, agent_id: str, event_id: str, response_type: str, details: dict = None):
@@ -163,41 +169,44 @@ class EventMonitor:
             'details': details if details is not None else {},
             'cycle_id': self.current_cycle_id
         }
-        self.agent_responses[agent_id].append(response_record)
+        with self._lock:
+            self.agent_responses[agent_id].append(response_record)
         print(f"  [EventMonitor] Agent {agent_id} responded to {event_id[:8]} ({response_type})")
 
     def get_event_history(self, event_id: str = None):
-        if event_id:
-            return [e for e in self.event_history if e['event_id'] == event_id]
-        return self.event_history
+        with self._lock:
+            if event_id:
+                return [e for e in self.event_history if e['event_id'] == event_id]
+            return list(self.event_history)
 
     def get_agent_event_responses(self, agent_id: str, event_id: str = None):
-        responses = self.agent_responses.get(agent_id, [])
+        with self._lock:
+            responses = list(self.agent_responses.get(agent_id, []))
         if event_id:
             return [r for r in responses if r['event_id'] == event_id]
         return responses
 
     def get_state(self):
         """Returns the current state of the EventMonitor for persistence."""
-        # FIX: Convert defaultdict to dict for serialization
-        serializable_agent_responses = {
-            agent_id: list(responses) for agent_id, responses in self.agent_responses.items()
-        }
-        return {
-            'event_history': self.event_history,
-            'agent_responses': serializable_agent_responses,
-            'current_cycle_id': self.current_cycle_id
-        }
+        with self._lock:
+            serializable_agent_responses = {
+                agent_id: list(responses) for agent_id, responses in self.agent_responses.items()
+            }
+            return {
+                'event_history': list(self.event_history),
+                'agent_responses': serializable_agent_responses,
+                'current_cycle_id': self.current_cycle_id
+            }
 
     def load_state(self, state):
         """Loads the state into the EventMonitor."""
-        self.event_history = state.get('event_history', [])
-        # FIX: Load agent_responses back into a defaultdict
-        loaded_responses = state.get('agent_responses', {})
-        self.agent_responses = defaultdict(list, {
-            k: list(v) for k, v in loaded_responses.items() # Ensure values are lists for defaultdict
-        })
-        self.current_cycle_id = state.get('current_cycle_id', None)
+        with self._lock:
+            self.event_history = state.get('event_history', [])
+            loaded_responses = state.get('agent_responses', {})
+            self.agent_responses = defaultdict(list, {
+                k: list(v) for k, v in loaded_responses.items() # Ensure values are lists for defaultdict
+            })
+            self.current_cycle_id = state.get('current_cycle_id', None)
 
 # ==================================================================
 #  2. Agent Memory & Cognition
@@ -1036,8 +1045,8 @@ class OllamaLLMIntegration:
         Handles ChatResponse objects and streaming. Returns "" on error.
         """
         if not self.chat_client:
-            self.logger.error("Ollama chat client not initialized.")
-            return ""
+            self.logger.error("CRITICAL: Ollama not available - CVA cannot reason autonomously")
+            raise RuntimeError("LLM unavailable - autonomous operations halted")
 
         # ---- coerce messages ----
         if messages is None and prompt is None:
@@ -1068,7 +1077,7 @@ class OllamaLLMIntegration:
 
         except Exception as e:
             self.logger.error(f"Ollama chat generation failed: {e}")
-            return ""
+            raise RuntimeError(f"LLM generation failed: {e}")
 
     def _extract_content(self, res: Union[ChatResponse, Dict[str, Any], str]) -> str:
         """Normalize Ollama chat outputs to a content string."""
@@ -1220,7 +1229,11 @@ class SovereignGradient:
         return f"SovereignGradient(target_entity={self._target_entity!r})"
     
 # Global Tool Registry Instance
-GLOBAL_TOOL_REGISTRY = ToolRegistry()
+try:
+    from database import cva_db as _shared_cva_db
+except Exception:
+    _shared_cva_db = None
+GLOBAL_TOOL_REGISTRY = ToolRegistry(db=_shared_cva_db)
 
 # --- Utility Functions ---
 def generate_unique_id():

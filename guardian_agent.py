@@ -61,22 +61,22 @@ class GuardianAgent:
     
     def get_metrics(self) -> Dict:
         """Get agent factory metrics."""
-        conn = self.db._get_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT 
-                COUNT(*) as total_spawned,
-                SUM(CASE WHEN status='active' THEN 1 ELSE 0 END) as active,
-                SUM(CASE WHEN status='terminated' THEN 1 ELSE 0 END) as terminated,
-                AVG(tasks_completed) as avg_tasks
-            FROM dynamic_agents
-        ''')
-        
-        row = cursor.fetchone()
+        try:
+            from db_postgres import execute_query
+            rows = execute_query('''
+                SELECT 
+                    COUNT(*) as total_spawned,
+                    SUM(CASE WHEN status='active' THEN 1 ELSE 0 END) as active,
+                    SUM(CASE WHEN status='terminated' THEN 1 ELSE 0 END) as terminated,
+                    AVG(tasks_completed) as avg_tasks
+                FROM dynamic_agents
+            ''', fetch=True)
+            row = rows[0] if rows else {}
+        except Exception:
+            row = {}
         return {
-            "total_spawned": row[0] or 0,
-            "currently_active": row[1] or 0,
-            "terminated": row[2] or 0,
-            "avg_tasks_per_agent": round(row[3] or 0, 2)
+            "total_spawned": row.get("total_spawned", 0) if isinstance(row, dict) else 0,
+            "currently_active": row.get("active", 0) if isinstance(row, dict) else 0,
+            "terminated": row.get("terminated", 0) if isinstance(row, dict) else 0,
+            "avg_tasks_per_agent": round(row.get("avg_tasks", 0) if isinstance(row, dict) else 0, 2)
         }
