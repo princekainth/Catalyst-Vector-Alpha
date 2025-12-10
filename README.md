@@ -157,7 +157,12 @@ Commercial Deployment
 
 # 2. Deploy Protocol Agent
 curl -X POST http://localhost:5000/api/agents/spawn \
-  -d '{"purpose": "Enterprise workflow automation", "context": {}}'
+  -H "Content-Type: application/json" \
+  -d '{
+    "purpose": "Analyze and automate enterprise workflows", 
+    "context": {}, 
+    "protocol": "Meta™"
+  }'
 
 # 3. Monitor Protocol Ecosystem
 curl http://localhost:5000/api/agents/factory
