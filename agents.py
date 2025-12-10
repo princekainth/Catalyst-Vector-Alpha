@@ -2614,6 +2614,32 @@ class ProtoAgent_Observer(ProtoAgent):
             report_content_dict = {"summary": "", "task_outcome_type": "Observation"}
 
             try:
+                # AUTO K8S MONITORING - Check every Observer cycle
+                _registry = getattr(self, "tool_registry", None)
+                if _registry and _registry.has_tool("watch_k8s_events"):
+                    _k8s_result = _registry.safe_call("watch_k8s_events", namespace="all", minutes=2)
+                    if isinstance(_k8s_result, dict):
+                        _crit = _k8s_result.get("critical_count", 0)
+                        if _crit > 0:
+                            print(f"[Observer] 🚨 K8S ALERT: {_crit} critical events detected!")
+                            self.memetic_kernel.add_memory("K8sAlert", {
+                                "critical_count": _crit,
+                                "events": _k8s_result.get("critical_events", [])[:5],
+                                "timestamp": time.time()
+                            })
+                # Also check for RBAC violations and secret access
+                if _registry and _registry.has_tool("watch_k8s_audit_events"):
+                    _audit_result = _registry.safe_call("watch_k8s_audit_events", minutes=2)
+                    if isinstance(_audit_result, dict):
+                        _violations = _audit_result.get("violation_count", 0)
+                        if _violations > 0:
+                            print(f"[Observer] 🔐 SECURITY ALERT: {_violations} RBAC violations detected!")
+                            self.memetic_kernel.add_memory("SecurityAlert", {
+                                "violation_count": _violations,
+                                "violations": _audit_result.get("violations", [])[:5],
+                                "timestamp": time.time()
+                            })
+                # END K8S MONITORING
                 # 1) optional tool execution
                 tool_name = kwargs.get("tool_name")
                 tool_args = kwargs.get("tool_args", {})
@@ -3974,7 +4000,10 @@ class ProtoAgent_Planner(ProtoAgent):
                     # Fall through
                 
                 # If it wasn't a mission_runner task, use the selected mission_type
-                goal = f"Run mission '{mission_type}' based on recent outcomes to improve responsiveness"
+                if mission_type == "k8s_monitoring":
+                    goal = "Monitor Kubernetes cluster for incidents, pod failures, and unhealthy states. Alert on critical events."
+                else:
+                    goal = f"Run mission '{mission_type}' based on recent outcomes to improve responsiveness"
                 complexity = 0.7
 
         except Exception as e:
@@ -3985,6 +4014,9 @@ class ProtoAgent_Planner(ProtoAgent):
                 "health_audit",
                 0.8,
             )
+
+        if mission_type == "k8s_monitoring":
+            goal = "Monitor Kubernetes cluster for incidents, pod failures, and unhealthy states. Alert on critical events."
 
         # Use mission_type as canonical cooldown key (stable)
         cooldown_key = mission_type
@@ -7241,7 +7273,8 @@ class ProtoAgent_Planner(ProtoAgent):
             {"type": "memory_optimization", "complexity": 0.8, "triggers": ["memory_growth"]},
             {"type": "workflow_optimization", "complexity": 0.7, "triggers": ["always"]},
             {"type": "config_tuning", "complexity": 0.6, "triggers": ["always"]},
-            {"type": "status_reporting", "complexity": 0.5, "triggers": ["always"]}
+            {"type": "status_reporting", "complexity": 0.5, "triggers": ["always"]},
+            {"type": "k8s_monitoring", "complexity": 0.8, "triggers": ["always"]}
         ]
         
         # Helper function to get a specific goal for a mission type

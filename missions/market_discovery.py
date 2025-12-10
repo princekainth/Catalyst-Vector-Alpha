@@ -6,14 +6,59 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 import re
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 
 import yaml
 from llm_ollama import OllamaLLMIntegration
+from tools_headless import fetch_page_content
 
 from tool_registry import ToolRegistry, tool_registry as GLOBAL_TOOL_REGISTRY
 
 log = logging.getLogger("MarketResearcher")
+
+AGGREGATOR_DOMAINS = {
+    "yellowpages.ca",
+    "bestprosintown.com",
+    "ruli.com",
+    "groupon.com",
+    "bing.com",
+    "duckduckgo.com",
+}
+
+DOMAIN_BLACKLIST = {
+    "arcticspasbarrie.ca",
+    "nano-reef.com",
+    "bestbuyersguide.org",
+    "canadianorglist.com",
+    "mapquest.com",
+    "welltipsforyou.com",
+    "findprivateclinics.ca",
+    "groupon.com",
+}
+
+ALWAYS_COMPETITOR_DOMAINS = {
+    "glowdayspa.ca",
+    "spalumina.com",
+    "revivemedspa.ca",
+    "naturalbalance-dayspa.com",
+    "mottalashhouse.com",
+    "waxingwithanna.com",
+    "browhousebarrie.com",
+    "joinusgorgeous.com",
+    "lashnnailroom.ca",
+    "forever-flawless.ca",
+    "bonitalaser.ca",
+    "thelaserbar.ca",
+}
+
+BOOKING_DOMAINS = [
+    "fresha.com",
+    "janeapp.com",
+    "mindbodyonline.com",
+    "vagaro.com",
+    "booker.com",
+    "schedulicity.com",
+]
 
 
 @dataclass
@@ -97,6 +142,33 @@ class MarketResearcher:
         return f"{domain}|{name.strip().lower()}"
 
     @staticmethod
+    def _collect_numeric_prices(prices: Any) -> List[float]:
+        """Extract numeric price values from price structures (currency-sign only)."""
+        nums: List[float] = []
+        pat = re.compile(r"(?:\$|cad)\s*(\d+(?:\.\d+)?)", re.IGNORECASE)
+        if isinstance(prices, dict):
+            for v in prices.values():
+                items = v if isinstance(v, list) else [v]
+                for item in items:
+                    if not item:
+                        continue
+                    for m in pat.findall(str(item)):
+                        try:
+                            nums.append(float(m))
+                        except Exception:
+                            continue
+        elif isinstance(prices, list):
+            for item in prices:
+                if not item:
+                    continue
+                for m in pat.findall(str(item)):
+                    try:
+                        nums.append(float(m))
+                    except Exception:
+                        continue
+        return nums
+
+    @staticmethod
     def _snippet_suspect(snippet: str, category: str) -> bool:
         text = (snippet or "").lower()
         geo_hits = any(token in text for token in ["barrie", "l4n", "l4m", "simcoe"])
@@ -106,11 +178,29 @@ class MarketResearcher:
     @staticmethod
     def _is_aggregator(url: str) -> bool:
         domain = urlparse(url).netloc.lower()
+        if domain.startswith("www."):
+            domain = domain[4:]
+        if domain in AGGREGATOR_DOMAINS:
+            return True
         bad_fragments = [
-            "yelp.", "tripadvisor.", "threebestrated", "fresha.", "craigslist.",
-            "royallepage.", "kijiji.", "cylex-", "cylex.", "iglobal.",
-            "storestip.", "vk.com", "tiktok.com", "facebook.", "instagram.",
-            "google.", "maps.google", "bing.com", "booking.com"
+            "yelp.",
+            "tripadvisor.",
+            "threebestrated",
+            "fresha.",
+            "craigslist.",
+            "royallepage.",
+            "kijiji.",
+            "cylex-",
+            "cylex.",
+            "iglobal.",
+            "storestip.",
+            "vk.com",
+            "tiktok.com",
+            "facebook.",
+            "instagram.",
+            "google.",
+            "maps.google",
+            "booking.com",
         ]
         return any(b in domain for b in bad_fragments)
 
@@ -209,6 +299,14 @@ class MarketResearcher:
             seen.add(u)
             deduped.append(u)
         return deduped
+
+    @staticmethod
+    def _normalized_domain(url: str) -> str:
+        parsed = urlparse(url)
+        host = parsed.netloc.lower()
+        if host.startswith("www."):
+            host = host[4:]
+        return host
 
     def _headless_fetch(self, url: str, timeout_ms: int = 20000) -> Optional[str]:
         """Render the page with Playwright if available to bypass basic blocking."""
@@ -321,92 +419,119 @@ class MarketResearcher:
         return payload
 
     def _enrich_services_pages(self, pool: OrderedDict[str, Competitor], order: List[str], limit: int = 10):
-        """Attempt to read a services page for a batch of competitors."""
+        """Attempt to read a services page for a batch of competitors using spider strategy."""
         target_keys = order[:limit] if limit else order
         for key in target_keys:
             comp = pool.get(key)
             if not comp or not self._is_valid_url(comp.url):
                 continue
 
+            # Step 1: fetch home page (headless) and collect links
             base_data = self._get_page_data(comp.url)
-            base_content = base_data.get("text", "")
-            links = base_data.get("links", [])
-            pricing_links = base_data.get("pricing_links", [])
-            # Filter links to same domain and relevant keywords
-            filtered_links = []
-            for l in links:
-                if self._is_aggregator(l):
-                    continue
-                if urlparse(l).netloc and urlparse(l).netloc != urlparse(comp.url).netloc:
-                    continue
-                lower_l = l.lower()
-                if any(k in lower_l for k in ["service", "price", "treatment", "laser", "wax", "facial", "book", "appointment", "menu", "rate"]):
-                    filtered_links.append(l)
+            base_text = base_data.get("text", "")
+            base_links = base_data.get("links", []) or []
 
-            candidates = pricing_links + self._candidate_service_urls(comp.url) + filtered_links
+            # Step 2: choose best link by priority
+            keywords = ["price", "pricing", "rate", "cost", "service", "services", "menu", "treatment", "book"]
+            negative_terms = ["ski", "golf", "resort", "hotel", "room", "lift", "ticket"]
+            boost_terms = ["aesthetics", "laser", "facial", "skin", "body", "treatment", "spa", "wax"]
+            best_link = None
 
-            for candidate in candidates:
-                content = self._get_page_data(candidate).get("text", "")
-                if not content:
+            # Priority 1: booking engines (any domain)
+            for link in base_links:
+                href = (link.get("href") or "").strip()
+                if not href:
                     continue
-                snippet = self._extract_services_snippet(content)
-                comp.services_page = candidate
-                comp.services_excerpt = snippet
-                comp.services_content = content
-                if not comp.extracted_prices:
-                    comp.extracted_prices = self._extract_prices(content)
-                break
+                lower_href = href.lower()
+                if any(engine in lower_href for engine in BOOKING_DOMAINS):
+                    best_link = href
+                    log.info(f"[INFO] Found external booking engine: {href} - Following immediately.")
+                    break
+
+            # Priority 2: keyword matches on same domain if no booking engine found
+            if not best_link:
+                scored = []
+                for link in base_links:
+                    href = (link.get("href") or "").strip()
+                    text = (link.get("text") or "").lower()
+                    target = href.lower() + " " + text
+                    if not href or self._is_aggregator(href):
+                        continue
+                    if urlparse(href).netloc and urlparse(href).netloc != urlparse(comp.url).netloc:
+                        # allow offsite for booking only; otherwise skip
+                        continue
+                    if any(neg in target for neg in negative_terms) and "spa" not in target:
+                        continue
+                    score = 0
+                    if any(k in target for k in keywords):
+                        score += 2
+                    if any(b in target for b in boost_terms):
+                        score += 1
+                    if score > 0:
+                        scored.append((score, href))
+                if scored:
+                    scored.sort(key=lambda x: x[0], reverse=True)
+                    best_link = scored[0][1]
+
+            combined_text = base_text
+            if best_link:
+                best_data = self._get_page_data(best_link)
+                best_text = best_data.get("text", "")
+                if best_text:
+                    combined_text = base_text + "\n" + best_text
+                    comp.services_page = best_link
+                    log.info(f"[SUCCESS] Fetched booking engine page: {best_link}, got {len(best_text)} chars")
+            else:
+                combined_text = base_text
+                comp.services_page = comp.url
+
+            if not combined_text:
+                continue
+
+            comp.services_excerpt = self._extract_services_snippet(combined_text)
+            comp.services_content = combined_text
+            if not comp.extracted_prices:
+                comp.extracted_prices = self._extract_prices(combined_text)
 
     def _get_page_data(self, url: str) -> Dict[str, Any]:
-        """Fetch raw HTML + text + links using requests or headless fallback."""
-        html = ""
-        text = ""
-        links: List[str] = []
-        pricing_links: List[str] = []
-
-        # Try direct requests to preserve HTML for link extraction
+        """Fetch raw HTML + text + links using headless fetch."""
         try:
-            import requests
+            res = fetch_page_content(url)
+        except Exception as e:
+            log.warning("Headless fetch_page_content failed for %s: %s", url, e)
+            res = {}
 
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.5",
-                "Referer": "https://www.google.com/",
-                "DNT": "1",
-                "Connection": "keep-alive",
-                "Upgrade-Insecure-Requests": "1",
-            }
-            r = requests.get(url, headers=headers, timeout=20)
-            if r.status_code == 200 and r.text:
-                html = r.text
-                text = self._clean_html_text(html)
-        except Exception:
-            pass
-
-        # Fallback to headless if needed
-        if (not html or len(text) < 300) and not self._is_aggregator(url):
-            rendered_html = self._headless_fetch(url)
-            if rendered_html:
-                text = self._clean_html_text(rendered_html)
-                html = rendered_html
-
-        # Fallback to tool if still empty
+        html = res.get("content", "") if isinstance(res, dict) else ""
+        links = res.get("links", []) if isinstance(res, dict) else []
+        text = self._clean_html_text(html)
         if not text:
             resp = self._call_tool("read_webpage", url=url)
             if resp.get("status") == "ok":
                 text = (resp.get("data") or {}).get("content", "") or ""
+        return {"text": text or "", "links": links}
 
-        # Extract links from HTML if we have it
-        if html:
-            links = self._extract_links(html, url)
-            pricing_links = self._extract_links_with_text(
-                html,
-                url,
-                ["price", "pricing", "service", "services", "book", "booking", "appointment", "menu", "rate", "laser", "wax", "facial"],
-            )
-
-        return {"text": text or "", "links": links, "pricing_links": pricing_links}
+    @staticmethod
+    def _looks_like_barrie_service(text: str, url: str) -> bool:
+        blob = f"{text} {url}".lower()
+        if all(token not in blob for token in ["barrie", "l4n", "l4m", "simcoe"]):
+            return False
+        service_keywords = [
+            "laser",
+            "spa",
+            "medspa",
+            "wax",
+            "brazilian",
+            "thread",
+            "microneedling",
+            "facial",
+            "hydrafacial",
+            "brow",
+            "pmu",
+            "permanent makeup",
+            "cosmetic tattoo",
+            "lash",
+        ]
+        return any(k in blob for k in service_keywords)
 
     @staticmethod
     def _candidate_service_urls(base_url: str) -> List[str]:
@@ -526,29 +651,79 @@ class MarketResearcher:
             return None
 
     def analyze_competitor(self, content: str, url: str = "") -> Dict[str, Any]:
-        """Use LLM to confirm Barrie location and extract prices from services content."""
+        """Use LLM to confirm Barrie location and extract structured services + prices."""
+        # Hard filter: never treat obviously irrelevant domains as competitors.
+        hostname = ""
+        if url:
+            try:
+                hostname = urlparse(url).hostname or ""
+            except Exception:
+                hostname = ""
+        if any(hostname.endswith(d) for d in DOMAIN_BLACKLIST):
+            return {
+                "raw": "",
+                "parsed": None,
+                "is_barrie_competitor": False,
+                "prices": {},
+            }
+
         if not content:
-            return {"raw": "", "parsed": None, "is_barrie_competitor": False, "prices": []}
+            return {
+                "raw": "",
+                "parsed": None,
+                "is_barrie_competitor": False,
+                "prices": {},
+            }
 
         print(f"[DEBUG] Analyzing {url or 'unknown URL'} (Content len: {len(content)})")
         print(f"[DEBUG] Content length for {url or 'unknown URL'}: {len(content)}")
 
+        # Truncate huge content to a middle slice; booking engines often sit there.
+        max_chars = 20000
+        if len(content) > max_chars * 2:
+            start = (len(content) // 2) - (max_chars // 2)
+            end = start + max_chars
+            content = content[start:end]
+
         prompt = (
-            "Analyze this website text. "
-            "1. Is this a beauty/spa business physically located in Barrie, Ontario? (Return TRUE/FALSE). "
-            "If the location is not explicitly stated but the content mentions '705' area code or 'Simcoe', assume it is Barrie. "
-            "2. Extract any prices for Laser, Microneedling, or Facials. "
-            "Return ONLY valid JSON. No markdown formatting. "
-            "Format strictly as: { 'is_barrie_competitor': bool, 'prices': [...] }\n\n"
+            "Analyze this website text.\n"
+            "You are classifying local beauty/medical spa competitors in Barrie, Ontario.\n"
+            "Prefer <body> content and visible text (about/contact/services) over navigation/SEO blobs when detecting services and location.\n"
+            "Step 1: Decide if this is a beauty/skin/laser/spa/PMU business serving Barrie, Ontario. "
+            "Return TRUE/FALSE for is_barrie_competitor based only on business type and Barrie location cues. "
+            "This must NOT depend on prices. Do NOT count hot tub retailers, equipment dealers, or generic directories/articles as competitors.\n"
+            "Step 2: Independently extract a structured list of services and prices ONLY for client-facing beauty/skin/spa services "
+            "(Laser hair removal, waxing/Brazilian, facials/Hydrafacial, microneedling, PMU/brows, threading, skin treatments). For each service, return:\n"
+            "  - raw_name: exact service name as shown (e.g. 'Brazilian Wax', 'Full Legs', 'Underarms Laser').\n"
+            "  - normalized_name: short snake_case identifier (e.g. 'brazilian', 'full_legs', 'underarms_laser').\n"
+            "  - category: one of ['laser', 'waxing', 'brazilian', 'facial', 'hydrafacial', 'pmu', 'brows', 'threading', 'other'].\n"
+            "  - price: numeric price (no currency symbol), or null if no price is visible.\n"
+            "  - currency: 'CAD' if you can infer it, otherwise null.\n"
+            "Ignore prices for gift cards/gift certificates, deposits/fees, products/retail, parking, hotel rooms, lift tickets, food/drinks. "
+            "If no valid service prices are visible, return an empty services list (or price=null) but do NOT change is_barrie_competitor because of missing prices.\n"
+            "Return ONLY valid JSON, no markdown.\n"
+            "STRICT JSON FORMAT:\n"
+            "{\n"
+            '  \"is_barrie_competitor\": true or false,\n'
+            '  \"services\": [\n'
+            '    {\"raw_name\": \"...\", \"normalized_name\": \"...\", \"category\": \"...\", \"price\": 123.0, \"currency\": \"CAD\"},\n'
+            "    ...\n"
+            "  ]\n"
+            "}\n\n"
             f"Text:\n{content[:4000]}"
         )
 
         raw = ""
         try:
-            raw = self.llm.generate_text(prompt=prompt, max_tokens=350, temperature=0.2, json_mode=True)
+            raw = self.llm.generate_text(
+                prompt=prompt,
+                max_tokens=350,
+                temperature=0.2,
+                json_mode=True,
+            )
         except Exception as e:
             log.warning("LLM analysis failed: %s", e)
-            return {"raw": raw, "parsed": None, "is_barrie_competitor": False, "prices": []}
+            return {"raw": raw, "parsed": None, "is_barrie_competitor": False, "prices": {}}
 
         print(f"[DEBUG] LLM Raw Response: {raw}")
 
@@ -562,26 +737,58 @@ class MarketResearcher:
                 parsed = None
         if parsed is None:
             parsed = self._parse_json_response(raw)
+
         is_barrie = False
-        prices: Any = []
+        prices_dict: Dict[str, List[str]] = {}
+
         if parsed:
+            # ---- 1) base flag from LLM ----
             is_barrie_val = parsed.get("is_barrie_competitor")
             if isinstance(is_barrie_val, str):
                 is_barrie = is_barrie_val.strip().lower() in {"true", "yes", "y"}
             else:
                 is_barrie = bool(is_barrie_val)
-            prices_field = parsed.get("prices")
-            if isinstance(prices_field, list):
-                prices = prices_field
-            elif isinstance(prices_field, dict):
-                prices = prices_field
+
+            services = parsed.get("services") or []
+
+            # Heuristic upgrades: trusted domains or clear Barrie + services signal
+            domain = self._normalized_domain(url or "")
+            if domain in ALWAYS_COMPETITOR_DOMAINS:
+                is_barrie = True
+            elif not is_barrie and services and self._looks_like_barrie_service(content, url or ""):
+                is_barrie = True
+
+            # ---- 3) Build normalized price dict ----
+            if isinstance(services, list):
+                for svc in services:
+                    if not isinstance(svc, dict):
+                        continue
+                    raw_name = (svc.get("raw_name") or "").strip()
+                    normalized = (svc.get("normalized_name") or "").strip().lower()
+                    category = (svc.get("category") or "").strip().lower()
+                    price = svc.get("price")
+                    currency = (svc.get("currency") or "").strip().upper() or "CAD"
+
+                    key = normalized or category or "other"
+                    entry = raw_name or key
+                    if price is not None:
+                        entry = f"{raw_name or key} - {currency}{price}"
+
+                    prices_dict.setdefault(key, []).append(entry)
+
+        # Fallback: if no structured prices, use regex extraction on content
+        if not prices_dict:
+            regex_hits = self._extract_prices(content)
+            if regex_hits:
+                prices_dict["other"] = regex_hits
 
         return {
             "raw": raw,
             "parsed": parsed,
             "is_barrie_competitor": is_barrie,
-            "prices": prices,
+            "prices": prices_dict,
         }
+
 
     @staticmethod
     def _parse_json_response(raw: str) -> Optional[Dict[str, Any]]:
@@ -617,6 +824,7 @@ class MarketResearcher:
         confirmed = [c for c in comps if c.get("barrie_confirmed")]
         comp_lookup = {c.get("id"): c for c in confirmed if isinstance(c, dict)}
         category_index = payload.get("category_index", {})
+        numeric_prices: List[float] = []
 
         lines = [
             f"Market research for {payload.get('location', self.location)}",
@@ -634,13 +842,21 @@ class MarketResearcher:
                     prices = comp.get("extracted_prices")
                     price_str = "prices not found"
                     if isinstance(prices, dict):
-                        bits = [f"{k}: {v}" for k, v in prices.items()]
+                        bits = []
+                        for k, v in prices.items():
+                            if isinstance(v, list):
+                                joined = "; ".join(str(x) for x in v if x)
+                            else:
+                                joined = str(v)
+                            bits.append(f"{k}: {joined}")
+                            numeric_prices.extend(self._collect_numeric_prices({k: v}))
                         if bits:
                             price_str = "; ".join(bits)
                     elif isinstance(prices, list):
                         bits = [str(p) for p in prices if p]
                         if bits:
                             price_str = "; ".join(bits)
+                        numeric_prices.extend(self._collect_numeric_prices(prices))
                     formatted.append(f"{comp.get('name')} (Prices: {price_str})")
                 lines.append(f"{category}: {', '.join(formatted)}")
             else:
@@ -661,6 +877,11 @@ class MarketResearcher:
         if payload.get("data_to_extract"):
             lines.append("")
             lines.append(f"Data targets: {', '.join(payload['data_to_extract'])}")
+
+        if numeric_prices:
+            avg_price = sum(numeric_prices) / len(numeric_prices)
+            lines.append("")
+            lines.append(f"Average service price (all captured): ${avg_price:.2f}")
 
         return "\n".join(lines)
 

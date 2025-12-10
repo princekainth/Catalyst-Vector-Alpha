@@ -19,6 +19,9 @@ goal_driven_tasks = {
         "Validate that the system's backup and persistence mechanisms are working correctly",
         "Update the system's internal knowledge base with key findings from the latest mission cycle"
     ],
+    "k8s_monitoring": [
+        "Monitor Kubernetes cluster for incidents, pod failures, and unhealthy states. Alert on critical events."
+    ],
     "sandbox_inspection": [
         "Use execute_terminal_command to check what operating system the sandbox is running (uname -a)",
         "Verify Python version in the sandbox using execute_terminal_command",

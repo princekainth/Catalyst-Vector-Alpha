@@ -732,6 +732,329 @@ def find_wasteful_deployments_tool(namespace: str = "default",
         _usage_tracker.track_usage("find_wasteful_deployments_tool", success=False)
         return standardize_response("error", error=str(e))
 
+def check_network_connectivity(source_pod: str, target_service: str, namespace: str = "default", timeout: int = 5) -> dict:
+    """
+    Check if a pod can reach a service. Detects network policy blocks.
+    
+    Args:
+        source_pod: Name of pod to test from
+        target_service: Service name or IP to reach
+        namespace: Namespace of the pods
+        timeout: Seconds to wait for response
+    
+    Returns:
+        dict with: ok, reachable, latency_ms, error
+    """
+    import subprocess
+    
+    try:
+        # Execute curl from inside the source pod
+        cmd = [
+            "kubectl", "exec", source_pod, "-n", namespace, "--",
+            "curl", "-s", "-o", "/dev/null", "-w", "%{http_code},%{time_total}",
+            "--max-time", str(timeout),
+            f"http://{target_service}"
+        ]
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout+5)
+        
+        if result.returncode != 0:
+            # Check if it's a network policy block
+            if "timed out" in result.stderr.lower() or result.returncode == 28:
+                return {
+                    "ok": True,
+                    "reachable": False,
+                    "reason": "timeout_network_blocked",
+                    "error": result.stderr
+                }
+            return {"ok": False, "error": result.stderr}
+        
+        # Parse response: "200,0.023"
+        parts = result.stdout.strip().split(",")
+        http_code = int(parts[0]) if parts[0].isdigit() else 0
+        latency = float(parts[1]) * 1000 if len(parts) > 1 else 0
+        
+        return {
+            "ok": True,
+            "reachable": http_code > 0 and http_code < 500,
+            "http_code": http_code,
+            "latency_ms": round(latency, 2),
+            "source_pod": source_pod,
+            "target_service": target_service,
+            "namespace": namespace
+        }
+        
+    except subprocess.TimeoutExpired:
+        return {"ok": True, "reachable": False, "reason": "timeout_network_blocked"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+def watch_k8s_audit_events(minutes: int = 5, event_types: list = None) -> dict:
+    """
+    Monitor Kubernetes for RBAC violations and sensitive operations.
+    Uses kubectl auth can-i and checks for forbidden operations.
+    
+    Args:
+        minutes: How far back to check
+        event_types: Filter for specific types like ["Forbidden", "secrets"]
+    
+    Returns:
+        dict with: ok, violations, secret_access, summary
+    """
+    import subprocess
+    import json
+    from datetime import datetime, timedelta
+    
+    violations = []
+    secret_access = []
+    
+    try:
+        # Method 1: Check recent events for any Forbidden/Unauthorized
+        cmd = ["kubectl", "get", "events", "--all-namespaces", "-o", "json"]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        
+        if result.returncode == 0:
+            events = json.loads(result.stdout)
+            for item in events.get("items", []):
+                reason = item.get("reason", "")
+                message = item.get("message", "").lower()
+                
+                # Check for auth failures
+                if "forbidden" in message or "unauthorized" in message or "denied" in message:
+                    violations.append({
+                        "namespace": item.get("involvedObject", {}).get("namespace", "unknown"),
+                        "name": item.get("involvedObject", {}).get("name", "unknown"),
+                        "reason": reason,
+                        "message": item.get("message", "")[:200],
+                        "type": "rbac_violation"
+                    })
+        
+        # Method 2: Check pods that mount secrets
+        cmd2 = ["kubectl", "get", "pods", "--all-namespaces", "-o", "json"]
+        result2 = subprocess.run(cmd2, capture_output=True, text=True, timeout=30)
+        
+        if result2.returncode == 0:
+            pods = json.loads(result2.stdout)
+            for pod in pods.get("items", []):
+                metadata = pod.get("metadata", {})
+                spec = pod.get("spec", {})
+                
+                # Check for secret volume mounts
+                volumes = spec.get("volumes", [])
+                for vol in volumes:
+                    if "secret" in vol:
+                        secret_name = vol.get("secret", {}).get("secretName", "unknown")
+                        secret_access.append({
+                            "pod": metadata.get("name"),
+                            "namespace": metadata.get("namespace"),
+                            "secret": secret_name,
+                            "type": "secret_mount"
+                        })
+                
+                # Check for secret env vars
+                for container in spec.get("containers", []):
+                    for env in container.get("env", []):
+                        if env.get("valueFrom", {}).get("secretKeyRef"):
+                            secret_name = env["valueFrom"]["secretKeyRef"].get("name", "unknown")
+                            secret_access.append({
+                                "pod": metadata.get("name"),
+                                "namespace": metadata.get("namespace"),
+                                "secret": secret_name,
+                                "env_var": env.get("name"),
+                                "type": "secret_env"
+                            })
+        
+        return {
+            "ok": True,
+            "summary": f"Found {len(violations)} RBAC violations, {len(secret_access)} secret accesses",
+            "violation_count": len(violations),
+            "secret_access_count": len(secret_access),
+            "violations": violations[:10],
+            "secret_access": secret_access[:20],
+            "minutes_back": minutes
+        }
+        
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "kubectl command timed out"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+def watch_k8s_events(namespace: str = "all", minutes: int = 5) -> dict:
+    """
+    Monitor Kubernetes cluster events for incidents.
+    Detects: pod kills, crashes, OOMs, restarts, scaling events, failures.
+    
+    Args:
+        namespace: Namespace to watch ("all" for all namespaces)
+        minutes: How far back to look for events
+    
+    Returns:
+        dict with: events list, summary, critical_count, warning_count
+    """
+    import subprocess
+    import json
+    from datetime import datetime, timedelta
+    
+    try:
+        # Get events from kubectl
+        if namespace == "all":
+            cmd = ["kubectl", "get", "events", "--all-namespaces", "-o", "json"]
+        else:
+            cmd = ["kubectl", "get", "events", "-n", namespace, "-o", "json"]
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        
+        if result.returncode != 0:
+            return {"ok": False, "error": result.stderr}
+        
+        events_data = json.loads(result.stdout)
+        
+        # Filter recent events
+        cutoff = datetime.utcnow() - timedelta(minutes=minutes)
+        recent_events = []
+        critical_count = 0
+        warning_count = 0
+        
+        critical_reasons = ["OOMKilled", "CrashLoopBackOff", "Failed", "FailedScheduling", "Unhealthy", "BackOff", "Killing"]
+        warning_reasons = ["Pulled", "Created", "Started", "Scheduled", "SuccessfulCreate"]
+        
+        for item in events_data.get("items", []):
+            reason = item.get("reason", "")
+            message = item.get("message", "")
+            event_type = item.get("type", "Normal")
+            involved = item.get("involvedObject", {})
+            
+            event_record = {
+                "namespace": involved.get("namespace", "unknown"),
+                "kind": involved.get("kind", "unknown"),
+                "name": involved.get("name", "unknown"),
+                "reason": reason,
+                "message": message[:200],  # Truncate long messages
+                "type": event_type,
+                "count": item.get("count", 1)
+            }
+            
+            recent_events.append(event_record)
+            
+            if reason in critical_reasons or event_type == "Warning":
+                critical_count += 1
+            else:
+                warning_count += 1
+        
+        # Build summary
+        summary = f"Found {len(recent_events)} events. Critical: {critical_count}, Normal: {warning_count}"
+        
+        # Highlight critical issues
+        critical_events = [e for e in recent_events if e["reason"] in critical_reasons or e["type"] == "Warning"]
+        
+        return {
+            "ok": True,
+            "summary": summary,
+            "critical_count": critical_count,
+            "warning_count": warning_count,
+            "critical_events": critical_events[:10],  # Top 10 critical
+            "all_events": recent_events[:20],  # Last 20 events
+            "namespace_filter": namespace,
+            "minutes_back": minutes
+        }
+        
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "kubectl command timed out"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def get_pod_status(namespace: str = "default") -> dict:
+    """
+    Get current status of all pods in a namespace.
+    Detects: CrashLoopBackOff, Pending, Failed, not Ready.
+    
+    Args:
+        namespace: Namespace to check ("all" for all namespaces)
+    
+    Returns:
+        dict with: pods list, problem_pods, healthy_count, unhealthy_count
+    """
+    import subprocess
+    import json
+    
+    try:
+        if namespace == "all":
+            cmd = ["kubectl", "get", "pods", "--all-namespaces", "-o", "json"]
+        else:
+            cmd = ["kubectl", "get", "pods", "-n", namespace, "-o", "json"]
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        
+        if result.returncode != 0:
+            return {"ok": False, "error": result.stderr}
+        
+        pods_data = json.loads(result.stdout)
+        
+        healthy_count = 0
+        unhealthy_count = 0
+        problem_pods = []
+        all_pods = []
+        
+        for item in pods_data.get("items", []):
+            metadata = item.get("metadata", {})
+            status = item.get("status", {})
+            phase = status.get("phase", "Unknown")
+            
+            pod_info = {
+                "name": metadata.get("name", "unknown"),
+                "namespace": metadata.get("namespace", "unknown"),
+                "phase": phase,
+                "restarts": 0,
+                "ready": False,
+                "issues": []
+            }
+            
+            # Check container statuses
+            container_statuses = status.get("containerStatuses", [])
+            for cs in container_statuses:
+                pod_info["restarts"] += cs.get("restartCount", 0)
+                pod_info["ready"] = cs.get("ready", False)
+                
+                # Check for waiting state issues
+                waiting = cs.get("state", {}).get("waiting", {})
+                if waiting:
+                    reason = waiting.get("reason", "")
+                    if reason in ["CrashLoopBackOff", "ImagePullBackOff", "ErrImagePull", "CreateContainerConfigError"]:
+                        pod_info["issues"].append(reason)
+                
+                # Check for terminated state
+                terminated = cs.get("state", {}).get("terminated", {})
+                if terminated:
+                    reason = terminated.get("reason", "")
+                    if reason in ["OOMKilled", "Error"]:
+                        pod_info["issues"].append(reason)
+            
+            all_pods.append(pod_info)
+            
+            # Classify as healthy or unhealthy
+            if phase == "Running" and pod_info["ready"] and not pod_info["issues"]:
+                healthy_count += 1
+            else:
+                unhealthy_count += 1
+                if pod_info["issues"] or phase != "Running":
+                    problem_pods.append(pod_info)
+        
+        return {
+            "ok": True,
+            "summary": f"Pods: {healthy_count} healthy, {unhealthy_count} unhealthy",
+            "healthy_count": healthy_count,
+            "unhealthy_count": unhealthy_count,
+            "problem_pods": problem_pods,
+            "all_pods": all_pods[:30],
+            "namespace_filter": namespace
+        }
+        
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "kubectl command timed out"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
 # ---- Security / Networking Tools ----
 _ALLOWED_SCAN_TYPES = {"ping_sweep", "full_port_scan", "vulnerability_scan"}
 

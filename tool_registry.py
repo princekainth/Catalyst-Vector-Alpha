@@ -558,6 +558,75 @@ class ToolRegistry:
                 cooldown_seconds=10.0,
             ),
 
+            Tool(
+                "check_network_connectivity",
+                "Check if a pod can reach a service. Detects network policy blocks and connectivity issues.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "source_pod": {"type": "string", "description": "Pod name to test from"},
+                        "target_service": {"type": "string", "description": "Service name or IP to reach"},
+                        "namespace": {"type": "string", "default": "default", "description": "Namespace"},
+                        "timeout": {"type": "integer", "default": 5, "description": "Timeout in seconds"}
+                    },
+                    "required": ["source_pod", "target_service"],
+                    "additionalProperties": False,
+                },
+                _tf("check_network_connectivity"),
+                task_type="Observation",
+                roles_allowed={"Observer", "Security", "Planner"},
+            ),
+
+            Tool(
+                "watch_k8s_audit_events",
+                "Monitor for RBAC violations, unauthorized access attempts, and secret usage. Detects forbidden operations and sensitive data access.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "minutes": {"type": "integer", "default": 5, "description": "Minutes back to check"},
+                        "event_types": {"type": "array", "items": {"type": "string"}, "description": "Filter event types"}
+                    },
+                    "required": [],
+                    "additionalProperties": False,
+                },
+                _tf("watch_k8s_audit_events"),
+                task_type="Observation",
+                roles_allowed={"Observer", "Security", "Planner"},
+            ),
+
+            Tool(
+                "watch_k8s_events",
+                "Monitor Kubernetes cluster events. Detects pod kills, crashes, OOMs, restarts, scaling events. Use for incident detection.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "namespace": {"type": "string", "default": "all", "description": "Namespace to watch, or 'all' for all namespaces"},
+                        "minutes": {"type": "integer", "default": 5, "description": "How many minutes back to look for events"}
+                    },
+                    "required": [],
+                    "additionalProperties": False,
+                },
+                _tf("watch_k8s_events"),
+                task_type="Observation",
+                roles_allowed={"Observer", "Security", "Planner"},
+            ),
+
+            Tool(
+                "get_pod_status",
+                "Get current status of all pods. Detects CrashLoopBackOff, Pending, Failed, OOMKilled pods. Use for health checks.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "namespace": {"type": "string", "default": "default", "description": "Namespace to check, or 'all' for all namespaces"}
+                    },
+                    "required": [],
+                    "additionalProperties": False,
+                },
+                _tf("get_pod_status"),
+                task_type="Observation",
+                roles_allowed={"Observer", "Security", "Planner"},
+            ),
+
             # Responsiveness
             Tool("measure_responsiveness", "Measure system responsiveness by timing a harmless command.", {}, _tf("measure_responsiveness_tool"),
                  cooldown_seconds=0.0, task_type="Observation", roles_allowed={"Observer", "Security"}),

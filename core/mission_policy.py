@@ -22,7 +22,9 @@ MISSION_TOOL_POLICY = {
             "create_pdf",
             "generate_report_pdf",
             "k8s_scale",
-            "k8s_restart"
+            "k8s_restart",
+            "watch_k8s_events",
+            "get_pod_status"
         },
         "deny": {"analyze_threat_signature", "isolate_network_segment", "deploy_recovery_protocol"},
         "fallback": "update_resource_allocation",
@@ -37,7 +39,11 @@ MISSION_TOOL_POLICY = {
             "generate_report_pdf",
             "check_calendar",  # ADD THIS
             "k8s_scale",
-            "k8s_restart"
+            "k8s_restart",
+            "watch_k8s_events",
+            "get_pod_status",
+            "check_network_connectivity",
+            "watch_k8s_audit_events",
         },
         "deny": set(),
         "fallback": "analyze_threat_signature",
@@ -52,6 +58,10 @@ MISSION_TOOL_POLICY = {
             "check_calendar",  # ADD THIS
             "create_pdf",
             "generate_report_pdf",
+            "watch_k8s_events",
+            "get_pod_status",
+            "check_network_connectivity",
+            "watch_k8s_audit_events",
         },
         "deny": {
             "analyze_threat_signature", 
@@ -91,6 +101,8 @@ MISSION_TOOL_POLICY = {
             "check_calendar",
             "create_pdf",
             "generate_report_pdf",
+            "watch_k8s_events",
+            "get_pod_status",
         },
         "deny": set(),
         "fallback": "measure_responsiveness",
@@ -114,6 +126,18 @@ MISSION_TOOL_POLICY = {
             "deploy_recovery_protocol",
         },
         "fallback": "get_system_cpu_load",
+    },
+    
+    "k8s_monitoring": {
+        "allow": {
+            "watch_k8s_events",
+            "get_pod_status",
+            "send_desktop_notification",
+            "measure_responsiveness",
+            "check_network_connectivity",
+        },
+        "deny": set(),
+        "fallback": "measure_responsiveness",
     },
 
 }
@@ -175,6 +199,7 @@ def candidate_missions() -> List[str]:
         "scale_on_cpu_threshold",
         "general_planning",
         "health_audit",
+        "k8s_monitoring",
         "sandbox_inspection",  # NEW: Terminal inspection mission
     ]
 
