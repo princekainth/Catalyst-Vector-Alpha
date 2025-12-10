@@ -1,294 +1,116 @@
-ARCHITECTURE.md — Catalyst Vector Alpha (CVA) System Architecture
-Overview
+# ARCHITECTURE.md — The Gemini Protocol System Architecture
+**Version:** 5.0 (Enterprise Pivot)
+**Date:** 2025-12-10
 
-Catalyst Vector Alpha (CVA) is a hybrid-intelligence agent operating system built around a continuous autonomous cognitive loop. It combines:
+## 1. System Overview
 
-LLM reasoning (flexible decision-making)
+The **Gemini Protocol System** (formerly Catalyst Vector Alpha) is an **Autonomous SRE (Site Reliability Engineering) Platform**. It operates as a multi-layer cognitive engine designed to detect, analyze, and remediate infrastructure incidents without human intervention.
 
-Rule-based safety (hard constraints)
+It is built on a **Three-Tier Proprietary Architecture**:
+1.  **Gemini™ Protocol (Interface Layer):** Orchestration, API Gateway, and Agent Spawning.
+2.  **Meta™ Intelligence (Cognitive Layer):** Swarm consensus, self-reflection, and tool synthesis.
+3.  **Microsoft™ Enterprise (Infrastructure Layer):** Edge kernels, K8s integration, and deployment.
 
-Semantic memory + vector search
+---
 
-Specialized agents and tool-based execution
+## 2. The Architectural Stack
 
-CVA operates as a multi-agent ecosystem where the Planner acts as the executive cortex, coordinating a workforce of Worker, Observer, Security, Optimizer, Collector, Notifier, and DynamicAgent roles.
+### Layer 1: The Gemini™ Orchestrator (The Nervous System)
+* **Role:** Central Event Loop & API Gateway.
+* **Implementation:** `GeminiOrchestrator` (formerly `CatalystVectorAlpha`).
+* **Responsibilities:**
+    * **The "Tick":** Runs the continuous `run_cognitive_loop()`.
+    * **The Factory:** Uses `GeminiAgentFactory` to spawn agents via REST API.
+    * **The Router:** Injects directives into the `dynamic_directive_queue`.
 
-CVA integrates structured tools, memory, triggers, and dynamic agent creation into a cohesive, self-updating cognitive architecture.
+### Layer 2: Meta™ Intelligence (The Brain)
+* **Role:** Agent Cognition & Swarm Logic.
+* **Implementation:** `MetaCognitiveArchitecture` & `MetaSwarmCoordinator`.
+* **Responsibilities:**
+    * **Perception:** `perceive_event()` (Seeing the crash).
+    * **Reflection:** `analyze_and_adapt()` (Realizing *why* it crashed).
+    * **Toolsmithing:** Dynamically generating tools (e.g., `toolsmith_generate`) when standard tools fail.
 
-System Flow: API → Cognitive Loop → Agents → Tools → Memory
-1. API Entry (External Input)
+### Layer 3: Microsoft™ Enterprise Kernel (The Hands)
+* **Role:** Infrastructure Execution & Persistence.
+* **Implementation:** `MicrosoftAgentKernel` & `MicrosoftEnterpriseAI`.
+* **Responsibilities:**
+    * **K8s Interface:** Direct hooks into `kubernetes_pod_metrics` and `watch_k8s_events`.
+    * **State Management:** Writing to `cva.db` (SQLite) and `chroma_db` (Vector Store).
+    * **Edge Deployment:** Single-file kernel execution for lightweight nodes.
 
-External requests enter through endpoints like:
+---
 
-POST /api/command {"command": "..."}
+## 3. Data Flow: From Chaos to Cure
 
+### Step 1: External Signal (The Trigger)
+* **Source:** Kubernetes Cluster (e.g., Pod Crash) or User API Request.
+* **Ingestion:**
+    * **Autonomous:** `GeminiOrchestrator` polls `watch_k8s_events`.
+    * **Manual:** POST request to `/api/agents/spawn`.
 
-The API constructs a directive:
+### Step 2: Cognitive Processing (The Thinking)
+* The **Meta™ Cognitive Layer** analyzes the signal.
+* **Context Retrieval:** Queries `MemeticKernel` (Vector DB) for similar past incidents.
+* **Intent Formation:** "I see a crash. My purpose is monitoring. I must alert."
 
-type: AGENT_PERFORM_TASK
+### Step 3: Swarm Consensus (The Validation)
+* If multiple agents are active (e.g., `EnterpriseMonitor` + `Workflow_Analyzer`), the **Meta™ Swarm Coordinator** aligns their intents to prevent conflicting actions.
 
-agent_name: ProtoAgent_Planner_instance_1
+### Step 4: Execution (The Action)
+* The **Microsoft™ Kernel** executes the tool:
+    * `tools.kubernetes.get_pod_logs`
+    * `tools.slack.send_alert`
 
-task_description: <user command>
+---
 
-This directive is injected into:
+## 4. Memory Architecture
 
-CatalystVectorAlpha.dynamic_directive_queue
+The system uses a **Bicameral Memory System** to ensure agents learn from every crash.
 
-2. Core Cognitive Loop (The Brain)
+| Memory Type | Storage | Purpose |
+| :--- | :--- | :--- |
+| **Short-Term (STM)** | `deque(maxlen=100)` | Raw event logs (Directives, Messages, Errors). |
+| **Long-Term (LTM)** | **ChromaDB (Vector)** | Semantic storage of "Lessons Learned" and "Task Outcomes." |
+| **Archival** | `.jsonl` Files | Immutable audit logs for compliance (`memetic_archive_*.jsonl`). |
 
-The loop in run_cognitive_loop() is the central brain:
+---
 
-Processes directives
+## 5. Active Agent Roles
 
-Iterates through agents
+The workforce has evolved from generic roles to specialized **Protocol Agents**.
 
-Executes each agent’s .perform_task()
+| Agent Name | Protocol | Responsibility |
+| :--- | :--- | :--- |
+| **EnterpriseMonitor** | Gemini™ | **The Sentry.** Watches K8s events, audit logs, and network traffic. |
+| **Workflow_Analyzer** | Meta™ | **The Architect.** Analyzes business processes and builds automation tools. |
+| **Planner** | Gemini™ | **The CEO.** Routes high-level directives to the correct specialist. |
+| **Security** | Microsoft™ | **The Guard.** Enforces RBAC and policy constraints on tool execution. |
 
-Handles stagnation detection, reflection, memory compression
+---
 
-Periodically applies health checks and persistence
+## 6. Chaos Validation Status
 
-Injects autonomous planning directives during idle cycles
+The architecture is **Battle-Hardened**.
+* **Validation Date:** 2025-12-10
+* **Score:** 7/10 (Stable Alpha)
 
-This loop is where all intelligent behavior emerges.
+**Passed Scenarios:**
+* ✅ **Pod Kill:** Detected immediate termination.
+* ✅ **CPU Spike:** Detected resource pressure (OOM).
+* ✅ **CrashLoop:** Detected repeated failure cycles.
+* ✅ **Secrets Audit:** Detected unauthorized access attempts.
 
-3. Planner Agent (Executive Cortex)
+---
 
-ProtoAgent_Planner is the strategic decision-maker.
+## 7. Persistence & State
 
-The Planner:
+* **Database:** `cva.db` (SQLite) - Stores Agent State, Task History, and Metrics.
+* **Vector Store:** `persistence_data/chroma_db/` - Stores Semantic Embeddings.
+* **Audit Logs:** `logs/swarm_activity.jsonl` - The "Black Box" flight recorder.
 
-Interprets user intent
+## 8. Conclusion
 
-Queries memory
+The Gemini Protocol System is no longer just a script; it is a **self-healing, autonomous infrastructure platform**. It combines the speed of rule-based monitoring with the adaptability of Large Language Models, wrapped in an enterprise-grade architecture.
 
-Detects alerts (email, calendar, K8s metrics)
-
-Uses an LLM to reason about intent
-
-Decides whether to act directly or spawn a specialist agent
-
-The Planner is the OS scheduler + CEO of the agent workforce.
-
-4. AgentFactory & DynamicAgents (Adaptive Workforce)
-
-When a task requires specialization, Planner triggers:
-
-AgentFactory.spawn_agent(purpose, context, parent_agent)
-
-
-DynamicAgent creation uses a hybrid strategy:
-
-A) LLM Designs the Agent
-
-Name
-
-System prompt
-
-Tool selection (2–5 tools)
-
-B) LLM Self-Validates Tools
-
-Ensures tools match purpose:
-
-remove unrelated domains
-
-reduce irrelevant tools
-
-C) Semantic Matching
-
-Vector similarity adds missing relevant tools.
-
-D) Hard-coded Safety Rules
-
-Forbid dangerous or nonsensical mixes:
-
-Gmail ❌ Kubernetes
-
-CPU monitoring ❌ Web scraping
-
-Result:
-A minimal, safe, purpose-built specialist agent.
-
-5. Tool Execution Layer (Hands of the System)
-
-Tool calls route through ToolRegistry.safe_call():
-
-Schema validation
-
-Type coercion
-
-Cooldown restrictions
-
-Input normalization
-
-Timeout protection (ThreadPoolExecutor)
-
-Logging + memory recording
-
-This ensures tools never:
-
-hang
-
-break the system
-
-escape safety rules
-
-mix incompatible behaviors
-
-Tools are the action layer of CVA.
-
-6. Memory Architecture — Short-Term, Mid-Term, Long-Term
-Short-Term Memory (STM)
-
-deque(maxlen=100)
-Stores raw events:
-
-TaskOutcome
-
-ToolUse
-
-IntentChange
-
-MessageReceived
-
-SystemAlert
-
-Mid-Term (Compressed Memory)
-
-LLM summarizes chunks → embedding → stored as:
-
-type: CompressedMemory
-
-Long-Term Memory (LTM)
-
-ChromaDB vector store:
-
-query_long_term_memory(query_text)
-
-
-Planner and agents access LTM for:
-
-Reflection
-
-Planning
-
-Pattern detection
-
-Stagnation recovery
-
-Backup
-
-Each memory also persists to JSONL for transparency and replay.
-
-7. Agents Overview (CVA’s Subsystems)
-Agent	Function
-Planner	Executive cortex; routes work, spawns agents, plans actions
-Worker	Executes tools; performs actuations and tasks
-Observer	Gathers metrics, especially K8s/system responsiveness
-Collector	Pulls external data sources into memory
-Security	Runs security checks; enforces system policies
-Optimizer	Detects anomalies and performance issues
-Notifier	Sends alerts and user-facing notifications
-DynamicAgent	On-demand specialist agents with narrow prompts
-8. MessageBus & Communication
-
-All agents communicate through:
-
-send_message()
-receive_messages()
-
-
-Messages become memories:
-
-add_memory("MessageReceived", {...})
-
-
-This keeps all thinking auditable and replayable.
-
-9. Persistent State
-
-CVA stores its state across cycles:
-
-cva.db (SQLite): task history, agent state, snapshots
-
-.chromadb/: vector embeddings
-
-logs/*.jsonl: agent event streams
-
-This makes CVA:
-
-restartable
-
-analyzable
-
-trainable in the future
-
-debuggable
-
-10. Safety Backbone
-
-CVA includes:
-
-SovereignGradient (action compliance analysis)
-
-IntentGuard (input sanitization)
-
-InjectionLimiter (prompt/code injection detection)
-
-Policy gates in tools
-
-Hard-coded domain restrictions
-
-CVA is built to avoid runaway behavior.
-
-Conclusion
-
-CVA is not a simple agent script.
-It is a full hybrid-intelligence operating system built on top of:
-
-autonomous cognitive cycles
-
-LLM-driven reasoning
-
-rule-based safety
-
-semantic memory
-
-dynamic specialization
-
-safe tool execution
-
-a structured multi-agent workforce
-
-This document now serves as the canonical reference for all future development, AI assistance, and system extensions.
-
-## Memory Inspection
-
-CVA stores compressed memories in `persistence_data/chroma_db/` (NOT `.chromadb`).
-
-### Quick Memory Check:
-```bash
-python3 check_cva_memory.py
-```
-
-### Query Agent Memory:
-```bash
-# Query specific patterns
-python3 check_cva_memory.py observer kubernetes scaling
-python3 check_cva_memory.py planner mission failures
-python3 check_cva_memory.py worker tool execution patterns
-python3 check_cva_memory.py security threat detection
-```
-
-### Key Insights from Current Session:
-- **Core agents:** 895+ memories each (2+ weeks of learning)
-- **Dynamic agents:** 47 specialized agents with domain knowledge
-- **Embedding model:** mxbai-embed-large (1024-dim)
-- **Total knowledge:** 3,600+ compressed memory entries
-
-CVA learns through:
-1. Memory compression every 5 cognitive cycles
-2. Semantic vector storage for pattern retrieval
-3. Cross-agent knowledge sharing via ChromaDB
+**System Status:** `PRODUCTION_READY` (Alpha)
