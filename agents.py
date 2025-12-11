@@ -1300,6 +1300,7 @@ class ProtoAgent(ABC):
                             if namespace and pod_name:
                                 if self._recently_remediated(namespace, pod_name):
                                     print(f"[Observer] Skipping remediation (recent) for {namespace}/{pod_name}")
+                                    self._increment_remediation_metric("dedupe_skips")
                                     continue
                                 print(f"[Observer] AUTO-REMEDIATING: {namespace}/{pod_name}")
                                 try:
@@ -1310,8 +1311,19 @@ class ProtoAgent(ABC):
                                     )
                                     print(f"[Observer] Remediation result: {result}")
                                     self._mark_remediated(namespace, pod_name)
+                                    self._increment_remediation_metric("remediation_success")
+                                    if _registry.has_tool("send_desktop_notification"):
+                                        try:
+                                            _registry.safe_call(
+                                                "send_desktop_notification",
+                                                title="K8s Remediation",
+                                                message=f"Remediated {namespace}/{pod_name}: {result}"
+                                            )
+                                        except Exception:
+                                            pass
                                 except Exception as e:
                                     print(f"[Observer] Remediation failed for {namespace}/{pod_name}: {e}")
+                                    self._increment_remediation_metric("remediation_failure")
                     # Fallback: inspect pod status for failures/crashloops (rate-limited)
                     if _registry.has_tool("get_pod_status") and self._can_run_pod_fallback():
                         pod_resp = _registry.safe_call("get_pod_status", namespace="all")
@@ -1324,11 +1336,17 @@ class ProtoAgent(ABC):
                                 ns = pod.get("namespace")
                                 phase = str(pod.get("phase", "")).lower()
                                 issues = [str(x).lower() for x in pod.get("issues", [])]
+                                restarts = int(pod.get("restarts", 0) or 0)
+                                bad_issue_set = {"oomkilled", "error", "crashloopbackoff", "imagepullbackoff", "errimagepull", "imageinspecterror"}
                                 bad_phase = phase in {"failed", "error", "crashloopbackoff"}
-                                bad_issue = any(x in {"oomkilled", "error", "crashloopbackoff", "imagepullbackoff", "errimagepull"} for x in issues)
+                                bad_issue = any(x in bad_issue_set for x in issues)
+                                if restarts > 10:
+                                    print(f"[Observer] Skipping {ns}/{name} due to high restarts ({restarts})")
+                                    continue
                                 if ns and name and (bad_phase or bad_issue):
                                     if self._recently_remediated(ns, name):
                                         print(f"[Observer] Skipping remediation (recent) for {ns}/{name}")
+                                        self._increment_remediation_metric("dedupe_skips")
                                         continue
                                     print(f"[Observer] AUTO-REMEDIATING pod failure: {ns}/{name} phase={phase} issues={issues}")
                                     try:
@@ -1339,8 +1357,19 @@ class ProtoAgent(ABC):
                                         )
                                         print(f"[Observer] Remediation result: {res}")
                                         self._mark_remediated(ns, name)
+                                        self._increment_remediation_metric("remediation_success")
+                                        if _registry.has_tool("send_desktop_notification"):
+                                            try:
+                                                _registry.safe_call(
+                                                    "send_desktop_notification",
+                                                    title="K8s Remediation",
+                                                    message=f"Remediated {ns}/{name}: {res}"
+                                                )
+                                            except Exception:
+                                                pass
                                     except Exception as e:
                                         print(f"[Observer] Remediation failed for {ns}/{name}: {e}")
+                                        self._increment_remediation_metric("remediation_failure")
 
         # execute
         try:
@@ -2653,6 +2682,12 @@ class ProtoAgent_Observer(ProtoAgent):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._remediated_pods: dict[str, float] = {}
+        self._remediation_metrics = {
+            "remediation_success": 0,
+            "remediation_failure": 0,
+            "dedupe_skips": 0,
+            "rate_limit_skips": 0,
+        }
 
     def _prune_remediation_cache(self, ttl_seconds: int = 600):
         now = time.time()
@@ -2671,10 +2706,22 @@ class ProtoAgent_Observer(ProtoAgent):
         key = f"{namespace}/{pod_name}"
         self._remediated_pods[key] = time.time()
 
+    def _increment_remediation_metric(self, key: str):
+        if not hasattr(self, "_remediation_metrics") or not isinstance(self._remediation_metrics, dict):
+            self._remediation_metrics = {}
+        self._remediation_metrics[key] = self._remediation_metrics.get(key, 0) + 1
+        try:
+            logging.getLogger("CatalystLogger").info(
+                {"event_type": "K8S_REMEDIATION_METRIC", "metric": key, "value": self._remediation_metrics[key]}
+            )
+        except Exception:
+            pass
+
     def _can_run_pod_fallback(self, min_interval_s: int = 60) -> bool:
         now = time.time()
         last = getattr(self, "_last_pod_status_check", 0)
         if (now - last) < min_interval_s:
+            self._increment_remediation_metric("rate_limit_skips")
             return False
         self._last_pod_status_check = now
         return True
@@ -2725,6 +2772,7 @@ class ProtoAgent_Observer(ProtoAgent):
                             if namespace and pod_name:
                                 if self._recently_remediated(namespace, pod_name):
                                     print(f"[Observer] Skipping remediation (recent) for {namespace}/{pod_name}")
+                                    self._increment_remediation_metric("dedupe_skips")
                                     continue
                                 print(f"[Observer] AUTO-REMEDIATING: {namespace}/{pod_name}")
                                 try:
@@ -2735,8 +2783,19 @@ class ProtoAgent_Observer(ProtoAgent):
                                     )
                                     print(f"[Observer] Remediation result: {result}")
                                     self._mark_remediated(namespace, pod_name)
+                                    self._increment_remediation_metric("remediation_success")
+                                    if _registry.has_tool("send_desktop_notification"):
+                                        try:
+                                            _registry.safe_call(
+                                                "send_desktop_notification",
+                                                title="K8s Remediation",
+                                                message=f"Remediated {namespace}/{pod_name}: {result}"
+                                            )
+                                        except Exception:
+                                            pass
                                 except Exception as e:
                                     print(f"[Observer] Remediation failed for {namespace}/{pod_name}: {e}")
+                                    self._increment_remediation_metric("remediation_failure")
                     # Fallback: inspect pod status for failures/crashloops (rate-limited)
                     if _registry.has_tool("get_pod_status") and self._can_run_pod_fallback():
                         pod_resp = _registry.safe_call("get_pod_status", namespace="all")
@@ -2749,11 +2808,17 @@ class ProtoAgent_Observer(ProtoAgent):
                                 ns = pod.get("namespace")
                                 phase = str(pod.get("phase", "")).lower()
                                 issues = [str(x).lower() for x in pod.get("issues", [])]
+                                restarts = int(pod.get("restarts", 0) or 0)
+                                bad_issue_set = {"oomkilled", "error", "crashloopbackoff", "imagepullbackoff", "errimagepull", "imageinspecterror"}
                                 bad_phase = phase in {"failed", "error", "crashloopbackoff"}
-                                bad_issue = any(x in {"oomkilled", "error", "crashloopbackoff", "imagepullbackoff", "errimagepull"} for x in issues)
+                                bad_issue = any(x in bad_issue_set for x in issues)
+                                if restarts > 10:
+                                    print(f"[Observer] Skipping {ns}/{name} due to high restarts ({restarts})")
+                                    continue
                                 if ns and name and (bad_phase or bad_issue):
                                     if self._recently_remediated(ns, name):
                                         print(f"[Observer] Skipping remediation (recent) for {ns}/{name}")
+                                        self._increment_remediation_metric("dedupe_skips")
                                         continue
                                     print(f"[Observer] AUTO-REMEDIATING pod failure: {ns}/{name} phase={phase} issues={issues}")
                                     try:
@@ -2764,8 +2829,19 @@ class ProtoAgent_Observer(ProtoAgent):
                                         )
                                         print(f"[Observer] Remediation result: {res}")
                                         self._mark_remediated(ns, name)
+                                        self._increment_remediation_metric("remediation_success")
+                                        if _registry.has_tool("send_desktop_notification"):
+                                            try:
+                                                _registry.safe_call(
+                                                    "send_desktop_notification",
+                                                    title="K8s Remediation",
+                                                    message=f"Remediated {ns}/{name}: {res}"
+                                                )
+                                            except Exception:
+                                                pass
                                     except Exception as e:
                                         print(f"[Observer] Remediation failed for {ns}/{name}: {e}")
+                                        self._increment_remediation_metric("remediation_failure")
             # Also check for RBAC violations and secret access
             if _registry and _registry.has_tool("watch_k8s_audit_events"):
                 _audit_result = _registry.safe_call("watch_k8s_audit_events", minutes=10)
