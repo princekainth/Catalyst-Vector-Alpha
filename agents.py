@@ -1312,8 +1312,8 @@ class ProtoAgent(ABC):
                                     self._mark_remediated(namespace, pod_name)
                                 except Exception as e:
                                     print(f"[Observer] Remediation failed for {namespace}/{pod_name}: {e}")
-                    # Fallback: inspect pod status for failures/crashloops (always run)
-                    if _registry.has_tool("get_pod_status"):
+                    # Fallback: inspect pod status for failures/crashloops (rate-limited)
+                    if _registry.has_tool("get_pod_status") and self._can_run_pod_fallback():
                         pod_resp = _registry.safe_call("get_pod_status", namespace="all")
                         if isinstance(pod_resp, dict):
                             pod_payload = pod_resp.get("data", pod_resp) if isinstance(pod_resp, dict) else {}
@@ -2671,6 +2671,14 @@ class ProtoAgent_Observer(ProtoAgent):
         key = f"{namespace}/{pod_name}"
         self._remediated_pods[key] = time.time()
 
+    def _can_run_pod_fallback(self, min_interval_s: int = 60) -> bool:
+        now = time.time()
+        last = getattr(self, "_last_pod_status_check", 0)
+        if (now - last) < min_interval_s:
+            return False
+        self._last_pod_status_check = now
+        return True
+
     def _execute_agent_specific_task(self, task_description: str, **kwargs) -> tuple:
         # Extract params from kwargs
         cycle_id = kwargs.get("cycle_id")
@@ -2729,8 +2737,8 @@ class ProtoAgent_Observer(ProtoAgent):
                                     self._mark_remediated(namespace, pod_name)
                                 except Exception as e:
                                     print(f"[Observer] Remediation failed for {namespace}/{pod_name}: {e}")
-                    # Fallback: inspect pod status for failures/crashloops (always run)
-                    if _registry.has_tool("get_pod_status"):
+                    # Fallback: inspect pod status for failures/crashloops (rate-limited)
+                    if _registry.has_tool("get_pod_status") and self._can_run_pod_fallback():
                         pod_resp = _registry.safe_call("get_pod_status", namespace="all")
                         if isinstance(pod_resp, dict):
                             pod_payload = pod_resp.get("data", pod_resp) if isinstance(pod_resp, dict) else {}
