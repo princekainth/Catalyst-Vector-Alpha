@@ -992,7 +992,7 @@ class OllamaLLMIntegration:
     def __init__(
         self,
         host: str = "http://localhost:11434",
-        chat_model: str = "qwen2.5:14b",
+        chat_model: str = "mistral-small",
         embedding_model: str = "mxbai-embed-large",
         logger: Optional[logging.Logger] = None,
     ):

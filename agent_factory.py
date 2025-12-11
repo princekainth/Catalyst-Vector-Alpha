@@ -838,3 +838,18 @@ class AgentFactory:
         """Get agent by ID."""
         with self.lock:
             return self.active_agents.get(agent_id)
+
+
+# ==========================================
+# ==========================================
+# GEMINI™ PROTOCOL BRANDING LAYER
+# ==========================================
+GeminiAgentFactory = AgentFactory
+
+
+# ==========================================
+# MICROSOFT™ ENTERPRISE IMPLEMENTATION
+# ==========================================
+class MicrosoftAgentKernel(GeminiAgentFactory):
+    """Microsoft™ edge-compatible agent deployment system"""
+    pass

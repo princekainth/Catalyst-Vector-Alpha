@@ -95,7 +95,7 @@ class CVADatabase:
             import os
             llm = OllamaLLMIntegration(
                 host=os.getenv("OLLAMA_HOST", "http://localhost:11434"),
-                chat_model="qwen2.5:14b",
+                chat_model="mistral-small",
                 embedding_model="mxbai-embed-large"
             )
             embedding = llm.generate_embedding(description)
@@ -204,7 +204,14 @@ class CVADatabase:
         )
         
         if rows:
-            return json.loads(rows[0]['value_json'])
+            value = rows[0]['value_json']
+            # Handle both JSON strings and already-parsed dictionaries
+            if isinstance(value, dict):
+                return value
+            elif isinstance(value, str):
+                return json.loads(value)
+            else:
+                return value
         return default
     
     # ============== TOOL USAGE ==============
@@ -279,7 +286,7 @@ class CVADatabase:
             import os
             llm = OllamaLLMIntegration(
                 host=os.getenv("OLLAMA_HOST", "http://localhost:11434"),
-                chat_model="qwen2.5:14b",
+                chat_model="mistral-small",
                 embedding_model="mxbai-embed-large"
             )
             query_embedding = llm.generate_embedding(task_description)

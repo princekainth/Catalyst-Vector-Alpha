@@ -879,6 +879,99 @@ def watch_k8s_audit_events(minutes: int = 5, event_types: list = None) -> dict:
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
+
+def microsoft_autonomous_remediation(pod_name, namespace="default"):
+    """
+    Microsoft™ Enterprise Remediation Protocol v2.0
+    1. EXTRACTS logs to a permanent forensic file (Black Box).
+    2. ANALYZES logs for root cause.
+    3. EXECUTES tactical restart.
+    4. VERIFIES stability.
+    """
+    timestamp = int(time.time())
+    results = {
+        "target": pod_name,
+        "actions": [],
+        "outcome": "failed"
+    }
+    
+    # Create a secure vault for evidence
+    evidence_dir = "logs/forensics"
+    os.makedirs(evidence_dir, exist_ok=True)
+    evidence_file = f"{evidence_dir}/{pod_name}_crash_{timestamp}.log"
+    
+    try:
+        # STEP 1: CAPTURE THE BLACK BOX
+        print(f"🕵️ [Microsoft Kernel] Securing evidence for {pod_name}...")
+        
+        # Try getting previous logs (if crashed), else current logs
+        try:
+            log_cmd = f"kubectl logs {pod_name} -n {namespace} --previous --tail=100"
+            logs = subprocess.check_output(log_cmd, shell=True, text=True, stderr=subprocess.STDOUT)
+        except subprocess.CalledProcessError:
+            # Fallback if pod is stuck but not 'crashed' yet
+            log_cmd = f"kubectl logs {pod_name} -n {namespace} --tail=100"
+            logs = subprocess.check_output(log_cmd, shell=True, text=True)
+        
+        # Write to Disk (Permanent Evidence)
+        with open(evidence_file, "w") as f:
+            f.write(logs)
+        results["evidence_path"] = evidence_file
+        results["actions"].append("Forensic logs saved to disk")
+        
+        # Give the Agent a hint (first 200 chars)
+        results["log_preview"] = logs[:200]
+        
+        # STEP 1B: ROOT CAUSE ANALYSIS
+        if "ImagePullBackOff" in logs or "ErrImagePull" in logs:
+            results["root_cause_hint"] = "Deployment Config Error (Image)"
+        elif "OOMKilled" in logs:
+            results["root_cause_hint"] = "Resource Exhaustion (OOM)"
+        elif "CrashLoopBackOff" in logs:
+            results["root_cause_hint"] = "Application Crash Loop"
+        elif "Connection refused" in logs or "Connection timed out" in logs:
+            results["root_cause_hint"] = "Dependency/Network Error"
+        else:
+            results["root_cause_hint"] = "Unknown/Application Error"
+        
+        # STEP 2: THE HAND OF GOD (Remediation)
+        print(f"⚡ [Microsoft Kernel] Initiating tactical termination of {pod_name}...")
+        delete_cmd = f"kubectl delete pod {pod_name} -n {namespace} --wait=false"
+        subprocess.run(delete_cmd, shell=True, check=True)
+        results["actions"].append("Pod termination triggered")
+        
+        # STEP 3: VERIFICATION (Wait for replacement)
+        print("⏳ [Microsoft Kernel] Waiting for stabilization (15s)...")
+        time.sleep(15)
+        
+        # Check the NEW pod (deployment will auto-spawn replacement)
+        deployment_name = "-".join(pod_name.split("-")[:-1])
+        if not deployment_name:
+            deployment_name = pod_name
+        
+        verify_cmd = f"kubectl get pods -n {namespace} | grep {deployment_name}"
+        status_output = subprocess.check_output(verify_cmd, shell=True, text=True)
+        
+        # Strict verification
+        if "Running" in status_output and "0/1" not in status_output and "CrashLoop" not in status_output:
+            results["outcome"] = "SUCCESS"
+            results["verification"] = "Pod restarted and healthy"
+            results["actions"].append("Service restored to healthy state")
+        elif "CrashLoopBackOff" in status_output:
+            results["outcome"] = "REMEDIATION_FAILED"
+            results["verification"] = "Pod still crashing - escalate to human"
+            results["actions"].append("Escalation flag raised")
+        else:
+            results["outcome"] = "PENDING"
+            results["verification"] = "Pod booting, unclear status"
+            results["current_status"] = status_output.strip()
+    
+    except Exception as e:
+        results["error"] = str(e)
+        results["outcome"] = "ERROR"
+    
+    return results
+
 def watch_k8s_events(namespace: str = "all", minutes: int = 5) -> dict:
     """
     Monitor Kubernetes cluster events for incidents.

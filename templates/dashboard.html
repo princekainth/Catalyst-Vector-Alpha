@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Catalyst Vector Alpha - Enhanced Dashboard</title>
+  <style>
+    body, html {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      width: 100%;
+      overflow: hidden;
+      font-family: 'Roboto', sans-serif;
+    }
+    
+    #root {
+      height: 100%;
+      width: 100%;
+    }
+    
+    .loading-screen {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      color: white;
+      z-index: 9999;
+      transition: opacity 0.5s ease;
+    }
+    
+    .loading-screen.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+    
+    .spinner {
+      width: 60px;
+      height: 60px;
+      border: 4px solid rgba(255, 255, 255, 0.3);
+      border-radius: 50%;
+      border-top-color: #90caf9;
+      animation: spin 1s ease-in-out infinite;
+      margin-bottom: 20px;
+    }
+    
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    
+    .logo {
+      width: 80px;
+      height: 80px;
+      margin-bottom: 20px;
+      background: linear-gradient(45deg, #90caf9, #f48fb1);
+      border-radius: 15px;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      font-weight: bold;
+      font-size: 24px;
+      color: white;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+    }
+    
+    .status-text {
+      font-size: 18px;
+      margin-bottom: 10px;
+      opacity: 0.8;
+    }
+    
+    .version {
+      position: absolute;
+      bottom: 20px;
+      font-size: 14px;
+      opacity: 0.6;
+    }
+  </style>
+</head>
+<body>
+  <div id="loading-screen" class="loading-screen">
+    <div class="logo">CVA</div>
+    <div class="spinner"></div>
+    <div class="status-text">Loading Enhanced Dashboard...</div>
+    <div class="version">Catalyst Vector Alpha v1.0</div>
+  </div>
+  
+  <div id="root"></div>
+  
+  <script>
+    // Hide loading screen when React app is ready
+    window.addEventListener('load', function() {
+      setTimeout(function() {
+        document.getElementById('loading-screen').classList.add('hidden');
+      }, 1000);
+    });
+    
+    // API base URL configuration
+    window.CVA_CONFIG = {
+      API_BASE_URL: '{{ request.host_url }}api',
+      WS_BASE_URL: '{{ request.host_url.replace("http", "ws") }}'
+    };
+  </script>
+  
+  <!-- React app will be injected here when built -->
+  <script src="/static/dashboard/static/js/main.aaa916f1.js"></script>
+  <link href="/static/dashboard/static/css/main.c71f5b91.css" rel="stylesheet">
+</body>
+</html>

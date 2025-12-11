@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Dashboard Test</title>
+    <style>
+        body { 
+            font-family: Arial, sans-serif;
+            background-color: #f0f0f0;
+            padding: 20px;
+            color: #333;
+        }
+        .test-box {
+            background: white;
+            border: 2px solid #ccc;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 5px;
+        }
+        .success { border-color: #4CAF50; background: #e8f5e9; }
+        .error { border-color: #f44336; background: #ffebee; }
+    </style>
+</head>
+<body>
+    <h1>🔍 Dashboard Diagnostics</h1>
+    
+    <div class="test-box" id="js-test">
+        <h2>⏳ JavaScript Loading Test</h2>
+        <p>If JavaScript is working, this box will turn green...</p>
+    </div>
+    
+    <div class="test-box" id="file-test">
+        <h2>📁 File Access Test</h2>
+        <p>Testing access to dashboard files...</p>
+    </div>
+    
+    <div class="test-box" id="api-test">
+        <h2>🔌 API Connection Test</h2>
+        <p>Testing connection to Flask API...</p>
+    </div>
+    
+    <div class="test-box" id="react-test">
+        <h2>⚛️ React App Test</h2>
+        <p>Testing React application loading...</p>
+    </div>
+
+    <script>
+        // Test 1: Basic JavaScript
+        document.getElementById('js-test').className = 'test-box success';
+        document.getElementById('js-test').innerHTML += '<p>✅ JavaScript is working!</p>';
+
+        // Test 2: File access
+        try {
+            const script = document.createElement('script');
+            script.src = '/dashboard/static/js/main.bd09f188.js';
+            script.onload = function() {
+                document.getElementById('file-test').className = 'test-box success';
+                document.getElementById('file-test').innerHTML += '<p>✅ Dashboard JS file loaded successfully!</p>';
+            };
+            script.onerror = function() {
+                document.getElementById('file-test').className = 'test-box error';
+                document.getElementById('file-test').innerHTML += '<p>❌ Failed to load dashboard JS file!</p>';
+            };
+            document.body.appendChild(script);
+        } catch (e) {
+            document.getElementById('file-test').className = 'test-box error';
+            document.getElementById('file-test').innerHTML += '<p>❌ Exception: ' + e.message + '</p>';
+        }
+
+        // Test 3: API connection
+        try {
+            fetch('/api/health')
+                .then(response => {
+                    if (response.ok) {
+                        document.getElementById('api-test').className = 'test-box success';
+                        return response.json();
+                    } else {
+                        throw new Error('API returned status ' + response.status);
+                    }
+                })
+                .then(data => {
+                    document.getElementById('api-test').innerHTML += '<p>✅ API is working! Status: ' + data.status + '</p>';
+                })
+                .catch(error => {
+                    document.getElementById('api-test').className = 'test-box error';
+                    document.getElementById('api-test').innerHTML += '<p>❌ API error: ' + error.message + '</p>';
+                });
+        } catch (e) {
+            document.getElementById('api-test').className = 'test-box error';
+            document.getElementById('api-test').innerHTML += '<p>❌ Exception: ' + e.message + '</p>';
+        }
+
+        // Test 4: React app loading
+        setTimeout(function() {
+            if (typeof React === 'undefined') {
+                document.getElementById('react-test').className = 'test-box error';
+                document.getElementById('react-test').innerHTML += '<p>❌ React is not loaded!</p>';
+            } else {
+                document.getElementById('react-test').className = 'test-box success';
+                document.getElementById('react-test').innerHTML += '<p>✅ React is loaded!</p>';
+            }
+        }, 2000);
+    </script>
+</body>
+</html>

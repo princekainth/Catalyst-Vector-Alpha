@@ -559,6 +559,23 @@ class ToolRegistry:
             ),
 
             Tool(
+                "microsoft_autonomous_remediation",
+                "Microsoft Enterprise Remediation: capture crash logs, restart pod, and verify stabilization.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "pod_name": {"type": "string", "description": "Target pod name"},
+                        "namespace": {"type": "string", "default": "default", "description": "Pod namespace"}
+                    },
+                    "required": ["pod_name"],
+                    "additionalProperties": False,
+                },
+                _tf("microsoft_autonomous_remediation"),
+                task_type="Actuation",
+                roles_allowed={"Worker", "Security"},
+            ),
+
+            Tool(
                 "check_network_connectivity",
                 "Check if a pod can reach a service. Detects network policy blocks and connectivity issues.",
                 {

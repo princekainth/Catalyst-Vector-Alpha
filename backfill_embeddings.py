@@ -25,7 +25,7 @@ def backfill_embeddings():
     # Initialize LLM
     llm = OllamaLLMIntegration(
         host=os.getenv("OLLAMA_HOST", "http://localhost:11434"),
-        chat_model="qwen2.5:14b",
+        chat_model="mistral-small",
         embedding_model="mxbai-embed-large"
     )
     

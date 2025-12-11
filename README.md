@@ -1,175 +1,125 @@
-# 🚀 Catalyst Vector Alpha - Commercial AI System
-**🏢 Empire Bridge Media Inc. Reference Implementation of Proprietary AI Architecture Protocols**
+# 🚀 Catalyst Vector Alpha (CVA)
+**Autonomous SRE Platform | Reference Implementation of the Gemini™ Protocol**
 
-## 🔐 Trademarked Technologies in Commercial Use
+[![Status](https://img.shields.io/badge/Status-Production_Ready-green)]()
+[![License](https://img.shields.io/badge/License-MIT-blue)]()
+[![Protocol](https://img.shields.io/badge/Protocol-Gemini_RFC001-purple)]()
+[![Validation](https://img.shields.io/badge/Chaos_Tests-70%25_Pass-orange)]()
 
-### 1. **Gemini™ Protocol Implementation**
-*Unified AI Cognitive Architecture for Autonomous Systems*
+> **"Empires are not built without sacrifice; they are forged in order."**
+> CVA is a self-healing, multi-agent infrastructure platform designed to detect, analyze, and remediate enterprise system failures without human intervention.
 
-**Commercial Features:**
-- **Gemini™ Orchestration Engine:** Unified agent coordination and real-time task automation
-- **Gemini™ Agent Factory:** Dynamic AI agent spawning and lifecycle management
-- **Gemini™ Cognitive Framework:** Standardized protocol for AI reasoning and adaptation
-- **Gemini™ Cloud Deployment:** REST API for protocol integration and SaaS deployment
+---
 
-**Live System Evidence:**
-```python
-# Gemini™ Protocol Core Implementation
-class GeminiOrchestrator:
-    """Gemini™ unified AI coordination engine"""
-    
-class GeminiAgentFactory:
-    """Gemini™ dynamic agent creation protocol"""
+## 🏛️ Commercial Architecture
 
-@app.route('/api/agents/spawn')
-def gemini_agent_deployment():
-    """Gemini™ cloud agent deployment endpoint"""
+This repository serves as the reference implementation for **Empire Bridge Media Inc.**'s proprietary AI architecture:
+
+| Protocol Layer | Technology | Role |
+| :--- | :--- | :--- |
+| **Interface** | **Gemini™ Protocol** | Orchestration, API Gateway, and Agent Spawning. |
+| **Cognition** | **Meta™ Intelligence** | Swarm consensus, tool synthesis, and reflection. |
+| **Infrastructure** | **Microsoft™ Kernel** | Edge-compatible deployment and K8s integration. |
+
+## 📊 Enhanced Dashboard
+
+The Catalyst Vector Alpha now includes a **modern React-based dashboard** with comprehensive monitoring capabilities:
+
+- **Real-time System Health**: Live health scoring and status monitoring
+- **Agent Management**: View and control all agents in the swarm
+- **Performance Metrics**: CPU, memory, and agent performance tracking
+- **Task Monitoring**: Recent task history and execution status
+- **Human-in-the-Loop**: Pending approvals interface for critical operations
+- **Responsive Design**: Optimized for desktop and mobile devices
+
+**Dashboard Features:**
+- Dark theme optimized for 24/7 operations
+- Comprehensive health scoring (0-100) with recommendations
+- Agent role distribution visualization
+- Real-time metrics and status updates
+- Approval system for Kubernetes operations
+
+**Access the Dashboard:**
+```bash
+# After starting the system, open:
+http://localhost:5000/dashboard
 ```
 
-### 2. **Meta™ Intelligence System**
-*Agent-Centric AI Architecture with Memetic Synchronization*
-
-**Commercial Features:**
-- **Meta™ Agent-Centric Framework:** Autonomous agent training, deployment, and synchronization
-- **Meta™ Swarm Coordination:** Byzantine fault-tolerant multi-agent consensus engines
-- **Meta™ Memetic Architecture:** Cross-agent knowledge sharing and memory systems
-- **Meta™ Industrial AI:** Closed-loop workflow automation for enterprise applications
-
-**Live System Evidence:**
-```python
-# Meta™ Intelligence Implementation
-class MetaCognitiveArchitecture(ProtoAgent):
-    """Meta™ agent-centric autonomous intelligence system"""
-
-class MetaSwarmCoordinator(GeminiOrchestrator):
-    """Meta™ Byzantine-fault-tolerant swarm coordination"""
-
-class MetaIndustrialEngine(GeminiOrchestrator):
-    """Meta™ closed-loop workflow automation framework"""
+**Build the Dashboard:**
+```bash
+cd dashboard
+./build_dashboard.sh
 ```
 
-### 3. **Microsoft™ Enterprise AI Framework**
-*Enterprise-Grade AI Infrastructure and Deployment Systems*
+📄 **[View Commercial Specifications](./COMMERCIAL_SPECS.md)**
+📄 **[Read the Protocol Constitution (RFC-001)](./RFC001.md)**
 
-**Commercial Features:**
-- **Microsoft™ Agent Kernel:** Edge-compatible autonomous agent deployment operating system
-- **Microsoft™ Swarm SDK:** Modular framework for neurosymbolic programming and AI coordination
-- **Microsoft™ Runtime Engine:** On-device large language model inference and execution
-- **Microsoft™ Cloud Services:** Hosted agentic reasoning frameworks with enterprise interoperability
+---
 
-**Live System Evidence:**
-```python
-# Microsoft™ Enterprise Implementation
-class MicrosoftAgentKernel(GeminiAgentFactory):
-    """Microsoft™ edge-compatible agent deployment system"""
+## ⚡ Key Capabilities
 
-class MicrosoftEnterpriseAI(GeminiOrchestrator):
-    """Microsoft™ hosted agentic reasoning framework"""
+### 1. Autonomous Remediation (The Hand of God)
+CVA does not just monitor; it acts.
+* **Auto-Discovery:** Automatically maps Kubernetes clusters upon startup.
+* **Chaos Resilience:** Validated against **10 Chaos Scenarios** (Pod Kills, CPU Spikes, OOM).
+* **Self-Healing:** Detects  events and triggers stabilization workflows.
 
-class MicrosoftProductivityEngine(GeminiOrchestrator):
-    """Microsoft™ office platform interoperability framework"""
+### 2. The Agent Swarm
+Operates a persistent workforce of specialized digital employees:
+* **🛡️ EnterpriseMonitor:** The Sentry (K8s/Audit Logs).
+* **🧠 Workflow_Analyzer:** The Architect (Self-building tools).
+* **⚙️ Planner:** The Executive (Resource allocation).
+
+### 3. Enterprise Integration
+* **API Access:** `POST /api/agents/spawn` for dynamic agent creation.
+* **Persistence:** Full state preservation via SQLite and ChromaDB.
+* **Audit Trail:** Immutable JSONL logs for every decision made by the swarm.
+
+---
+
+## 🚀 Quick Start
+
+### 1. Launch the Empire
+```bash
+# Start the Autonomous Kernel
+python3 app.py
 ```
 
-## 🎯 Live Production System
+### 2. Access the Enhanced Dashboard
+```bash
+# Open the modern React dashboard in your browser
+open http://localhost:5000/dashboard
+```
 
-### Current Deployment
-- **20+ Active AI Agents** operating on proprietary protocols
-- **Real-time Autonomous Decision Making** across all architectural layers
-- **Cloud API Infrastructure** for commercial integration
-- **Enterprise-Grade Persistence** with full state management
-
-### System Architecture
-
-**Commercial API Access:**
+### 3. Spawn a Sentinel
 ```bash
 curl -X POST http://localhost:5000/api/agents/spawn \
   -H "Content-Type: application/json" \
   -d '{
-    "purpose": "Enterprise monitoring agent",
+    "purpose": "Monitor the Kubernetes cluster for critical pod failures",
     "protocol": "Gemini™"
   }'
 ```
 
-**System Monitoring:**
+### 4. Verify System Status
 ```bash
 curl http://localhost:5000/api/agents/factory
 ```
 
-### Active Agent Workforce
-- **🛡️ EnterpriseMonitor** - Gemini™ Protocol Sentinel (ID: `agent_db94dade`)
-- **⚙️ Workflow_Analyzer** - Meta™ Intelligence Automator (ID: `agent_294ad79f`)
-- **🔍 Kubernetes Optimizer** - Microsoft™ Enterprise Infrastructure Agent
-- **🚨 CPU_Spike_Alert** - Meta™ Industrial Monitoring Agent
-
-## 🏗️ Technical Implementation
-
-### Core Components
-- `agent_factory.py` - Gemini™ Protocol agent creation engine
-- `agents.py` - Meta™ Cognitive Architecture definitions
-- `catalyst_vector_alpha.py` - Microsoft™ Enterprise orchestration kernel
-- `database.py` - Cross-protocol persistent state management
-
-### Commercial API Endpoints
-- `GET /api/agents/factory` - Protocol agent ecosystem status
-- `POST /api/agents/spawn` - Commercial agent deployment
-- `GET /api/health/detailed` - Enterprise system metrics
-- `GET /api/health` - Protocol health verification
-
-### Integration Capabilities
-- **Cloud Deployment:** SaaS-ready architecture
-- **Enterprise Systems:** CRM, ERP, and monitoring tool integration
-- **Productivity Platforms:** Calendar, email, and office suite connectivity
-- **IoT & Edge Devices:** Lightweight agent deployment
-
-## 🚀 Quick Start
-
-### Commercial Deployment
-
-**Launch Enterprise AI System:**
+### 5. Check Enhanced Health
 ```bash
-./start.sh
+curl http://localhost:5000/api/health/enhanced
 ```
-
-**Deploy Protocol Agent:**
-```bash
-curl -X POST http://localhost:5000/api/agents/spawn \
-  -H "Content-Type: application/json" \
-  -d '{
-    "purpose": "Analyze and automate enterprise workflows",
-    "context": {},
-    "protocol": "Meta™"
-  }'
-```
-
-**Monitor Protocol Ecosystem:**
-```bash
-curl http://localhost:5000/api/agents/factory
-```
-
-### Access Points
-- **Live Dashboard:** http://localhost:5000
-- **API Documentation:** Integrated Swagger endpoints
-- **System Logs:** Real-time protocol activity monitoring
-
-## 📊 System Specifications
-- **Architecture:** Multi-protocol AI orchestration system
-- **Deployment:** Edge, cloud, and hybrid compatible
-- **Scale:** 20+ concurrent specialized agents
-- **Integration:** REST API for commercial platform connectivity
-- **Persistence:** Enterprise-grade database with full audit trail
-
-## 🔒 Trademark Usage Statement
-
-This repository demonstrates commercial implementation of the following proprietary technologies developed by Empire Bridge Media Inc.:
-
-- **Gemini™:** Unified protocol for AI cognitive architecture and autonomous system coordination
-- **Meta™:** Agent-centric intelligence systems with memetic synchronization and swarm coordination
-- **Microsoft™:** Enterprise-grade AI infrastructure frameworks and deployment systems
-
-These trademarks represent specific technical implementations and architectural patterns distinct from other market uses. This system serves as evidence of first use in commerce for AI system development and deployment.
-
-*All trademarks are used under license from Empire Bridge Media Inc. for demonstration of commercial implementation.*
 
 ---
 
-© 2025 Empire Bridge Media Inc. Catalyst Vector Alpha serves as commercial evidence for proprietary AI architecture trademarks. This implementation demonstrates real-world use of Gemini™, Meta™, and Microsoft™ protocols in production AI systems.
+## 🔒 Legal & Trademarks
+
+**© 2025 Empire Bridge Media Inc.**
+
+This system implements the **Gemini™**, **Meta™**, and **Microsoft™** protocols under the governance of **[RFC-001](./RFC001.md)**.
+These trademarks represent specific technical implementations and architectural patterns distinct from other market uses.
+
+* **[License (MIT)](./LICENSE)**
+* **[Architecture Guide](./ARCHITECTURE.md)**
+* **[Memory System Specs](./MEMORY_SYSTEM.md)**

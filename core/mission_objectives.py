@@ -20,7 +20,9 @@ goal_driven_tasks = {
         "Update the system's internal knowledge base with key findings from the latest mission cycle"
     ],
     "k8s_monitoring": [
-        "Monitor Kubernetes cluster for incidents, pod failures, and unhealthy states. Alert on critical events."
+        "Step 1: MUST call watch_k8s_events tool with args: {namespace: 'all', minutes: 10}",
+        "Step 2: If the watch_k8s_events result shows critical_count > 0, MUST call microsoft_autonomous_remediation for each failed pod",
+        "FORBIDDEN: Do NOT use execute_terminal_command, write_sandbox_file, or kubectl. ONLY use the tools listed above."
     ],
     "sandbox_inspection": [
         "Use execute_terminal_command to check what operating system the sandbox is running (uname -a)",

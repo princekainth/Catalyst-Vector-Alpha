@@ -1540,17 +1540,28 @@ class CatalystVectorAlpha:
         print(f"  AGENT_PERFORM_TASK: Agent '{agent_name}' performing task: '{task_description}'.")
         
         try:
-            # THE FIX: Unpack all four values from agent.perform_task to match the new signature.
-            outcome, failure_reason, report_content, _ = agent.perform_task(
-                task_description,
-                cycle_id=self.current_action_cycle_id,
-                reporting_agents=reporting_agents_list,
-                context_info=directive.get('context') or directive.get('context_info'),
-                text_content=text_content,
-                task_type=task_type,
-                tool_name=directive.get('tool_name'),      # ADD THIS
-                tool_args=directive.get('tool_args')       # ADD THIS
-            )
+            # Special handling: force Planner to run k8s_monitoring mission immediately
+            if directive.get("mission_type") == "k8s_monitoring" and hasattr(agent, "_execute_agent_specific_task"):
+                goal = task_description or "Monitor Kubernetes cluster for incidents, pod failures, and unhealthy states. Alert on critical events."
+                outcome, failure_reason, report_content, _ = agent._execute_agent_specific_task(
+                    task_description=goal,
+                    task_type="INITIATE_PLANNING_CYCLE",
+                    high_level_goal=goal,
+                    mission_type="k8s_monitoring",
+                    directive=directive,
+                )
+            else:
+                # THE FIX: Unpack all four values from agent.perform_task to match the new signature.
+                outcome, failure_reason, report_content, _ = agent.perform_task(
+                    task_description,
+                    cycle_id=self.current_action_cycle_id,
+                    reporting_agents=reporting_agents_list,
+                    context_info=directive.get('context') or directive.get('context_info'),
+                    text_content=text_content,
+                    task_type=task_type,
+                    tool_name=directive.get('tool_name'),      # ADD THIS
+                    tool_args=directive.get('tool_args')       # ADD THIS
+                )
                 
             # After execution, reflect and log.
             if hasattr(agent, 'memetic_kernel') and agent.memetic_kernel:
@@ -3754,3 +3765,33 @@ if __name__ == "__main__":
     )
     supervisor.run_supervised(tick_sleep=10)
     print("\nCatalyst Vector Alpha (Phase 11) Execution Finished.")
+
+
+
+# ==========================================
+# GEMINI™ PROTOCOL BRANDING LAYER
+# ==========================================
+GeminiOrchestrator = CatalystVectorAlpha
+
+
+# ==========================================
+# META™ INDUSTRIAL & SWARM LAYER
+# ==========================================
+class MetaSwarmCoordinator(GeminiOrchestrator):
+    """Meta™ Byzantine-fault-tolerant swarm coordination"""
+    pass
+
+class MetaIndustrialEngine(GeminiOrchestrator):
+    """Meta™ closed-loop workflow automation framework"""
+    pass
+
+# ==========================================
+# MICROSOFT™ ENTERPRISE AI LAYER
+# ==========================================
+class MicrosoftEnterpriseAI(GeminiOrchestrator):
+    """Microsoft™ hosted agentic reasoning framework"""
+    pass
+
+class MicrosoftProductivityEngine(GeminiOrchestrator):
+    """Microsoft™ office platform interoperability framework"""
+    pass

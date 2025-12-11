@@ -40,7 +40,7 @@ if APP_ROOT not in sys.path:
     sys.path.insert(0, APP_ROOT)
 
 # --- Third-Party --------------------------------------------------------------
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, send_file
 from flask_cors import CORS
 
 # --- Project Imports (fail fast with message) ---------------------------------
@@ -507,6 +507,21 @@ def api_dashboard_summary():
 @app.route('/')
 def index():
     return render_template('index.html')
+
+# Dashboard route - serves the React app
+@app.route('/dashboard')
+def dashboard():
+    return render_template('dashboard.html')
+
+# Dashboard diagnostics page
+@app.route('/dashboard-diagnostics')
+def dashboard_diagnostics():
+    return send_file('test_dashboard.html')
+
+# Simple dashboard test page
+@app.route('/simple-dashboard')
+def simple_dashboard():
+    return send_file('dashboard/simple/index.html')
 
 # --- Routes: Commands & Tasks -------------------------------------------------
 @app.route('/api/command', methods=['POST'])
@@ -1086,6 +1101,220 @@ def api_kill_agent(agent_id):
     except Exception as e:
         logger.exception(f"/api/agents/kill/{agent_id} failed")
         return jsonify({"status": "error", "error": str(e)}), 500
+
+# ==========================================
+# GEMINI™ PROTOCOL API LAYER
+# ==========================================
+@app.route('/api/agents/spawn', methods=['POST'])
+def gemini_agent_deployment():
+    """Gemini™ cloud agent deployment endpoint"""
+    # This currently just returns a status, but connects to the system
+    return {
+        "status": "Gemini Protocol Initiated", 
+        "orchestrator": "GeminiOrchestrator v1.0",
+        "timestamp": time.time()
+    }
+
+# --- Health Monitoring Helper Functions ---------------------------------------
+def calculate_health_score(swarm, tool_stats, task_stats):
+    """Calculate overall system health score (0-100)."""
+    try:
+        score = 50  # Base score
+        
+        # System state factors
+        if swarm.get('is_running', False):
+            score += 15
+        if not swarm.get('is_paused', False):
+            score += 10
+        
+        # Agent health
+        agent_count = len(swarm.get('agent_instances', {}))
+        if agent_count > 0:
+            score += 10
+        if agent_count > 3:
+            score += 5  # Bonus for multiple agents
+        
+        # Tool performance
+        if tool_stats:
+            success_rate = tool_stats.get('successful_calls', 0) / max(1, tool_stats.get('total_calls', 1))
+            if success_rate > 0.95:
+                score += 10
+            elif success_rate > 0.8:
+                score += 5
+        
+        # Task performance
+        if task_stats:
+            completion_rate = task_stats.get('completed', 0) / max(1, task_stats.get('total_tasks', 1))
+            if completion_rate > 0.9:
+                score += 5
+            elif completion_rate > 0.7:
+                score += 3
+        
+        # Cap score at 100
+        return min(100, max(0, score))
+    except Exception as e:
+        logger.warning(f"Health score calculation failed: {e}")
+        return 50
+
+def get_health_status(score):
+    """Convert health score to status level."""
+    if score >= 80:
+        return 'healthy'
+    elif score >= 60:
+        return 'warning'
+    elif score >= 40:
+        return 'degraded'
+    else:
+        return 'critical'
+
+def get_system_resources():
+    """Get current system resource usage."""
+    try:
+        import psutil
+        
+        cpu_percent = psutil.cpu_percent(interval=0.1)
+        memory_percent = psutil.virtual_memory().percent
+        disk_usage = psutil.disk_usage('/').percent
+        
+        return {
+            'cpu': cpu_percent,
+            'memory': memory_percent,
+            'disk': disk_usage,
+            'timestamp': time.time()
+        }
+    except Exception as e:
+        logger.warning(f"Failed to get system resources: {e}")
+        return {
+            'cpu': 0,
+            'memory': 0,
+            'disk': 0,
+            'timestamp': time.time()
+        }
+
+def get_system_uptime():
+    """Get system uptime in seconds."""
+    try:
+        import psutil
+        return psutil.boot_time()
+    except:
+        return time.time() - 3600  # Default to 1 hour if unavailable
+
+# --- Enhanced Health Endpoint -----------------------------------------------
+@app.get("/api/health/enhanced")
+def enhanced_health_check():
+    """Enhanced health endpoint with comprehensive system metrics and health scoring."""
+    try:
+        from database import cva_db
+        
+        # Get basic stats
+        tool_stats = cva_db.get_tool_stats()
+        task_stats = cva_db.get_task_stats()
+        
+        # Get swarm state
+        swarm = cva_db.load_full_swarm_state() or {}
+        agents = list(swarm.get('agent_instances', {}).keys())
+        
+        # Calculate health metrics
+        health_score = calculate_health_score(swarm, tool_stats, task_stats)
+        health_status = get_health_status(health_score)
+        
+        # Get system resource metrics
+        resource_metrics = get_system_resources()
+        
+        # Get recent events
+        recent_events = get_recent_system_events()
+        
+        return jsonify({
+            "status": health_status,
+            "health_score": health_score,
+            "health_status": health_status,
+            "running": swarm.get('is_running', False),
+            "paused": swarm.get('is_paused', False),
+            "current_cycle": swarm.get('current_action_cycle_id', 'Unknown'),
+            "agents": {
+                "total": len(agents),
+                "active": len([a for a in agents if not a.endswith('_paused')]),
+                "list": agents
+            },
+            "tool_stats": tool_stats,
+            "task_stats": task_stats,
+            "resource_metrics": resource_metrics,
+            "recent_events": recent_events,
+            "timestamp": time.time(),
+            "uptime": get_system_uptime(),
+            "recommendations": generate_health_recommendations(health_score, resource_metrics)
+        }), 200
+    except Exception as e:
+        logger.error(f"Enhanced health check failed: {e}")
+        return jsonify({"status": "error", "error": str(e)}), 500
+
+def get_recent_system_events():
+    """Get recent system events from the event log."""
+    try:
+        events = []
+        event_file = "logs/catalyst.jsonl"
+        
+        if os.path.exists(event_file):
+            with open(event_file, 'r') as f:
+                lines = f.readlines()[-10:]  # Get last 10 events
+                for line in lines:
+                    try:
+                        event = json.loads(line)
+                        events.append({
+                            'timestamp': str(event.get('timestamp')),
+                            'level': str(event.get('level', 'info')),
+                            'message': str(event.get('message', '')),
+                            'source': str(event.get('source', 'system'))
+                        })
+                    except Exception as e:
+                        logger.debug(f"Failed to parse event line: {e}")
+                        continue
+        
+        return events
+    except Exception as e:
+        logger.warning(f"Failed to read recent events: {e}")
+        return []
+
+def generate_health_recommendations(score, resources):
+    """Generate health recommendations based on current system state."""
+    recommendations = []
+    
+    if score < 60:
+        recommendations.append({
+            'level': 'critical',
+            'message': 'System health is critical. Immediate attention required.',
+            'actions': ['Check system logs', 'Review agent status', 'Restart critical services']
+        })
+    
+    elif score < 80:
+        recommendations.append({
+            'level': 'warning',
+            'message': 'System health could be improved.',
+            'actions': ['Review recent failures', 'Check resource usage', 'Optimize agent configuration']
+        })
+    
+    if resources.get('cpu', 0) > 80:
+        recommendations.append({
+            'level': 'warning',
+            'message': 'High CPU usage detected.',
+            'actions': ['Review running processes', 'Consider scaling resources', 'Optimize agent workload']
+        })
+    
+    if resources.get('memory', 0) > 85:
+        recommendations.append({
+            'level': 'warning',
+            'message': 'High memory usage detected.',
+            'actions': ['Check for memory leaks', 'Increase memory allocation', 'Restart memory-intensive services']
+        })
+    
+    if len(recommendations) == 0:
+        recommendations.append({
+            'level': 'info',
+            'message': 'System is operating normally.',
+            'actions': ['Continue monitoring', 'Perform regular maintenance']
+        })
+    
+    return recommendations
 
 if __name__ == '__main__':
     

@@ -131,10 +131,12 @@ MISSION_TOOL_POLICY = {
     "k8s_monitoring": {
         "allow": {
             "watch_k8s_events",
+            "microsoft_autonomous_remediation",  # ADD THIS
             "get_pod_status",
             "send_desktop_notification",
             "measure_responsiveness",
             "check_network_connectivity",
+            "watch_k8s_audit_events",
         },
         "deny": set(),
         "fallback": "measure_responsiveness",
