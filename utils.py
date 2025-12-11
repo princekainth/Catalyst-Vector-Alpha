@@ -790,7 +790,7 @@ def ollama_chat(model: str,
         raise RuntimeError(f"Unexpected error during Ollama call: {str(e)}")
 
 
-def llm_fix_json_response(raw_text: str, model: str = "llama3") -> Optional[Dict[str, Any]]:
+def llm_fix_json_response(raw_text: str, model: str = "mistral-small") -> Optional[Dict[str, Any]]:
     """
     Use LLM to repair malformed JSON responses (last resort).
     """

@@ -1282,6 +1282,66 @@ class ProtoAgent(ABC):
         except Exception as e:
             print(f"[DEBUG] Memory consultation failed for {self.name}: {e}")
 
+        # K8S MONITORING - Run for Observer before task execution
+        if self.name and "Observer" in self.name:
+            _registry = getattr(self, "tool_registry", None)
+            if _registry and _registry.has_tool("watch_k8s_events"):
+                _k8s_result = _registry.safe_call("watch_k8s_events", namespace="all", minutes=10)
+                if isinstance(_k8s_result, dict):
+                    payload = _k8s_result.get("data", _k8s_result) if isinstance(_k8s_result, dict) else {}
+                    _crit = payload.get("critical_count", 0)
+                    if _crit > 0:
+                        print(f"[Observer] 🚨 K8S ALERT: {_crit} critical events detected!")
+                        self._prune_remediation_cache()
+                        # DIRECT REMEDIATION - No Planner needed
+                        for event in payload.get("critical_events", [])[:3]:
+                            namespace = event.get("namespace")
+                            pod_name = event.get("name")
+                            if namespace and pod_name:
+                                if self._recently_remediated(namespace, pod_name):
+                                    print(f"[Observer] Skipping remediation (recent) for {namespace}/{pod_name}")
+                                    continue
+                                print(f"[Observer] AUTO-REMEDIATING: {namespace}/{pod_name}")
+                                try:
+                                    result = _registry.safe_call(
+                                        "microsoft_autonomous_remediation",
+                                        namespace=namespace,
+                                        pod_name=pod_name
+                                    )
+                                    print(f"[Observer] Remediation result: {result}")
+                                    self._mark_remediated(namespace, pod_name)
+                                except Exception as e:
+                                    print(f"[Observer] Remediation failed for {namespace}/{pod_name}: {e}")
+                    # Fallback: inspect pod status for failures/crashloops (always run)
+                    if _registry.has_tool("get_pod_status"):
+                        pod_resp = _registry.safe_call("get_pod_status", namespace="all")
+                        if isinstance(pod_resp, dict):
+                            pod_payload = pod_resp.get("data", pod_resp) if isinstance(pod_resp, dict) else {}
+                            pods = pod_payload.get("problem_pods") or pod_payload.get("all_pods") or []
+                            self._prune_remediation_cache()
+                            for pod in pods:
+                                name = pod.get("name")
+                                ns = pod.get("namespace")
+                                phase = str(pod.get("phase", "")).lower()
+                                issues = [str(x).lower() for x in pod.get("issues", [])]
+                                bad_phase = phase in {"failed", "error", "crashloopbackoff"}
+                                bad_issue = any(x in {"oomkilled", "error", "crashloopbackoff", "imagepullbackoff", "errimagepull"} for x in issues)
+                                if ns and name and (bad_phase or bad_issue):
+                                    if self._recently_remediated(ns, name):
+                                        print(f"[Observer] Skipping remediation (recent) for {ns}/{name}")
+                                        continue
+                                    print(f"[Observer] AUTO-REMEDIATING pod failure: {ns}/{name} phase={phase} issues={issues}")
+                                    try:
+                                        res = _registry.safe_call(
+                                            "microsoft_autonomous_remediation",
+                                            namespace=ns,
+                                            pod_name=name
+                                        )
+                                        print(f"[Observer] Remediation result: {res}")
+                                        self._mark_remediated(ns, name)
+                                    except Exception as e:
+                                        print(f"[Observer] Remediation failed for {ns}/{name}: {e}")
+
         # execute
         try:
             try:
@@ -2590,193 +2650,265 @@ class ProtoAgent(ABC):
         self.max_recursion_depth = limit
 
 class ProtoAgent_Observer(ProtoAgent):
-    def _execute_agent_specific_task(
-            self,
-            task_description: str,
-            cycle_id: Optional[str],
-            reporting_agents: Optional[Union[str, List]],
-            context_info: Optional[dict],
-            **kwargs
-        ) -> tuple[str, Optional[str], dict, float]:
-            print(f"[DEBUG Observer] kwargs received: {kwargs}")
-            print(f"[DEBUG] context_info parameter: {context_info}")
-            print(f"[{self.name}] Performing specific observation task: {task_description}")
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._remediated_pods: dict[str, float] = {}
 
-            # Extract plan_id from context
-            context = context_info or {}
-            plan_id = context.get("plan_id") if isinstance(context, dict) else None
-            
-            print(f"[DEBUG] context from kwargs: {context}")
-            print(f"[DEBUG] plan_id extracted: {plan_id}")
-            outcome = "completed"
-            failure_reason = None
-            progress_score = 0.0
-            report_content_dict = {"summary": "", "task_outcome_type": "Observation"}
+    def _prune_remediation_cache(self, ttl_seconds: int = 600):
+        now = time.time()
+        if not hasattr(self, "_remediated_pods") or not isinstance(self._remediated_pods, dict):
+            self._remediated_pods = {}
+        self._remediated_pods = {k: ts for k, ts in self._remediated_pods.items() if now - ts < ttl_seconds}
 
-            try:
-                # AUTO K8S MONITORING - Check every Observer cycle
-                _registry = getattr(self, "tool_registry", None)
-                if _registry and _registry.has_tool("watch_k8s_events"):
-                    _k8s_result = _registry.safe_call("watch_k8s_events", namespace="all", minutes=2)
-                    if isinstance(_k8s_result, dict):
-                        _crit = _k8s_result.get("critical_count", 0)
-                        if _crit > 0:
-                            print(f"[Observer] 🚨 K8S ALERT: {_crit} critical events detected!")
-                            self.memetic_kernel.add_memory("K8sAlert", {
-                                "critical_count": _crit,
-                                "events": _k8s_result.get("critical_events", [])[:5],
-                                "timestamp": time.time()
-                            })
-                # Also check for RBAC violations and secret access
-                if _registry and _registry.has_tool("watch_k8s_audit_events"):
-                    _audit_result = _registry.safe_call("watch_k8s_audit_events", minutes=2)
-                    if isinstance(_audit_result, dict):
-                        _violations = _audit_result.get("violation_count", 0)
-                        if _violations > 0:
-                            print(f"[Observer] 🔐 SECURITY ALERT: {_violations} RBAC violations detected!")
-                            self.memetic_kernel.add_memory("SecurityAlert", {
-                                "violation_count": _violations,
-                                "violations": _audit_result.get("violations", [])[:5],
-                                "timestamp": time.time()
-                            })
-                # END K8S MONITORING
-                # 1) optional tool execution
-                tool_name = kwargs.get("tool_name")
-                tool_args = kwargs.get("tool_args", {})
-                if tool_name:
-                    registry = getattr(self, "tool_registry", None)
-                    if registry and registry.has_tool(tool_name):
-                        result = registry.safe_call(tool_name, **tool_args)
-                        self.memetic_kernel.add_memory("ToolExecution", {
-                            "tool_name": tool_name,
-                            "tool_args": tool_args,
-                            "result": result,
-                            "timestamp": time.time(),
+    def _recently_remediated(self, namespace: str, pod_name: str, ttl_seconds: int = 600) -> bool:
+        self._prune_remediation_cache(ttl_seconds)
+        key = f"{namespace}/{pod_name}"
+        return key in self._remediated_pods
+
+    def _mark_remediated(self, namespace: str, pod_name: str):
+        if not hasattr(self, "_remediated_pods") or not isinstance(self._remediated_pods, dict):
+            self._remediated_pods = {}
+        key = f"{namespace}/{pod_name}"
+        self._remediated_pods[key] = time.time()
+
+    def _execute_agent_specific_task(self, task_description: str, **kwargs) -> tuple:
+        # Extract params from kwargs
+        cycle_id = kwargs.get("cycle_id")
+        reporting_agents = kwargs.get("reporting_agents", [])
+        context_info = kwargs.get("context_info")
+        print(f"[CRITICAL DEBUG] Observer._execute_agent_specific_task ENTERED for task: {task_description[:50]}")
+        print(f"[DEBUG Observer] kwargs received: {kwargs}")
+        print(f"[DEBUG] context_info parameter: {context_info}")
+        print(f"[{self.name}] Performing specific observation task: {task_description}")
+
+        # Extract plan_id from context
+        context = context_info or {}
+        plan_id = context.get("plan_id") if isinstance(context, dict) else None
+        
+        print(f"[DEBUG] context from kwargs: {context}")
+        print(f"[DEBUG] plan_id extracted: {plan_id}")
+        outcome = "completed"
+        failure_reason = None
+        progress_score = 0.0
+        report_content_dict = {"summary": "", "task_outcome_type": "Observation"}
+
+        try:
+            # AUTO K8S MONITORING - Check every Observer cycle
+            print("[DEBUG] Observer: Checking for watch_k8s_events tool...")
+            _registry = getattr(self, "tool_registry", None)
+            if _registry and _registry.has_tool("watch_k8s_events"):
+                _k8s_result = _registry.safe_call("watch_k8s_events", namespace="all", minutes=10)
+                if isinstance(_k8s_result, dict):
+                    payload = _k8s_result.get("data", _k8s_result) if isinstance(_k8s_result, dict) else {}
+                    _crit = payload.get("critical_count", 0)
+                    print(f"[Observer] Debug: watch_k8s_events critical_count={_crit}")
+                    if _crit > 0:
+                        print(f"[Observer] 🚨 K8S ALERT: {_crit} critical events detected!")
+                        self.memetic_kernel.add_memory("K8sAlert", {
+                            "critical_count": _crit,
+                            "events": payload.get("critical_events", [])[:5],
+                            "timestamp": time.time()
                         })
+                        self._prune_remediation_cache()
+                        # DIRECT REMEDIATION - No Planner needed
+                        for event in payload.get("critical_events", [])[:3]:
+                            namespace = event.get("namespace")
+                            pod_name = event.get("name")
+                            if namespace and pod_name:
+                                if self._recently_remediated(namespace, pod_name):
+                                    print(f"[Observer] Skipping remediation (recent) for {namespace}/{pod_name}")
+                                    continue
+                                print(f"[Observer] AUTO-REMEDIATING: {namespace}/{pod_name}")
+                                try:
+                                    result = _registry.safe_call(
+                                        "microsoft_autonomous_remediation",
+                                        namespace=namespace,
+                                        pod_name=pod_name
+                                    )
+                                    print(f"[Observer] Remediation result: {result}")
+                                    self._mark_remediated(namespace, pod_name)
+                                except Exception as e:
+                                    print(f"[Observer] Remediation failed for {namespace}/{pod_name}: {e}")
+                    # Fallback: inspect pod status for failures/crashloops (always run)
+                    if _registry.has_tool("get_pod_status"):
+                        pod_resp = _registry.safe_call("get_pod_status", namespace="all")
+                        if isinstance(pod_resp, dict):
+                            pod_payload = pod_resp.get("data", pod_resp) if isinstance(pod_resp, dict) else {}
+                            pods = pod_payload.get("problem_pods") or pod_payload.get("all_pods") or []
+                            self._prune_remediation_cache()
+                            for pod in pods:
+                                name = pod.get("name")
+                                ns = pod.get("namespace")
+                                phase = str(pod.get("phase", "")).lower()
+                                issues = [str(x).lower() for x in pod.get("issues", [])]
+                                bad_phase = phase in {"failed", "error", "crashloopbackoff"}
+                                bad_issue = any(x in {"oomkilled", "error", "crashloopbackoff", "imagepullbackoff", "errimagepull"} for x in issues)
+                                if ns and name and (bad_phase or bad_issue):
+                                    if self._recently_remediated(ns, name):
+                                        print(f"[Observer] Skipping remediation (recent) for {ns}/{name}")
+                                        continue
+                                    print(f"[Observer] AUTO-REMEDIATING pod failure: {ns}/{name} phase={phase} issues={issues}")
+                                    try:
+                                        res = _registry.safe_call(
+                                            "microsoft_autonomous_remediation",
+                                            namespace=ns,
+                                            pod_name=name
+                                        )
+                                        print(f"[Observer] Remediation result: {res}")
+                                        self._mark_remediated(ns, name)
+                                    except Exception as e:
+                                        print(f"[Observer] Remediation failed for {ns}/{name}: {e}")
+            # Also check for RBAC violations and secret access
+            if _registry and _registry.has_tool("watch_k8s_audit_events"):
+                _audit_result = _registry.safe_call("watch_k8s_audit_events", minutes=10)
+                if isinstance(_audit_result, dict):
+                    audit_payload = _audit_result.get("data", _audit_result) if isinstance(_audit_result, dict) else {}
+                    _violations = audit_payload.get("violation_count", 0)
+                    if _violations > 0:
+                        print(f"[Observer] 🔐 SECURITY ALERT: {_violations} RBAC violations detected!")
+                        self.memetic_kernel.add_memory("SecurityAlert", {
+                            "violation_count": _violations,
+                            "violations": audit_payload.get("violations", [])[:5],
+                            "timestamp": time.time()
+                        })
+            # END K8S MONITORING
+            # 1) optional tool execution
+            tool_name = kwargs.get("tool_name")
+            tool_args = kwargs.get("tool_args", {})
+            if tool_name:
+                registry = getattr(self, "tool_registry", None)
+                if registry and registry.has_tool(tool_name):
+                    result = registry.safe_call(tool_name, **tool_args)
+                    self.memetic_kernel.add_memory("ToolExecution", {
+                        "tool_name": tool_name,
+                        "tool_args": tool_args,
+                        "result": result,
+                        "timestamp": time.time(),
+                    })
 
-                        # Debug: check if responsiveness tool exists
-                        has_resp_tool = registry.has_tool("measure_responsiveness")
-                        print(f"[DEBUG] Has measure_responsiveness: {has_resp_tool}")
+                    # Debug: check if responsiveness tool exists
+                    has_resp_tool = registry.has_tool("measure_responsiveness")
+                    print(f"[DEBUG] Has measure_responsiveness: {has_resp_tool}")
+                    
+                    # Measure responsiveness after tool execution
+                    if has_resp_tool:
+                        print("[DEBUG] Calling measure_responsiveness")
+                        resp_result = registry.safe_call("measure_responsiveness")
+                        print(f"[DEBUG] Responsiveness result: {resp_result}")
                         
-                        # Measure responsiveness after tool execution
-                        if has_resp_tool:
-                            print("[DEBUG] Calling measure_responsiveness")
-                            resp_result = registry.safe_call("measure_responsiveness")
-                            print(f"[DEBUG] Responsiveness result: {resp_result}")
-                            
-                            # --- FIX ---
-                            # Check if the result is a dictionary before calling .get()
-                            # to prevent a crash when the tool returns an error string (e.g., on cooldown)
-                            if isinstance(resp_result, dict) and resp_result.get("status") == "ok":
-                            # -----------
-                                resp_data = resp_result.get("data", {})
-                                # Store for later aggregation
-                                if not hasattr(self, '_responsiveness_samples'):
-                                    self._responsiveness_samples = []
-                                self._responsiveness_samples.append(resp_data)
-                            
-                            elif isinstance(resp_result, str):
-                                # Optional: Log the error string if it's not a dict
-                                print(f"[DEBUG] measure_responsiveness returned a string: {resp_result}")
+                        # --- FIX ---
+                        # Check if the result is a dictionary before calling .get()
+                        # to prevent a crash when the tool returns an error string (e.g., on cooldown)
+                        if isinstance(resp_result, dict) and resp_result.get("status") == "ok":
+                        # -----------
+                            resp_data = resp_result.get("data", {})
+                            # Store for later aggregation
+                            if not hasattr(self, '_responsiveness_samples'):
+                                self._responsiveness_samples = []
+                            self._responsiveness_samples.append(resp_data)
                         
-                        report_content_dict["summary"] = f"Tool '{tool_name}' executed successfully"
-                        progress_score = 0.5
+                        elif isinstance(resp_result, str):
+                            # Optional: Log the error string if it's not a dict
+                            print(f"[DEBUG] measure_responsiveness returned a string: {resp_result}")
+                    
+                    report_content_dict["summary"] = f"Tool '{tool_name}' executed successfully"
+                    progress_score = 0.5
 
-                # 2) collect recent metrics (prefer pod metrics)
-                recent = self.memetic_kernel.get_recent_memories(limit=20)
-                cpu_values: List[float] = []
-                pod_cpu_data: List[dict] = []
+            # 2) collect recent metrics (prefer pod metrics)
+            recent = self.memetic_kernel.get_recent_memories(limit=20)
+            cpu_values: List[float] = []
+            pod_cpu_data: List[dict] = []
 
-                for m in recent:
-                    if m.get("type") != "ToolExecution":
-                        continue
-                    c = m.get("content", {})
-                    res = c.get("result", {})
-                    tname = c.get("tool_name")
+            for m in recent:
+                if m.get("type") != "ToolExecution":
+                    continue
+                c = m.get("content", {})
+                res = c.get("result", {})
+                tname = c.get("tool_name")
 
-                    # Kubernetes pod metrics path
-                    if tname == "kubernetes_pod_metrics" and isinstance(res, dict):
-                        if res.get("status") == "ok" and isinstance(res.get("data"), dict):
-                            d = res["data"]
-                            total_m = float(d.get("total_cpu_millicores", 0.0))
-                            capacity_m = float(
-                                d.get("capacity_millicores") or (d.get("node_cores", 0) or 0) * 1000 or 4000.0
-                            )
-                            if capacity_m <= 0:
-                                capacity_m = 4000.0
-                            cpu_values.append((total_m / capacity_m) * 100.0)
-                            pod_cpu_data.append(d)
-                        continue
+                # Kubernetes pod metrics path
+                if tname == "kubernetes_pod_metrics" and isinstance(res, dict):
+                    if res.get("status") == "ok" and isinstance(res.get("data"), dict):
+                        d = res["data"]
+                        total_m = float(d.get("total_cpu_millicores", 0.0))
+                        capacity_m = float(
+                            d.get("capacity_millicores") or (d.get("node_cores", 0) or 0) * 1000 or 4000.0
+                        )
+                        if capacity_m <= 0:
+                            capacity_m = 4000.0
+                        cpu_values.append((total_m / capacity_m) * 100.0)
+                        pod_cpu_data.append(d)
+                    continue
 
-                    # Host metrics fallback
-                    if isinstance(res, dict) and "data" in res:
-                        data = res["data"]
-                        if isinstance(data, (int, float)):
-                            cpu_values.append(float(data))
-                        elif isinstance(data, dict) and "cpu_percent" in data:
-                            cpu_values.append(float(data["cpu_percent"]))
-                        elif isinstance(data, list):
-                            for item in data:
-                                if isinstance(item, (int, float)):
-                                    cpu_values.append(float(item))
-                                elif isinstance(item, dict) and "cpu_percent" in item:
-                                    cpu_values.append(float(item["cpu_percent"]))
+                # Host metrics fallback
+                if isinstance(res, dict) and "data" in res:
+                    data = res["data"]
+                    if isinstance(data, (int, float)):
+                        cpu_values.append(float(data))
+                    elif isinstance(data, dict) and "cpu_percent" in data:
+                        cpu_values.append(float(data["cpu_percent"]))
+                    elif isinstance(data, list):
+                        for item in data:
+                            if isinstance(item, (int, float)):
+                                cpu_values.append(float(item))
+                            elif isinstance(item, dict) and "cpu_percent" in item:
+                                cpu_values.append(float(item["cpu_percent"]))
 
-                # 3) analyze + act
-                if cpu_values:
-                    avg_cpu = sum(cpu_values) / len(cpu_values)
-                    max_cpu = max(cpu_values)
+            # 3) analyze + act
+            if cpu_values:
+                avg_cpu = sum(cpu_values) / len(cpu_values)
+                max_cpu = max(cpu_values)
 
-                    # validate prior scaling
-                    if getattr(self, "_last_alert", None):
-                        dt = time.time() - self._last_alert["timestamp"]
-                        if 30 < dt < 300 and self._last_alert["type"] == "high_cpu_load":
-                            if avg_cpu < self._last_alert["cpu_before"] - 10:
-                                msg = (f"✓ Scaling {self._last_alert['deployment']} "
-                                    f"to {self._last_alert['replicas_set']} succeeded: "
-                                    f"CPU {self._last_alert['cpu_before']:.0f}% → {avg_cpu:.0f}%")
-                                self.memetic_kernel.add_memory("ScalingValidation", {"success": True, "message": msg})
-                                print(f"[Observer] {msg}")
-                                self._last_alert = None
+                # validate prior scaling
+                if getattr(self, "_last_alert", None):
+                    dt = time.time() - self._last_alert["timestamp"]
+                    if 30 < dt < 300 and self._last_alert["type"] == "high_cpu_load":
+                        if avg_cpu < self._last_alert["cpu_before"] - 10:
+                            msg = (f"✓ Scaling {self._last_alert['deployment']} "
+                                f"to {self._last_alert['replicas_set']} succeeded: "
+                                f"CPU {self._last_alert['cpu_before']:.0f}% → {avg_cpu:.0f}%")
+                            self.memetic_kernel.add_memory("ScalingValidation", {"success": True, "message": msg})
+                            print(f"[Observer] {msg}")
+                            self._last_alert = None
 
-                    # choose target - DYNAMIC DISCOVERY
-                    target_deployment = None
-                    recommended_replicas = 1
+                # choose target - DYNAMIC DISCOVERY
+                target_deployment = None
+                recommended_replicas = 1
 
-                    # Try to find wasteful deployments dynamically
-                    registry = getattr(self, "tool_registry", None)
-                    if registry and registry.has_tool("find_wasteful_deployments"):
-                        result = registry.safe_call("find_wasteful_deployments", 
-                                                    namespace="default", 
-                                                    cpu_threshold=5.0)
+                # Try to find wasteful deployments dynamically
+                registry = getattr(self, "tool_registry", None)
+                if registry and registry.has_tool("find_wasteful_deployments"):
+                    result = registry.safe_call("find_wasteful_deployments", 
+                                                namespace="default", 
+                                                cpu_threshold=5.0)
+                    
+                    if isinstance(result, dict) and result.get("ok") and result.get("wasteful_deployments"):
+                        # Pick the most wasteful one
+                        most_wasteful = result["wasteful_deployments"][0]
+                        target_deployment = most_wasteful["deployment"]
+                        recommended_replicas = most_wasteful["recommended_replicas"]
                         
-                        if isinstance(result, dict) and result.get("ok") and result.get("wasteful_deployments"):
-                            # Pick the most wasteful one
-                            most_wasteful = result["wasteful_deployments"][0]
-                            target_deployment = most_wasteful["deployment"]
-                            recommended_replicas = most_wasteful["recommended_replicas"]
-                            
-                            print(f"[Observer] Found wasteful deployment: {target_deployment} "
-                                f"({most_wasteful['replicas']} replicas, "
-                                f"{most_wasteful['avg_cpu_millicores']:.1f}m CPU)")
+                        print(f"[Observer] Found wasteful deployment: {target_deployment} "
+                            f"({most_wasteful['replicas']} replicas, "
+                            f"{most_wasteful['avg_cpu_millicores']:.1f}m CPU)")
 
-                    # Fallback to existing pod-based logic if discovery failed
-                    if not target_deployment:
-                        target_deployment = "nginx"  # Default fallback
-                        for d in pod_cpu_data:
-                            high = d.get("high_cpu_pods") or []
-                            if not high:
-                                continue
-                            pod = str(high[0].get("pod_name", "")).lower()
-                            if "waste-test" in pod:
-                                target_deployment = "waste-test"
-                            elif "nginx" in pod:
-                                target_deployment = "nginx"
-                            elif "local-test" in pod:
-                                target_deployment = "local-test"
-                            elif "loadgen" in pod or "stress" in pod:
-                                target_deployment = "nginx"
-                            break
+                # Fallback to existing pod-based logic if discovery failed
+                if not target_deployment:
+                    target_deployment = "nginx"  # Default fallback
+                    for d in pod_cpu_data:
+                        high = d.get("high_cpu_pods") or []
+                        if not high:
+                            continue
+                        pod = str(high[0].get("pod_name", "")).lower()
+                        if "waste-test" in pod:
+                            target_deployment = "waste-test"
+                        elif "nginx" in pod:
+                            target_deployment = "nginx"
+                        elif "local-test" in pod:
+                            target_deployment = "local-test"
+                        elif "loadgen" in pod or "stress" in pod:
+                            target_deployment = "nginx"
+                        break
 
                         # else fallback to top_processes (only if still using default)
                         if target_deployment == "nginx":
@@ -2868,39 +3000,39 @@ class ProtoAgent_Observer(ProtoAgent):
                     if not tool_name:
                         report_content_dict["summary"] = "No metric data available"
 
+        except Exception as e:
+            print("--- OBSERVER ERROR ---")
+            import traceback
+            traceback.print_exc()
+            outcome = "failed"
+            failure_reason = str(e)
+            report_content_dict["summary"] = f"Failed: {failure_reason}"
+
+        report_content_dict["task_description"] = task_description
+        report_content_dict["progress_score"] = progress_score
+
+        # At the very end, before the return statement
+        if hasattr(self, '_responsiveness_samples') and self._responsiveness_samples:
+            avg_open_time = sum(s.get('open_time_ms', 0) for s in self._responsiveness_samples) / len(self._responsiveness_samples)
+            report_content_dict['open_time_ms'] = round(avg_open_time, 2)
+            report_content_dict['responsive'] = all(s.get('responsive', True) for s in self._responsiveness_samples)
+            # Clear for next mission
+            self._responsiveness_samples = []
+
+        # Store task result for mission aggregation
+        if plan_id and report_content_dict:
+            try:
+                self.memdb.add(self.name, "TaskResult", {
+                    "plan_id": plan_id,
+                    "task_result": report_content_dict,
+                    "timestamp": time.time()
+                })
+
+                print(f"[{self.name}] Stored TaskResult for plan_id={plan_id}")
             except Exception as e:
-                print("--- OBSERVER ERROR ---")
-                import traceback
-                traceback.print_exc()
-                outcome = "failed"
-                failure_reason = str(e)
-                report_content_dict["summary"] = f"Failed: {failure_reason}"
+                print(f"[{self.name}] Warning: Could not store TaskResult via MemeticKernel: {e}")
 
-            report_content_dict["task_description"] = task_description
-            report_content_dict["progress_score"] = progress_score
-
-            # At the very end, before the return statement
-            if hasattr(self, '_responsiveness_samples') and self._responsiveness_samples:
-                avg_open_time = sum(s.get('open_time_ms', 0) for s in self._responsiveness_samples) / len(self._responsiveness_samples)
-                report_content_dict['open_time_ms'] = round(avg_open_time, 2)
-                report_content_dict['responsive'] = all(s.get('responsive', True) for s in self._responsiveness_samples)
-                # Clear for next mission
-                self._responsiveness_samples = []
-
-            # Store task result for mission aggregation
-            if plan_id and report_content_dict:
-                try:
-                    self.memdb.add(self.name, "TaskResult", {
-                        "plan_id": plan_id,
-                        "task_result": report_content_dict,
-                        "timestamp": time.time()
-                    })
-
-                    print(f"[{self.name}] Stored TaskResult for plan_id={plan_id}")
-                except Exception as e:
-                    print(f"[{self.name}] Warning: Could not store TaskResult via MemeticKernel: {e}")
-
-            return outcome, failure_reason, report_content_dict, progress_score
+        return outcome, failure_reason, report_content_dict, progress_score
     
     def has_analyzed_pattern(self, memory_id: str) -> bool:
         # Placeholder: In a real system, this would check a database.
@@ -9948,3 +10080,11 @@ class ProtoAgent_Worker(ProtoAgent):
                 print(f"[{self.name}] Warning: Could not store TaskResult: {e}")
 
         return status, failure_reason, report, progress
+
+
+# ==========================================
+# META™ INTELLIGENCE IMPLEMENTATION
+# ==========================================
+class MetaCognitiveArchitecture(ProtoAgent):
+    """Meta™ agent-centric autonomous intelligence system"""
+    pass
