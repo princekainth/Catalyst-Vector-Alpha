@@ -3,34 +3,36 @@
 logs/
 output/
 
+# Node / JS
+node_modules/
+package-lock.json
+
 # Python
 __pycache__/
 *.pyc
 venv/
 
-# Data
+# Data / persistence
 persistence_data/
 *.db
 .chromadb/
 
-# Test files
+# Test & sandbox
 baseline_*.json
 baseline_*.csv
 test_*.py
 sandbox_*.py
 
-# Results
+# Results / artifacts
 results/
 snapshots/
 scenarios/
 
-# IDE
+# IDE / local config
 .vscode/
 .claude/
-config/
-persistence_data/
-venv/
-__pycache__/
 .env
+config/
 credentials.json
 token.json
+
