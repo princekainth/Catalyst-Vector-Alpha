@@ -6,6 +6,7 @@ output/
 # Node / JS
 node_modules/
 package-lock.json
+dashboard/node_modules/
 
 # Python
 __pycache__/
