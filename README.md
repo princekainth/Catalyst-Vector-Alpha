@@ -1,21 +1,3 @@
-<<<<<<< HEAD
-🚀 Catalyst Vector Alpha (CVA)
-
-Autonomous SRE Platform
-Reference Implementation of the Gemini™ Protocol
-
-“Empires are not built without sacrifice; they are forged in order.”
-=======
-# 🚀 Catalyst Vector Alpha (CVA)
-### Autonomous SRE Platform Reference Implementation of the Gemini™ Protocol
-
-> “Empires are not built without sacrifice; they are forged in order.”
-
-**Catalyst Vector Alpha (CVA)** is a self-healing, multi-agent infrastructure platform designed to detect, analyze, and remediate system failures autonomously. It operates as an **AI SRE workforce**, not a chatbot—capable of monitoring Kubernetes clusters, reasoning over incidents, and executing corrective actions with guardrails.
-
-This repository is the reference implementation of **Empire Bridge Media Inc.**’s proprietary autonomous systems architecture.
->>>>>>> c855d46ef (docs: improve README with clear setup and architecture)
-
 Catalyst Vector Alpha (CVA) is a self-healing, multi-agent infrastructure platform designed to detect, analyze, and remediate system failures autonomously.
 It operates as an AI SRE workforce, not a chatbot—capable of monitoring Kubernetes clusters, reasoning over incidents, and executing corrective actions with guardrails.
 
