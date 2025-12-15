@@ -804,6 +804,7 @@ def watch_k8s_audit_events(minutes: int = 5, event_types: list = None) -> dict:
     import subprocess
     import json
     from datetime import datetime, timedelta
+    from typing import Optional
     
     violations = []
     secret_access = []
@@ -899,77 +900,158 @@ def microsoft_autonomous_remediation(pod_name, namespace="default"):
     evidence_dir = "logs/forensics"
     os.makedirs(evidence_dir, exist_ok=True)
     evidence_file = f"{evidence_dir}/{pod_name}_crash_{timestamp}.log"
-    
-    try:
-        # STEP 1: CAPTURE THE BLACK BOX
-        print(f"🕵️ [Microsoft Kernel] Securing evidence for {pod_name}...")
-        
-        # Try getting previous logs (if crashed), else current logs
+
+    def _safe_json(cmd: list[str]):
         try:
-            log_cmd = f"kubectl logs {pod_name} -n {namespace} --previous --tail=100"
-            logs = subprocess.check_output(log_cmd, shell=True, text=True, stderr=subprocess.STDOUT)
-        except subprocess.CalledProcessError:
-            # Fallback if pod is stuck but not 'crashed' yet
-            log_cmd = f"kubectl logs {pod_name} -n {namespace} --tail=100"
-            logs = subprocess.check_output(log_cmd, shell=True, text=True)
-        
-        # Write to Disk (Permanent Evidence)
-        with open(evidence_file, "w") as f:
-            f.write(logs)
-        results["evidence_path"] = evidence_file
-        results["actions"].append("Forensic logs saved to disk")
-        
-        # Give the Agent a hint (first 200 chars)
-        results["log_preview"] = logs[:200]
-        
-        # STEP 1B: ROOT CAUSE ANALYSIS
-        if "ImagePullBackOff" in logs or "ErrImagePull" in logs:
-            results["root_cause_hint"] = "Deployment Config Error (Image)"
-        elif "OOMKilled" in logs:
-            results["root_cause_hint"] = "Resource Exhaustion (OOM)"
-        elif "CrashLoopBackOff" in logs:
-            results["root_cause_hint"] = "Application Crash Loop"
-        elif "Connection refused" in logs or "Connection timed out" in logs:
-            results["root_cause_hint"] = "Dependency/Network Error"
+            out = subprocess.check_output(cmd, text=True)
+            return json.loads(out)
+        except Exception:
+            return None
+
+    try:
+        # Discover pod ownership & labels (avoid acting on stale names)
+        pod_json = None
+        pod_exists = False
+        owner_kind = owner_name = None
+        pod_labels = {}
+        try:
+            pod_json = _safe_json(["kubectl", "get", "pod", pod_name, "-n", namespace, "-o", "json"])
+            if pod_json:
+                pod_exists = True
+                pod_labels = pod_json.get("metadata", {}).get("labels", {}) or {}
+                owners = pod_json.get("metadata", {}).get("ownerReferences", []) or []
+                if owners:
+                    owner_kind = owners[0].get("kind")
+                    owner_name = owners[0].get("name")
+        except Exception:
+            pod_exists = False
+
+        results["owner_kind"] = owner_kind
+        results["owner_name"] = owner_name
+        results["labels"] = pod_labels
+
+        # Resolve a label selector for safer bulk operations (DaemonSet-friendly)
+        label_selector = (
+            (f"app.kubernetes.io/name={pod_labels.get('app.kubernetes.io/name')}")
+            if pod_labels.get("app.kubernetes.io/name") else None
+        )
+        if not label_selector and pod_labels.get("k8s-app"):
+            label_selector = f"k8s-app={pod_labels['k8s-app']}"
+        if not label_selector and pod_labels.get("app"):
+            label_selector = f"app={pod_labels['app']}"
+
+        # If pod is missing and no owner info, skip to prevent NotFound loops
+        if not pod_exists and not owner_name:
+            results["outcome"] = "SKIP_NOT_FOUND"
+            results["error"] = f"Pod {pod_name} not found; skipping remediation."
+            return results
+
+        # STEP 1: CAPTURE THE BLACK BOX (only if pod exists)
+        if pod_exists:
+            print(f"🕵️ [Microsoft Kernel] Securing evidence for {pod_name}...")
+
+            try:
+                log_cmd = f"kubectl logs {pod_name} -n {namespace} --previous --tail=100"
+                logs = subprocess.check_output(log_cmd, shell=True, text=True, stderr=subprocess.STDOUT)
+            except subprocess.CalledProcessError:
+                log_cmd = f"kubectl logs {pod_name} -n {namespace} --tail=100"
+                logs = subprocess.check_output(log_cmd, shell=True, text=True)
+
+            with open(evidence_file, "w") as f:
+                f.write(logs)
+            results["evidence_path"] = evidence_file
+            results["actions"].append("Forensic logs saved to disk")
+            results["log_preview"] = logs[:200]
+
+            if "ImagePullBackOff" in logs or "ErrImagePull" in logs:
+                results["root_cause_hint"] = "Deployment Config Error (Image)"
+            elif "OOMKilled" in logs:
+                results["root_cause_hint"] = "Resource Exhaustion (OOM)"
+            elif "CrashLoopBackOff" in logs:
+                results["root_cause_hint"] = "Application Crash Loop"
+            elif "Connection refused" in logs or "Connection timed out" in logs:
+                results["root_cause_hint"] = "Dependency/Network Error"
+            else:
+                results["root_cause_hint"] = "Unknown/Application Error"
         else:
-            results["root_cause_hint"] = "Unknown/Application Error"
-        
-        # STEP 2: THE HAND OF GOD (Remediation)
-        print(f"⚡ [Microsoft Kernel] Initiating tactical termination of {pod_name}...")
-        delete_cmd = f"kubectl delete pod {pod_name} -n {namespace} --wait=false"
-        subprocess.run(delete_cmd, shell=True, check=True)
-        results["actions"].append("Pod termination triggered")
-        
+            results["actions"].append("Pod not found; skipping log capture.")
+
+        # STEP 2: Prefer DaemonSet/label-based remediation to avoid stale pod names
+        if owner_kind == "DaemonSet" and owner_name:
+            print(f"⚡ [Microsoft Kernel] Restarting DaemonSet/{owner_name} in {namespace}...")
+            try:
+                subprocess.run(
+                    ["kubectl", "rollout", "restart", f"daemonset/{owner_name}", "-n", namespace],
+                    check=True,
+                )
+                results["actions"].append(f"DaemonSet/{owner_name} rollout restart triggered")
+            except Exception as e:
+                results["actions"].append(f"DaemonSet rollout restart failed: {e}")
+
+            if label_selector:
+                delete_cmd = [
+                    "kubectl", "delete", "pod",
+                    "-n", namespace,
+                    "-l", label_selector,
+                    "--wait=false",
+                ]
+                print(f"⚡ [Microsoft Kernel] Deleting pods with selector '{label_selector}' in {namespace}...")
+                try:
+                    subprocess.run(delete_cmd, check=True)
+                    results["actions"].append(f"Pods with selector '{label_selector}' deleted")
+                except Exception as e:
+                    results["actions"].append(f"Selector-based pod delete failed: {e}")
+        else:
+            # Legacy single-pod remediation, but only if pod exists
+            if pod_exists:
+                print(f"⚡ [Microsoft Kernel] Initiating tactical termination of {pod_name}...")
+                delete_cmd = f"kubectl delete pod {pod_name} -n {namespace} --wait=false"
+                subprocess.run(delete_cmd, shell=True, check=True)
+                results["actions"].append("Pod termination triggered")
+            else:
+                results["actions"].append("Pod not found; skipping pod delete.")
+
         # STEP 3: VERIFICATION (Wait for replacement)
         print("⏳ [Microsoft Kernel] Waiting for stabilization (15s)...")
         time.sleep(15)
-        
-        # Check the NEW pod (deployment will auto-spawn replacement)
-        deployment_name = "-".join(pod_name.split("-")[:-1])
-        if not deployment_name:
-            deployment_name = pod_name
-        
-        verify_cmd = f"kubectl get pods -n {namespace} | grep {deployment_name}"
-        status_output = subprocess.check_output(verify_cmd, shell=True, text=True)
-        
-        # Strict verification
-        if "Running" in status_output and "0/1" not in status_output and "CrashLoop" not in status_output:
+
+        # Verify via owner selector or pod prefix
+        verify_cmd = None
+        if label_selector:
+            verify_cmd = ["kubectl", "get", "pods", "-n", namespace, "-l", label_selector]
+        elif pod_exists:
+            deployment_name = "-".join(pod_name.split("-")[:-1]) or pod_name
+            verify_cmd = ["kubectl", "get", "pods", "-n", namespace, "--field-selector", f"metadata.name={pod_name}"]
+        elif owner_name and owner_kind == "DaemonSet":
+            verify_cmd = ["kubectl", "get", "pods", "-n", namespace, "-l", f"daemonset={owner_name}"]
+
+        status_output = ""
+        if verify_cmd:
+            try:
+                status_output = subprocess.check_output(verify_cmd, shell=False, text=True)
+            except subprocess.CalledProcessError as e:
+                status_output = e.output or str(e)
+
+        if status_output and "Running" in status_output and "CrashLoop" not in status_output:
             results["outcome"] = "SUCCESS"
-            results["verification"] = "Pod restarted and healthy"
+            results["verification"] = "Workload healthy after remediation"
             results["actions"].append("Service restored to healthy state")
         elif "CrashLoopBackOff" in status_output:
             results["outcome"] = "REMEDIATION_FAILED"
-            results["verification"] = "Pod still crashing - escalate to human"
+            results["verification"] = "Workload still crashing - escalate to human"
             results["actions"].append("Escalation flag raised")
+        elif not status_output:
+            results["outcome"] = "PENDING"
+            results["verification"] = "Verification inconclusive (no status output)"
         else:
             results["outcome"] = "PENDING"
-            results["verification"] = "Pod booting, unclear status"
+            results["verification"] = "Workload booting, unclear status"
             results["current_status"] = status_output.strip()
-    
+
     except Exception as e:
         results["error"] = str(e)
         results["outcome"] = "ERROR"
-    
+
     return results
 
 def watch_k8s_events(namespace: str = "all", minutes: int = 5) -> dict:
@@ -989,6 +1071,8 @@ def watch_k8s_events(namespace: str = "all", minutes: int = 5) -> dict:
     from datetime import datetime, timedelta
     
     try:
+        fresh_failed_window = int(os.getenv("K8S_FAILED_SCHEDULING_FRESH_SECONDS", "120"))
+
         # Get events from kubectl
         if namespace == "all":
             cmd = ["kubectl", "get", "events", "--all-namespaces", "-o", "json"]
@@ -1007,16 +1091,38 @@ def watch_k8s_events(namespace: str = "all", minutes: int = 5) -> dict:
         recent_events = []
         critical_count = 0
         warning_count = 0
+        active_failed_scheduling_count = 0
+        stale_failed_scheduling_count = 0
         
         critical_reasons = ["OOMKilled", "CrashLoopBackOff", "Failed", "FailedScheduling", "Unhealthy", "BackOff", "Killing"]
         warning_reasons = ["Pulled", "Created", "Started", "Scheduled", "SuccessfulCreate"]
+
+        now = datetime.utcnow()
+
+        def _parse_event_ts(obj: dict) -> Optional[datetime]:
+            ts_str = (
+                obj.get("lastTimestamp")
+                or obj.get("eventTime")
+                or obj.get("firstTimestamp")
+                or (obj.get("metadata", {}) or {}).get("creationTimestamp")
+            )
+            if not ts_str:
+                return None
+            try:
+                return datetime.fromisoformat(ts_str.replace("Z", "+00:00")).replace(tzinfo=None)
+            except Exception:
+                return None
         
         for item in events_data.get("items", []):
             reason = item.get("reason", "")
             message = item.get("message", "")
             event_type = item.get("type", "Normal")
             involved = item.get("involvedObject", {})
-            
+            evt_ts = _parse_event_ts(item)
+            age_seconds = (now - evt_ts).total_seconds() if evt_ts else None
+            is_failed_sched = reason == "FailedScheduling"
+            is_fresh_failed = is_failed_sched and age_seconds is not None and age_seconds <= fresh_failed_window
+
             event_record = {
                 "namespace": involved.get("namespace", "unknown"),
                 "kind": involved.get("kind", "unknown"),
@@ -1024,12 +1130,25 @@ def watch_k8s_events(namespace: str = "all", minutes: int = 5) -> dict:
                 "reason": reason,
                 "message": message[:200],  # Truncate long messages
                 "type": event_type,
-                "count": item.get("count", 1)
+                "count": item.get("count", 1),
+                "age_seconds": age_seconds,
+                "fresh_failed_scheduling": is_fresh_failed,
             }
             
+            if is_failed_sched:
+                if is_fresh_failed:
+                    critical = True
+                    active_failed_scheduling_count += 1
+                else:
+                    critical = False
+                    stale_failed_scheduling_count += 1
+            else:
+                critical = reason in critical_reasons or event_type == "Warning"
+
+            event_record["critical"] = critical
             recent_events.append(event_record)
             
-            if reason in critical_reasons or event_type == "Warning":
+            if critical:
                 critical_count += 1
             else:
                 warning_count += 1
@@ -1037,8 +1156,8 @@ def watch_k8s_events(namespace: str = "all", minutes: int = 5) -> dict:
         # Build summary
         summary = f"Found {len(recent_events)} events. Critical: {critical_count}, Normal: {warning_count}"
         
-        # Highlight critical issues
-        critical_events = [e for e in recent_events if e["reason"] in critical_reasons or e["type"] == "Warning"]
+        # Highlight critical issues (with freshness gating for FailedScheduling)
+        critical_events = [e for e in recent_events if e.get("critical")]
         
         return {
             "ok": True,
@@ -1048,7 +1167,9 @@ def watch_k8s_events(namespace: str = "all", minutes: int = 5) -> dict:
             "critical_events": critical_events[:10],  # Top 10 critical
             "all_events": recent_events[:20],  # Last 20 events
             "namespace_filter": namespace,
-            "minutes_back": minutes
+            "minutes_back": minutes,
+            "active_failed_scheduling_count": active_failed_scheduling_count,
+            "stale_failed_scheduling_count": stale_failed_scheduling_count,
         }
         
     except subprocess.TimeoutExpired:

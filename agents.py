@@ -38,6 +38,7 @@ from core.result_eval import tool_success
 from core.mission_policy import filter_plan_steps
 from core.injection_limiter import InjectorGate
 from core.mission_policy import select_next_mission
+from core.mission_policy import MISSION_TOOL_POLICY
 
 from core.security_policy import IsolationPolicy
 from core.mission_objectives import goal_driven_tasks
@@ -308,15 +309,143 @@ class ProtoAgent(ABC):
             persistence_dir=self.persistence_dir
         )
 
-        # Add persistent memory store
-        from memory_store import MemoryStore
-        self.memdb = MemoryStore()
+        # Add persistent memory store (shared across agents)
+        from memory_store import MemoryStore, mem_store
+        shared_mem = getattr(message_bus, "shared_memdb", None)
+        if isinstance(shared_mem, MemoryStore):
+            self.memdb = shared_mem
+        else:
+            self.memdb = mem_store if isinstance(mem_store, MemoryStore) else MemoryStore()
+            try:
+                message_bus.shared_memdb = self.memdb
+            except Exception:
+                pass
         # --- Initialize other state ---
         self._initialize_default_attributes()
         self.current_task = None
+        self._invalid_arg_retries: set[str] = set()
 
         # Agents start nominal unless escalated by health logic
         self.operational_mode = "NOMINAL"
+
+    def _fallback_micro_plan(self, mission_type: str) -> list[dict]:
+        """Generate a minimal, policy-compliant plan if normalization produces no steps."""
+        try:
+            allowed = set(MISSION_TOOL_POLICY.get(mission_type, {}).get("allow", set()))
+        except Exception:
+            allowed = set()
+        registry = getattr(self, "tool_registry", None)
+        if not registry:
+            return []
+
+        # Discover available agents
+        agent_names = []
+        try:
+            agent_names = list(getattr(getattr(self, "orchestrator", None), "agent_instances", {}).keys())
+        except Exception:
+            agent_names = []
+
+        def _pick_agent(prefer_role: str = "observer") -> str:
+            for name in agent_names:
+                role = infer_agent_role(name, default="Worker")
+                if prefer_role == "observer" and role.lower() in {"observer", "sensor"}:
+                    return name
+                if prefer_role == "worker" and role.lower() in {"tool_using_executor", "worker"}:
+                    return name
+            return agent_names[0] if agent_names else self.name
+
+        steps = []
+        # Safe/default sequence
+        tool_order = [
+            ("watch_k8s_events", {"namespace": "all", "minutes": 10}, "observer"),
+            ("get_pod_status", {"namespace": "all"}, "observer"),
+            ("measure_responsiveness", {}, "observer"),
+            ("send_desktop_notification", {"title": "Plan fallback", "message": f"{mission_type} fallback executed"}, "observer"),
+        ]
+        for tool, args, role in tool_order:
+            if allowed and tool not in allowed:
+                continue
+            if not registry.has_tool(tool):
+                continue
+            agent = _pick_agent("observer" if role == "observer" else "worker")
+            steps.append({
+                "title": f"[fallback] {tool}",
+                "agent": agent,
+                "tool": tool,
+                "args": args
+            })
+        return steps
+
+    def _repair_and_normalize_steps(self, raw_steps: list, mission_type: str) -> list:
+        """
+        Repair LLM steps: map hallucinated tools, enforce mission policy, and reassign agents by role.
+        """
+        repaired_steps: list[dict] = []
+        try:
+            policy = MISSION_TOOL_POLICY.get(mission_type, {}) or {}
+            allowed_tools = set(policy.get("allow", set()) or [])
+        except Exception:
+            allowed_tools = set()
+
+        # If allowlist is empty, fall back to all registered tools
+        if not allowed_tools and getattr(self, "tool_registry", None):
+            try:
+                allowed_tools = set(self.tool_registry.list_tool_names())
+            except Exception:
+                allowed_tools = set()
+
+        verb_map = {
+            "check_cpu": "get_system_resource_usage",
+            "check_ram": "get_system_resource_usage",
+            "check_disk": "get_system_resource_usage",
+            "analyze_logs": "watch_k8s_events",
+            "check_pods": "get_pod_status",
+            "list_pods": "get_pod_status",
+            "monitor_k8s": "watch_k8s_events",
+            "notify": "send_desktop_notification",
+            "alert": "send_desktop_notification",
+            "fix_pod": "microsoft_autonomous_remediation",
+            "restart_pod": "microsoft_autonomous_remediation",
+        }
+
+        for step in raw_steps or []:
+            if not isinstance(step, dict):
+                continue
+            step = dict(step)
+            tool_raw = str(step.get("tool", "")).strip()
+            agent = step.get("agent", self.name)
+
+            # Verb mapping
+            tool_lower = tool_raw.lower()
+            if tool_lower in verb_map:
+                mapped = verb_map[tool_lower]
+                step["title"] = f"[auto-corrected] {step.get('title', '')}"
+                step["tool"] = mapped
+                tool_raw = mapped
+
+            # Policy gate
+            if allowed_tools and tool_raw not in allowed_tools:
+                if "remediation" in tool_raw:
+                    # downgrade to observation
+                    step["tool"] = "watch_k8s_events"
+                    step["title"] = f"[policy-downgrade] Monitor instead of Fix: {step.get('title', '')}"
+                    tool_raw = "watch_k8s_events"
+                    if allowed_tools and tool_raw not in allowed_tools:
+                        continue
+                else:
+                    continue
+
+            # Role reassignment hints
+            if step.get("tool") == "send_desktop_notification" and "Notifier" not in agent:
+                if "ProtoAgent_Notifier_instance_1" in getattr(getattr(self, "orchestrator", None), "agent_instances", {}):
+                    step["agent"] = "ProtoAgent_Notifier_instance_1"
+            if step.get("tool") in {"microsoft_autonomous_remediation", "execute_terminal_command"} and "Worker" not in agent:
+                if "ProtoAgent_Worker_instance_1" in getattr(getattr(self, "orchestrator", None), "agent_instances", {}):
+                    step["agent"] = "ProtoAgent_Worker_instance_1"
+
+            repaired_steps.append(step)
+
+        return repaired_steps
 
         self.initialize_reset_handlers()
         self.task_successes = 0
@@ -1286,7 +1415,14 @@ class ProtoAgent(ABC):
         if self.name and "Observer" in self.name:
             _registry = getattr(self, "tool_registry", None)
             if _registry and _registry.has_tool("watch_k8s_events"):
-                _k8s_result = _registry.safe_call("watch_k8s_events", namespace="all", minutes=10)
+                now_ts = time.time()
+                cached = self._k8s_cache.get("result")
+                cached_ts = self._k8s_cache.get("ts", 0)
+                if cached and (now_ts - cached_ts) < 10:
+                    _k8s_result = cached
+                else:
+                    _k8s_result = _registry.safe_call("watch_k8s_events", namespace="all", minutes=10)
+                    self._k8s_cache = {"ts": now_ts, "result": _k8s_result}
                 if isinstance(_k8s_result, dict):
                     payload = _k8s_result.get("data", _k8s_result) if isinstance(_k8s_result, dict) else {}
                     _crit = payload.get("critical_count", 0)
@@ -1298,9 +1434,16 @@ class ProtoAgent(ABC):
                             namespace = event.get("namespace")
                             pod_name = event.get("name")
                             if namespace and pod_name:
+                                if any(pat in pod_name for pat in self._ignore_patterns):
+                                    print(f"[Observer] Skipping remediation (ignore pattern) for {namespace}/{pod_name}")
+                                    self._increment_remediation_metric("ignore_skips")
+                                    continue
                                 if self._recently_remediated(namespace, pod_name):
                                     print(f"[Observer] Skipping remediation (recent) for {namespace}/{pod_name}")
                                     self._increment_remediation_metric("dedupe_skips")
+                                    last_ts = self._remediated_pods.get(f"{namespace}/{pod_name}", 0)
+                                    remaining = max(0, 600 - (time.time() - last_ts))
+                                    print(f"[Observer] skip_reason=dedupe_recent resource={namespace}/{pod_name} last_ts={last_ts} cooldown_remaining_s={remaining:.1f}")
                                     continue
                                 print(f"[Observer] AUTO-REMEDIATING: {namespace}/{pod_name}")
                                 try:
@@ -2687,7 +2830,11 @@ class ProtoAgent_Observer(ProtoAgent):
             "remediation_failure": 0,
             "dedupe_skips": 0,
             "rate_limit_skips": 0,
+            "ignore_skips": 0,
         }
+        self._k8s_cache = {"ts": 0.0, "result": None}
+        self._tool_result_cache: dict[tuple, dict] = {}
+        self._ignore_patterns = ["victim"]  # ignore chaos/test pods
 
     def _prune_remediation_cache(self, ttl_seconds: int = 600):
         now = time.time()
@@ -2695,16 +2842,32 @@ class ProtoAgent_Observer(ProtoAgent):
             self._remediated_pods = {}
         self._remediated_pods = {k: ts for k, ts in self._remediated_pods.items() if now - ts < ttl_seconds}
 
-    def _recently_remediated(self, namespace: str, pod_name: str, ttl_seconds: int = 600) -> bool:
+    def _remediation_key(self, namespace: str, pod_name: str | None = None, reason: str | None = None,
+                         controller: str | None = None, message: str | None = None) -> str:
+        if reason and (controller or message):
+            return f"{namespace}|{reason}|{controller or message}"
+        if pod_name:
+            return f"{namespace}/{pod_name}"
+        return f"{namespace}|{reason or 'unknown'}"
+
+    def _recently_remediated(self, namespace: str, pod_name: str | None = None, ttl_seconds: int = 600,
+                             reason: str | None = None, controller: str | None = None,
+                             message: str | None = None) -> bool:
         self._prune_remediation_cache(ttl_seconds)
-        key = f"{namespace}/{pod_name}"
+        key = self._remediation_key(namespace, pod_name, reason, controller, message)
         return key in self._remediated_pods
 
-    def _mark_remediated(self, namespace: str, pod_name: str):
+    def _mark_remediated(self, namespace: str, pod_name: str | None = None,
+                         reason: str | None = None, controller: str | None = None,
+                         message: str | None = None):
         if not hasattr(self, "_remediated_pods") or not isinstance(self._remediated_pods, dict):
             self._remediated_pods = {}
-        key = f"{namespace}/{pod_name}"
+        key = self._remediation_key(namespace, pod_name, reason, controller, message)
         self._remediated_pods[key] = time.time()
+
+    def _inject_directives(self, *args, **kwargs):
+        """No-op placeholder to avoid AttributeError when Planner calls inject_directives on Observer."""
+        return 0
 
     def _increment_remediation_metric(self, key: str):
         if not hasattr(self, "_remediation_metrics") or not isinstance(self._remediation_metrics, dict):
@@ -2739,6 +2902,9 @@ class ProtoAgent_Observer(ProtoAgent):
         # Extract plan_id from context
         context = context_info or {}
         plan_id = context.get("plan_id") if isinstance(context, dict) else None
+        task_id = context.get("task_id") if isinstance(context, dict) else None
+        if not task_id:
+            task_id = kwargs.get("task_id")
         
         print(f"[DEBUG] context from kwargs: {context}")
         print(f"[DEBUG] plan_id extracted: {plan_id}")
@@ -2746,17 +2912,28 @@ class ProtoAgent_Observer(ProtoAgent):
         failure_reason = None
         progress_score = 0.0
         report_content_dict = {"summary": "", "task_outcome_type": "Observation"}
+        recent: List[dict] = []  # ensure defined for later iteration paths
+        cpu_values: List[float] = []  # guard against UnboundLocal on downstream aggregation
+        pod_cpu_data: List[dict] = []
 
         try:
             # AUTO K8S MONITORING - Check every Observer cycle
             print("[DEBUG] Observer: Checking for watch_k8s_events tool...")
             _registry = getattr(self, "tool_registry", None)
             if _registry and _registry.has_tool("watch_k8s_events"):
-                _k8s_result = _registry.safe_call("watch_k8s_events", namespace="all", minutes=10)
+                now_ts = time.time()
+                cached = self._k8s_cache.get("result")
+                cached_ts = self._k8s_cache.get("ts", 0)
+                if cached and (now_ts - cached_ts) < 10:
+                    _k8s_result = cached
+                else:
+                    _k8s_result = _registry.safe_call("watch_k8s_events", namespace="all", minutes=10)
+                    self._k8s_cache = {"ts": now_ts, "result": _k8s_result}
                 if isinstance(_k8s_result, dict):
                     payload = _k8s_result.get("data", _k8s_result) if isinstance(_k8s_result, dict) else {}
                     _crit = payload.get("critical_count", 0)
-                    print(f"[Observer] Debug: watch_k8s_events critical_count={_crit}")
+                    active_failed = payload.get("active_failed_scheduling_count", 0) or 0
+                    print(f"[Observer] Debug: watch_k8s_events critical_count={_crit} active_failed_scheduling={active_failed}")
                     if _crit > 0:
                         print(f"[Observer] 🚨 K8S ALERT: {_crit} critical events detected!")
                         self.memetic_kernel.add_memory("K8sAlert", {
@@ -2765,14 +2942,45 @@ class ProtoAgent_Observer(ProtoAgent):
                             "timestamp": time.time()
                         })
                         self._prune_remediation_cache()
+
+                        # If no fresh FailedScheduling remains, consider incident resolved
+                        if active_failed == 0:
+                            print("[Observer] K8s FailedScheduling incidents resolved (no fresh events).")
+
+                        # Quick histogram of reasons/pods for observability
+                        try:
+                            reasons = {}
+                            pods = {}
+                            for ev in payload.get("critical_events", []):
+                                r = ev.get("reason") or "unknown"
+                                p = f"{ev.get('namespace','')}/{ev.get('name','')}"
+                                reasons[r] = reasons.get(r, 0) + 1
+                                pods[p] = pods.get(p, 0) + 1
+                            top_reasons = sorted(reasons.items(), key=lambda x: x[1], reverse=True)[:3]
+                            top_pods = sorted(pods.items(), key=lambda x: x[1], reverse=True)[:3]
+                            print(f"[Observer] K8s critical histogram top reasons={top_reasons} top pods={top_pods}")
+                        except Exception:
+                            pass
+
                         # DIRECT REMEDIATION - No Planner needed
                         for event in payload.get("critical_events", [])[:3]:
                             namespace = event.get("namespace")
                             pod_name = event.get("name")
+                            reason = event.get("reason")
+                            message = event.get("message")
+                            controller = event.get("kind") or None
                             if namespace and pod_name:
-                                if self._recently_remediated(namespace, pod_name):
+                                if any(pat in pod_name for pat in self._ignore_patterns):
+                                    print(f"[Observer] Skipping remediation (ignore pattern) for {namespace}/{pod_name}")
+                                    self._increment_remediation_metric("ignore_skips")
+                                    continue
+                                if self._recently_remediated(namespace, pod_name, reason=reason, controller=controller, message=message):
                                     print(f"[Observer] Skipping remediation (recent) for {namespace}/{pod_name}")
                                     self._increment_remediation_metric("dedupe_skips")
+                                    key = self._remediation_key(namespace, pod_name, reason, controller, message)
+                                    last_ts = self._remediated_pods.get(key, 0)
+                                    remaining = max(0, 600 - (time.time() - last_ts))
+                                    print(f"[Observer] skip_reason=dedupe_recent resource={namespace}/{pod_name} last_ts={last_ts} cooldown_remaining_s={remaining:.1f}")
                                     continue
                                 print(f"[Observer] AUTO-REMEDIATING: {namespace}/{pod_name}")
                                 try:
@@ -2782,7 +2990,7 @@ class ProtoAgent_Observer(ProtoAgent):
                                         pod_name=pod_name
                                     )
                                     print(f"[Observer] Remediation result: {result}")
-                                    self._mark_remediated(namespace, pod_name)
+                                    self._mark_remediated(namespace, pod_name, reason=reason, controller=controller, message=message)
                                     self._increment_remediation_metric("remediation_success")
                                     if _registry.has_tool("send_desktop_notification"):
                                         try:
@@ -2862,7 +3070,19 @@ class ProtoAgent_Observer(ProtoAgent):
             if tool_name:
                 registry = getattr(self, "tool_registry", None)
                 if registry and registry.has_tool(tool_name):
-                    result = registry.safe_call(tool_name, **tool_args)
+                    # Step-level tool cache (avoid duplicate calls within 10s for same args and step)
+                    cache_key = (
+                        kwargs.get("task_id") or context.get("plan_id") or context.get("cycle_id"),
+                        tool_name,
+                        json.dumps(tool_args, sort_keys=True),
+                    )
+                    now_ts = time.time()
+                    cached = self._tool_result_cache.get(cache_key)
+                    if cached and (now_ts - cached.get("ts", 0)) < 10:
+                        result = cached["result"]
+                    else:
+                        result = registry.safe_call(tool_name, **tool_args)
+                        self._tool_result_cache[cache_key] = {"ts": now_ts, "result": result}
                     self.memetic_kernel.add_memory("ToolExecution", {
                         "tool_name": tool_name,
                         "tool_args": tool_args,
@@ -2875,9 +3095,19 @@ class ProtoAgent_Observer(ProtoAgent):
                     print(f"[DEBUG] Has measure_responsiveness: {has_resp_tool}")
                     
                     # Measure responsiveness after tool execution
-                    if has_resp_tool:
+                    if has_resp_tool and tool_name != "measure_responsiveness":
                         print("[DEBUG] Calling measure_responsiveness")
-                        resp_result = registry.safe_call("measure_responsiveness")
+                        resp_cache_key = (
+                            kwargs.get("task_id") or context.get("plan_id") or context.get("cycle_id"),
+                            "measure_responsiveness",
+                            "{}",
+                        )
+                        cached_resp = self._tool_result_cache.get(resp_cache_key)
+                        if cached_resp and (now_ts - cached_resp.get("ts", 0)) < 10:
+                            resp_result = cached_resp["result"]
+                        else:
+                            resp_result = registry.safe_call("measure_responsiveness")
+                            self._tool_result_cache[resp_cache_key] = {"ts": now_ts, "result": resp_result}
                         print(f"[DEBUG] Responsiveness result: {resp_result}")
                         
                         # --- FIX ---
@@ -2899,9 +3129,9 @@ class ProtoAgent_Observer(ProtoAgent):
                     progress_score = 0.5
 
             # 2) collect recent metrics (prefer pod metrics)
-            recent = self.memetic_kernel.get_recent_memories(limit=20)
-            cpu_values: List[float] = []
-            pod_cpu_data: List[dict] = []
+                recent = self.memetic_kernel.get_recent_memories(limit=20)
+                cpu_values: List[float] = []
+                pod_cpu_data: List[dict] = []
 
             for m in recent:
                 if m.get("type") != "ToolExecution":
@@ -3106,13 +3336,29 @@ class ProtoAgent_Observer(ProtoAgent):
         # Store task result for mission aggregation
         if plan_id and report_content_dict:
             try:
-                self.memdb.add(self.name, "TaskResult", {
+                ts = time.time()
+                payload = {
                     "plan_id": plan_id,
                     "task_result": report_content_dict,
-                    "timestamp": time.time()
-                })
+                    "timestamp": ts,
+                    "agent": self.name,
+                    "task_id": task_id,
+                }
+                if task_id:
+                    print(
+                        f"[DEBUG TaskResult Write] writer=observer_final agent={self.name} "
+                        f"plan_id={plan_id} task_id={task_id} memdb_id={id(self.memdb)} "
+                        f"type={type(self.memdb).__name__}"
+                    )
+                    self.memdb.add("TaskResult", payload)
+                    try:
+                        self.memetic_kernel.add_memory("TaskResult", payload)
+                    except Exception:
+                        pass
 
-                print(f"[{self.name}] Stored TaskResult for plan_id={plan_id}")
+                    print(f"[{self.name}] Stored TaskResult for plan_id={plan_id} task_id={task_id}")
+                else:
+                    print(f"[DEBUG TaskResult Write] writer=observer_final SKIP (no task_id) plan_id={plan_id}")
             except Exception as e:
                 print(f"[{self.name}] Warning: Could not store TaskResult via MemeticKernel: {e}")
 
@@ -4337,20 +4583,66 @@ class ProtoAgent_Planner(ProtoAgent):
                 raw_plan = plan_or_metrics.get("plan", plan_or_metrics)
                 self._log_agent_activity("PLAN_JSON_OK", self.name, {"size": len(str(raw_plan))})
 
-                normalized_steps = self._normalize_plan_schema(raw_plan)
+                raw_steps = raw_plan.get("steps", []) if isinstance(raw_plan, dict) else []
+                repaired_steps = self._repair_and_normalize_steps(raw_steps, mission_type)
+                normalized_steps = repaired_steps or []
+
+                # Preflight: validate required args against tool schemas to avoid INVALID_ARGS at Worker
+                def _prevalidate_steps(steps: list[dict]) -> list[dict]:
+                    if not hasattr(self, "tool_registry") or not self.tool_registry:
+                        return steps
+                    cleaned = []
+                    for s in steps:
+                        tool = s.get("tool")
+                        args = s.get("args") or {}
+                        try:
+                            tool_obj = self.tool_registry.get_tool(tool)
+                            schema = tool_obj.parameters if tool_obj else {}
+                            props = (schema.get("properties") or {}) if isinstance(schema, dict) else {}
+                            required = schema.get("required") if isinstance(schema, dict) else []
+                            if not isinstance(required, list):
+                                required = []
+                            missing = [r for r in required if args.get(r) is None]
+                            if missing:
+                                exp_keys = list(props.keys()) if isinstance(props, dict) else []
+                                recv_keys = list(args.keys()) if isinstance(args, dict) else []
+                                msg = (
+                                    f"PLAN_STEP_INVALID_ARGS tool={tool} missing={missing} "
+                                    f"expected_keys={exp_keys} received_keys={recv_keys}"
+                                )
+                                self._log_agent_activity("PLAN_STEP_INVALID_ARGS", self.name, msg, level="warning")
+                                print(msg)
+                                continue
+                        except Exception:
+                            # On validator failure, be permissive
+                            pass
+                        cleaned.append(s)
+                    return cleaned
+
+                normalized_steps = _prevalidate_steps(normalized_steps)
                 self._log_agent_activity("PLAN_STEPS_NORMALIZED", self.name, {"k": len(normalized_steps)})
 
                 if not normalized_steps:
-                    self._note_result_and_schedule(cooldown_key, "failed")
-                    self._log_agent_activity(
-                        "PLAN_TRIMMED_STEPS",
-                        self.name,
-                        {"reason": "empty_after_normalization", "mission_type": mission_type},
-                        level="warning",
-                    )
-                    return "failed", "No valid steps after normalization", {
-                        "summary": "Plan contained no dispatchable steps."
-                    }, 0.2
+                    fallback_steps = self._fallback_micro_plan(mission_type)
+                    if fallback_steps:
+                        normalized_steps = fallback_steps
+                        self._log_agent_activity(
+                            "PLAN_FALLBACK_INJECTED",
+                            self.name,
+                            {"mission_type": mission_type, "steps": len(fallback_steps)},
+                            level="warning",
+                        )
+                    else:
+                        self._note_result_and_schedule(cooldown_key, "failed")
+                        self._log_agent_activity(
+                            "PLAN_TRIMMED_STEPS",
+                            self.name,
+                            {"reason": "empty_after_normalization", "mission_type": mission_type},
+                            level="warning",
+                        )
+                        return "failed", "No valid steps after normalization", {
+                            "summary": "Plan contained no dispatchable steps."
+                        }, 0.2
 
                 dispatched = dispatch_plan_steps(self=self, plan=normalized_steps, goal_str=goal)
                 self._log_agent_activity("PLAN_DISPATCHED", self.name, {"dispatched": bool(dispatched)})
@@ -4769,6 +5061,7 @@ class ProtoAgent_Planner(ProtoAgent):
                 "results": aggregated,
                 "details": rr.details,           # debugging/tuning transparency
                 "timestamp": time.time(),
+                "agent": self.name,
             }
 
             # Write to mission_outcomes table for RL
@@ -4790,7 +5083,7 @@ class ProtoAgent_Planner(ProtoAgent):
                     except TypeError:
                         self.memdb.store_memory(mtype="MissionOutcome", content=outcome, agent=self.name)
                 else:
-                    self.memdb.add(self.name, "MissionOutcome", outcome)
+                    self.memdb.add("MissionOutcome", outcome)
                     
             # Local log (in addition to centralized memory_store log)
             if hasattr(self, "_log_agent_activity"):
@@ -5072,26 +5365,170 @@ class ProtoAgent_Planner(ProtoAgent):
         if not self._pending_missions:
             return
         
-        # Get recent task results
-        recent = self.memdb.recent("TaskResult", limit=500)
+        # Get recent task results (aggregate across agents)
+        recent: list = []
+        try:
+            primary_recent = self.memdb.recent("TaskResult", limit=500)
+            sample = primary_recent[:2]
+            print(
+                f"[DEBUG Planner] memdb={type(self.memdb).__name__} id={id(self.memdb)} "
+                f"recent('TaskResult') count={len(primary_recent)} sample={sample}"
+            )
+            recent.extend(primary_recent)
+        except Exception:
+            pass
+        # Pull TaskResult from all agents' memdbs
+        try:
+            if getattr(self, "orchestrator", None):
+                for agent in getattr(self.orchestrator, "agent_instances", {}).values():
+                    try:
+                        if hasattr(agent, "memdb"):
+                            recent.extend(agent.memdb.recent("TaskResult", limit=200))
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        # Also consider TaskOutcome entries that carry plan_id
+        try:
+            recent_outcomes = self.memdb.recent("TaskOutcome", limit=200)
+            for m in recent_outcomes:
+                c = m.get("content", {})
+                if c.get("plan_id"):
+                    recent.append({"content": {"plan_id": c.get("plan_id"), "task_result": c}})
+        except Exception:
+            pass
+
         print(f"[DEBUG Planner] Found {len(recent)} TaskResult memories total")
         
-        # Group by plan_id
-        results_by_plan = {}
+        # Group by plan_id with dedupe on task_id (latest timestamp wins)
+        results_by_plan: dict[str, dict[str, dict]] = {}
         for memory in recent:
             content = memory.get("content", {})
             pid = content.get("plan_id")
-            if pid:
-                if pid not in results_by_plan:
-                    results_by_plan[pid] = []
-                results_by_plan[pid].append(content.get("task_result", {}))
-        
-        print(f"[DEBUG Planner] Results grouped by plan: {[(k, len(v)) for k, v in results_by_plan.items()][:10]}")  # Show first 10
+            if not pid:
+                continue
+            tr = content.get("task_result", {})
+            task_id = content.get("task_id") or (tr.get("task_id") if isinstance(tr, dict) else None)
+            if not task_id:
+                continue
+            ts_val = content.get("timestamp")
+            if ts_val is None and isinstance(tr, dict):
+                ts_val = tr.get("timestamp")
+            plan_bucket = results_by_plan.setdefault(pid, {})
+            existing = plan_bucket.get(task_id)
+            if existing is None or (ts_val is not None and ts_val > existing.get("timestamp", -1)):
+                if isinstance(tr, dict):
+                    tr_copy = dict(tr)
+                else:
+                    tr_copy = {"value": tr}
+                tr_copy.setdefault("task_id", task_id)
+                tr_copy.setdefault("plan_id", pid)
+                if ts_val is not None:
+                    tr_copy["timestamp"] = ts_val
+                plan_bucket[task_id] = tr_copy
+
+        results_by_plan_list = {pid: list(tasks.values()) for pid, tasks in results_by_plan.items()}
+        print(f"[DEBUG Planner] Results grouped by plan (deduped): {[(k, len(v)) for k, v in results_by_plan_list.items()][:10]}")  # Show first 10
+
+        # Attempt single recovery for INVALID_ARGS task results by injecting a clarification/retry step
+        def _flatten_status(tr: dict) -> str | None:
+            if not isinstance(tr, dict):
+                return None
+            if "status" in tr:
+                return tr.get("status")
+            inner = tr.get("task_result")
+            if isinstance(inner, dict):
+                return inner.get("status")
+            return None
+
+        def _missing_fields(tr: dict) -> list:
+            if not isinstance(tr, dict):
+                return []
+            if isinstance(tr.get("missing"), list):
+                return tr["missing"]
+            inner = tr.get("task_result", {})
+            if isinstance(inner, dict) and isinstance(inner.get("missing"), list):
+                return inner["missing"]
+            return []
+
+        def _tool_meta(tr: dict) -> tuple[str | None, dict]:
+            tool = None
+            args = {}
+            if isinstance(tr, dict):
+                tool = tr.get("tool_name") or (tr.get("task_result") or {}).get("tool_name")
+                args = tr.get("tool_args") or (tr.get("task_result") or {}).get("tool_args") or {}
+            return tool, args if isinstance(args, dict) else {}
+
+        now_ts = time.time()
+        for pid, tasks in list(results_by_plan_list.items()):
+            updated_tasks = []
+            for tr in tasks:
+                status = _flatten_status(tr)
+                if status == "INVALID_ARGS":
+                    task_id = tr.get("task_id") or (tr.get("task_result") or {}).get("task_id")
+                    agent_name = tr.get("agent") or (tr.get("task_result") or {}).get("agent") or self.name
+                    key = f"{pid}:{task_id or 'unknown'}"
+                    if key in getattr(self, "_invalid_arg_retries", set()):
+                        # Already retried once; mark blocked
+                        tr_copy = dict(tr)
+                        tr_copy["status"] = "BLOCKED"
+                        tr_copy["summary"] = (tr_copy.get("summary") or "Blocked: missing required args after retry")
+                        updated_tasks.append(tr_copy)
+                        continue
+
+                    missing = _missing_fields(tr)
+                    tool_name, tool_args = _tool_meta(tr)
+                    # Auto-fill minimal defaults where possible
+                    autofilled = {}
+                    for m in missing:
+                        if m == "filename":
+                            tool_args.setdefault("filename", f"report_retry_{int(now_ts)}.pdf")
+                            autofilled[m] = tool_args.get("filename")
+                        elif m == "namespace":
+                            tool_args.setdefault("namespace", "default")
+                            autofilled[m] = tool_args.get("namespace")
+                        elif m == "replicas":
+                            tool_args.setdefault("replicas", 1)
+                            autofilled[m] = tool_args.get("replicas")
+
+                    still_missing = [m for m in missing if not tool_args.get(m)]
+
+                    # If we can proceed, inject a single retry directive
+                    if tool_name and not still_missing:
+                        directive = {
+                            "type": "AGENT_PERFORM_TASK",
+                            "agent_name": agent_name,
+                            "task_description": f"Retry tool {tool_name} with corrected args",
+                            "tool_name": tool_name,
+                            "tool_args": tool_args,
+                            "cycle_id": pid,
+                            "context_info": {"plan_id": pid, "task_id": task_id or f"{tool_name}_retry"},
+                        }
+                        try:
+                            injected = self._inject_directives([directive])
+                        except Exception:
+                            injected = 0
+                        if injected:
+                            self._invalid_arg_retries.add(key)
+                            print(f"[DEBUG Planner] INVALID_ARGS recovery injected for plan={pid} task_id={task_id} tool={tool_name}")
+                            # Do not count this result; wait for retry
+                            continue
+                    # If still missing or cannot inject, mark blocked
+                    tr_copy = dict(tr)
+                    tr_copy["status"] = "BLOCKED"
+                    tr_copy["summary"] = (tr_copy.get("summary") or "Blocked: missing required args")
+                    tr_copy["missing"] = missing
+                    if still_missing:
+                        tr_copy["missing_still"] = still_missing
+                    updated_tasks.append(tr_copy)
+                else:
+                    updated_tasks.append(tr)
+            results_by_plan_list[pid] = updated_tasks
         
         # Check each pending mission
         for plan_id in list(self._pending_missions.keys()):
             mission = self._pending_missions[plan_id]
-            task_results = results_by_plan.get(plan_id, [])
+            task_results = results_by_plan_list.get(plan_id, [])
             expected_count = mission.get("steps_dispatched", 1)
             
             print(f"[DEBUG Planner] Plan {plan_id}: {len(task_results)}/{expected_count} tasks")
@@ -8916,6 +9353,13 @@ TOOLSMITH MODE (Self-Evolution):
 
             # ---------- 9) Normalize via utils function ----------
             MAX_STEPS = max(1, int(kwargs.get("max_steps", 12)))
+            try:
+                plan["steps"] = self._repair_and_normalize_steps(
+                    plan.get("steps", []),
+                    plan.get("mission_type") or kwargs.get("mission_type") or "general_planning",
+                )
+            except Exception:
+                pass
             clean_steps, skips = normalize_plan_schema(
                 self=self,
                 plan=plan,
@@ -8924,13 +9368,23 @@ TOOLSMITH MODE (Self-Evolution):
                 max_steps=MAX_STEPS,
             )
             if not clean_steps:
-                error_msg = "Planning produced no actionable (single-tool) steps"
-                self._log_agent_activity(
-                    "PLAN_NORMALIZATION_EMPTY", self.name, error_msg,
-                    {"skips": skips, "plan_preview": safe_truncate(json.dumps(plan, ensure_ascii=False), 500)},
-                    level="error",
-                )
-                return "failed", error_msg, {"summary": error_msg, "skips": skips}, 0.0
+                fallback_steps = self._fallback_micro_plan(plan.get("mission_type") or kwargs.get("mission_type") or "general_planning")
+                if fallback_steps:
+                    clean_steps = fallback_steps
+                    self._log_agent_activity(
+                        "PLAN_FALLBACK_INJECTED",
+                        self.name,
+                        {"mission_type": plan.get("mission_type"), "steps": len(fallback_steps), "skips": skips},
+                        level="warning",
+                    )
+                else:
+                    error_msg = "Planning produced no actionable (single-tool) steps"
+                    self._log_agent_activity(
+                        "PLAN_NORMALIZATION_EMPTY", self.name, error_msg,
+                        {"skips": skips, "plan_preview": safe_truncate(json.dumps(plan, ensure_ascii=False), 500)},
+                        level="error",
+                    )
+                    return "failed", error_msg, {"summary": error_msg, "skips": skips}, 0.0
 
             plan["steps"] = clean_steps
             self._log_agent_activity(
@@ -9621,15 +10075,34 @@ class ProtoAgent_Security(ProtoAgent):
         # Store task result for mission aggregation
         context = context_info or {}
         plan_id = context.get("plan_id") if isinstance(context, dict) else None
+        task_id = context.get("task_id") if isinstance(context, dict) else None
+        if not task_id:
+            task_id = kwargs.get("task_id")
 
         if plan_id and hasattr(self, 'memdb'):
             try:
-                self.memdb.add(self.name, "TaskResult", {
+                ts = time.time()
+                payload = {
                     "plan_id": plan_id,
                     "task_result": final_report,
-                    "timestamp": time.time()
-                })
-                print(f"[{self.name}] Stored TaskResult for plan_id={plan_id}")
+                    "timestamp": ts,
+                    "agent": self.name,
+                    "task_id": task_id,
+                }
+                if task_id:
+                    print(
+                        f"[DEBUG TaskResult Write] writer=security_final agent={self.name} "
+                        f"plan_id={plan_id} task_id={task_id} memdb_id={id(self.memdb)} "
+                        f"type={type(self.memdb).__name__}"
+                    )
+                    self.memdb.add("TaskResult", payload)
+                    try:
+                        self.memetic_kernel.add_memory("TaskResult", payload)
+                    except Exception:
+                        pass
+                    print(f"[{self.name}] Stored TaskResult for plan_id={plan_id} task_id={task_id}")
+                else:
+                    print(f"[DEBUG TaskResult Write] writer=security_final SKIP (no task_id) plan_id={plan_id}")
             except Exception as e:
                 print(f"[{self.name}] Warning: Could not store TaskResult: {e}")
 
@@ -9749,18 +10222,30 @@ class ProtoAgent_Worker(ProtoAgent):
 
         t0 = time.time()
         context_info = kwargs.get("context_info")  # for mission tracking
+        context_plan = (context_info or {}) if isinstance(context_info, dict) else {}
+        plan_id = context_plan.get("plan_id") or kwargs.get("plan_id")
+        task_id = context_plan.get("task_id") or kwargs.get("task_id")
 
         # Early TaskResult writer for all early-returns
         def _store_task_result_early(status: str, summary: str, extra: dict | None = None):
             report = {"summary": summary, **(extra or {})}
             try:
-                plan_id = (context_info or {}).get("plan_id") if isinstance(context_info, dict) else None
-                if plan_id and hasattr(self, "memdb"):
-                    self.memdb.add(self.name, "TaskResult", {
+                if plan_id and task_id and hasattr(self, "memdb"):
+                    payload = {
                         "plan_id": plan_id,
                         "task_result": report,
                         "timestamp": time.time(),
-                    })
+                        "agent": self.name,
+                        "task_id": task_id,
+                    }
+                    print(
+                        f"[DEBUG TaskResult Write] writer=worker_early agent={self.name} "
+                        f"plan_id={plan_id} task_id={task_id} memdb_id={id(self.memdb)} "
+                        f"type={type(self.memdb).__name__}"
+                    )
+                    self.memdb.add("TaskResult", payload)
+                elif plan_id:
+                    print(f"[DEBUG TaskResult Write] writer=worker_early SKIP (no task_id) plan_id={plan_id}")
             except Exception as e:
                 self.external_log_sink.warning(f"Failed to store early TaskResult: {e}", extra={"agent": self.name})
             return report
@@ -9773,8 +10258,8 @@ class ProtoAgent_Worker(ProtoAgent):
             return "failed", msg, rep, 0.0
 
         if "awaiting" in task_description.lower() or "no specific intent" in task_description.lower():
-            rep = _store_task_result_early("completed", "Worker is idle, awaiting tasks.")
-            return "completed", None, rep, 1.0
+            rep = _store_task_result_early("skipped", "Worker is idle, awaiting tasks.")
+            return "skipped", None, rep, 0.0
 
         registry = getattr(self, "tool_registry", None)
         if not registry:
@@ -9952,6 +10437,9 @@ class ProtoAgent_Worker(ProtoAgent):
                     tool_args["filename"] = fn[:-4] or f"report_{_now_ts()}"
                 if not (tool_args.get("text_content") or tool_args.get("content")):
                     tool_args["text_content"] = f"Report for task: {task_description}\nGenerated at: {datetime.now()}"
+                # Enforce filename requirement with a safe default if missing
+                if not tool_args.get("filename"):
+                    tool_args["filename"] = f"report_{_now_ts()}"
 
             if tool_name == "read_webpage":
                 url = tool_args.get("url")
@@ -10015,6 +10503,53 @@ class ProtoAgent_Worker(ProtoAgent):
                 filtered_args = {k: v for k, v in tool_args.items() if k in allowed}
                 ignored_fields += [k for k in tool_args.keys() if k not in allowed]
                 tool_args = filtered_args
+
+            # Required argument enforcement (pre-execution guard)
+            missing_required = []
+            schema_required = []
+            try:
+                if tool_obj and isinstance(tool_obj.parameters, dict):
+                    schema_required = tool_obj.parameters.get("required") or []
+                    if not isinstance(schema_required, list):
+                        schema_required = []
+            except Exception:
+                schema_required = []
+
+            if tool_name == "create_pdf":
+                if not tool_args.get("filename"):
+                    missing_required.append("filename")
+            if tool_name == "k8s_scale":
+                if not tool_args.get("namespace"):
+                    missing_required.append("namespace")
+                if tool_args.get("replicas") is None:
+                    missing_required.append("replicas")
+            # Schema-driven required fields (strict)
+            for req in schema_required:
+                if tool_args.get(req) is None:
+                    missing_required.append(req)
+
+            if missing_required:
+                msg = f"INVALID_ARGS for {tool_name}: missing {', '.join(missing_required)}"
+                hint = None
+                if tool_name == "k8s_scale":
+                    hint = "Hint: provide namespace=<ns>, replicas=<n> for k8s_scale."
+                elif tool_name == "create_pdf":
+                    hint = "Hint: provide filename=<name>.pdf for create_pdf."
+                if hint:
+                    try:
+                        self.external_log_sink.info(hint, extra={"agent": self.name})
+                    except Exception:
+                        pass
+                report = {
+                    "summary": msg,
+                    "status": "INVALID_ARGS",
+                    "missing": missing_required,
+                    "tool_name": tool_name,
+                    "tool_args": tool_args,
+                    "hint": hint,
+                }
+                rep = _store_task_result_early("failed", msg, report)
+                return "failed", "invalid_args", rep, 0.0
 
         except Exception as e:
             self.external_log_sink.warning(f"Schema-aware filtering failed: {e}", extra={"agent": self.name})
@@ -10151,15 +10686,30 @@ class ProtoAgent_Worker(ProtoAgent):
             self.external_log_sink.warning(f"Failed to store tool result: {e}")
 
         # Store TaskResult for mission aggregation (final)
-        plan_id = (context_info or {}).get("plan_id") if isinstance(context_info, dict) else None
         if plan_id and hasattr(self, "memdb"):
             try:
-                self.memdb.add(self.name, "TaskResult", {
+                ts = time.time()
+                payload = {
                     "plan_id": plan_id,
                     "task_result": report,
-                    "timestamp": time.time()
-                })
-                print(f"[{self.name}] Stored TaskResult for plan_id={plan_id}")
+                    "timestamp": ts,
+                    "agent": self.name,
+                    "task_id": task_id,
+                }
+                if task_id:
+                    print(
+                        f"[DEBUG TaskResult Write] writer=worker_final agent={self.name} "
+                        f"plan_id={plan_id} task_id={task_id} memdb_id={id(self.memdb)} "
+                        f"type={type(self.memdb).__name__}"
+                    )
+                    self.memdb.add("TaskResult", payload)
+                    try:
+                        self.memetic_kernel.add_memory("TaskResult", payload)
+                    except Exception:
+                        pass
+                    print(f"[{self.name}] Stored TaskResult for plan_id={plan_id} task_id={task_id}")
+                else:
+                    print(f"[DEBUG TaskResult Write] writer=worker_final SKIP (no task_id) plan_id={plan_id}")
             except Exception as e:
                 print(f"[{self.name}] Warning: Could not store TaskResult: {e}")
 

@@ -53,6 +53,7 @@ cd dashboard
 
 📄 **[View Commercial Specifications](./COMMERCIAL_SPECS.md)**
 📄 **[Read the Protocol Constitution (RFC-001)](./RFC001.md)**
+📄 **[Autonomous K8s Remediation](docs/K8S_REMEDIATION.md)**
 
 ---
 

@@ -95,7 +95,7 @@ class CVADatabase:
             import os
             llm = OllamaLLMIntegration(
                 host=os.getenv("OLLAMA_HOST", "http://localhost:11434"),
-                chat_model="mistral-small",
+                chat_model="mistral-nemo",
                 embedding_model="mxbai-embed-large"
             )
             embedding = llm.generate_embedding(description)
@@ -286,7 +286,7 @@ class CVADatabase:
             import os
             llm = OllamaLLMIntegration(
                 host=os.getenv("OLLAMA_HOST", "http://localhost:11434"),
-                chat_model="mistral-small",
+                chat_model="mistral-nemo",
                 embedding_model="mxbai-embed-large"
             )
             query_embedding = llm.generate_embedding(task_description)

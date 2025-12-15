@@ -1,4 +1,4 @@
-FROM mistral-small
+FROM mistral-nemo
 
 SYSTEM """
 You are a local language model running entirely on the user's computer via Ollama.
