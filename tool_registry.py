@@ -746,7 +746,7 @@ class ToolRegistry:
 
             Tool("toolsmith_generate", "Generate a sandboxed tool on the fly for unmet tasks.",
                  {"type": "object", "properties": {"task": {"type": "string"}, "code_hint": {"type": "string"}}},
-                 _tf("toolsmith_generate"),
+                 (_tf("toolsmith_generate") if hasattr(tools, "toolsmith_generate") else (lambda **kw: {"status": "error", "error": "toolsmith unavailable"})),
                  task_type="GenericTask",
                  roles_allowed={"Planner", "Worker"}),
 
