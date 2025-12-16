@@ -169,10 +169,11 @@ APPROVAL_MODE = os.getenv("CVA_APPROVAL_MODE", "human").strip().lower()
 import tools  # production tool funcs
 
 def _tf(name: str):
-    """Resolve a tool function from tools module; raise clear error if missing."""
+    """Resolve a tool function from tools module; provide a safe stub if missing (for CI)."""
     fn = getattr(tools, name, None)
     if fn is None:
-        raise RuntimeError(f"Missing tool function: tools.{name}")
+        log.warning("Missing tool function: tools.%s — returning stub (env may lack optional deps)", name)
+        return lambda **kw: {"status": "error", "error": f"tool function tools.{name} unavailable"}
     return fn
 
 # -----------------------------
