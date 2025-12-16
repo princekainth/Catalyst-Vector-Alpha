@@ -1,3 +1,5 @@
+<img width="2816" height="1536" alt="Gemini_Generated_Image_7ew7y77ew7y77ew7" src="https://github.com/user-attachments/assets/79480b55-d1ab-4467-98d5-b89e622278a6" />
+
 # 🚀 Catalyst Vector Alpha (CVA)
 ### Autonomous SRE Platform Reference Implementation of the Gemini™ Protocol
 
