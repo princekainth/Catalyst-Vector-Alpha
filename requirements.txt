@@ -1,5 +1,6 @@
 # Core dependencies
 Flask==3.1.0
+Flask-CORS==5.0.0
 psycopg2-binary==2.9.10
 PyYAML==6.0.2
 requests==2.32.3
@@ -8,6 +9,16 @@ requests==2.32.3
 chromadb==0.5.23
 sentence-transformers==3.3.1
 
+# Google APIs
+google-auth-oauthlib==1.2.1
+google-auth-httplib2==0.2.0
+google-api-python-client==2.154.0
+
 # Utilities
 python-dateutil==2.9.0
 pytz==2024.2
+psutil==6.1.0
+playwright==1.49.1
+
+# Prometheus (optional)
+prometheus-client==0.21.0
