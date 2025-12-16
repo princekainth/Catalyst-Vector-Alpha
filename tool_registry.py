@@ -19,7 +19,15 @@ import inspect
 from tool_types import Tool, derive_task_type, validate_role_task_assignment
 from config_manager import get_config
 import tools
-import sandbox_toolsmith
+
+# Optional sandbox_toolsmith (graceful fallback for environments without it)
+try:
+    import sandbox_toolsmith  # type: ignore
+except ImportError:
+    class _SandboxToolsmithStub:
+        def generate_tool(self, *a, **kw):
+            return {"status": "error", "error": "sandbox_toolsmith not available"}
+    sandbox_toolsmith = _SandboxToolsmithStub()  # type: ignore
 
 # Logging
 logger = logging.getLogger("CatalystLogger")
