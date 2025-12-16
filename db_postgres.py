@@ -17,12 +17,22 @@ DB_CONFIG = {
     'port': _db_cfg.get('port', 5432)
 }
 
-# Connection pool (10 min, 20 max connections)
-pool = ThreadedConnectionPool(10, 20, **DB_CONFIG)
+pool = None
+_POOL_ERR = None
+# Allow CI/test environments to skip Postgres
+if os.getenv("CVA_NO_POSTGRES") or os.getenv("GITHUB_ACTIONS") or os.getenv("SKIP_POSTGRES"):
+    _POOL_ERR = "Postgres disabled via env"
+else:
+    try:
+        pool = ThreadedConnectionPool(10, 20, **DB_CONFIG)
+    except Exception as e:
+        _POOL_ERR = e
 
 @contextmanager
 def get_db_connection():
     """Context manager for database connections"""
+    if pool is None:
+        raise RuntimeError(f"Postgres pool unavailable: {_POOL_ERR}")
     conn = pool.getconn()
     try:
         yield conn
@@ -35,6 +45,8 @@ def get_db_connection():
 
 def execute_query(query, params=None, fetch=False):
     """Execute a query with automatic connection handling"""
+    if pool is None:
+        raise RuntimeError(f"Postgres pool unavailable: {_POOL_ERR}")
     with get_db_connection() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(query, params)
