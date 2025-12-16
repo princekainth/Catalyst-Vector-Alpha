@@ -1,0 +1,59 @@
+name: CVA Test Suite
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master, develop ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt || echo "No requirements.txt found"
+    
+    - name: Install test dependencies
+      run: |
+        pip install pytest
+    
+    - name: Run validation tests (no K8s required)
+      run: |
+        python3 tests/test_worker_validation.py
+        python3 tests/test_directive_format.py
+        python3 tests/test_retry_blocking.py
+        python3 tests/test_k8s_event_flow.py
+    
+    - name: Set up Minikube
+      run: |
+        curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
+        sudo install minikube-linux-amd64 /usr/local/bin/minikube
+        minikube start --driver=docker
+    
+    - name: Deploy test app to K8s
+      run: |
+        kubectl apply -f k8s-test-deployment.yaml
+        kubectl wait --for=condition=ready pod -l app=nginx-test --timeout=60s
+    
+    - name: Run K8s integration tests
+      run: |
+        python3 tests/test_real_k8s_integration.py
+        python3 tests/test_cva_k8s_tools.py
+    
+    - name: Test summary
+      if: always()
+      run: |
+        echo "==================================="
+        echo "CVA Test Suite Results"
+        echo "==================================="
