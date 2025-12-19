@@ -54,6 +54,7 @@ from statistics import mean
 from typing import Any, Dict, List
 from rewards import compute_reward  # uses the full rewards.py we created
 from alert_store import get_alert_store
+from shared_memory import SharedMemory
 
 # --- Utils (defer heavy imports that depend on validate_plan_shape) ---
 from utils import (
@@ -320,6 +321,26 @@ class ProtoAgent(ABC):
                 message_bus.shared_memdb = self.memdb
             except Exception:
                 pass
+
+        # --- 🧠 SHARED MEMORY (The Hive Mind) ---
+        # 1. Check if the Brain already exists on the bus to ensure all agents share ONE memory
+        brain = getattr(message_bus, "shared_brain", None)
+        
+        if brain:
+            # Connect to existing brain
+            self.shared_memory = brain
+        else:
+            # I am the first agent. I must Initialize the Hive Mind.
+            self.external_log_sink.info(f"[{self.name}] Initializing Shared Memory...")
+            # Initialize the shared memory (requires SharedMemory import at top of file)
+            self.shared_memory = SharedMemory()
+            
+            # Attach it to the bus so subsequent agents can find it
+            try:
+                message_bus.shared_brain = self.shared_memory
+            except Exception:
+                pass
+
         # --- Initialize other state ---
         self._initialize_default_attributes()
         self.current_task = None
@@ -413,6 +434,10 @@ class ProtoAgent(ABC):
                 continue
             step = dict(step)
             tool_raw = str(step.get("tool", "")).strip()
+            # Hard whitelist: never drop or rewrite microsoft_autonomous_remediation
+            if tool_raw == "microsoft_autonomous_remediation" and mission_type in ("k8s_monitoring", "general_planning"):
+                repaired_steps.append(step)
+                continue
             agent = step.get("agent", self.name)
 
             # Verb mapping
@@ -423,17 +448,30 @@ class ProtoAgent(ABC):
                 step["tool"] = mapped
                 tool_raw = mapped
 
-            # Policy gate
-            if allowed_tools and tool_raw not in allowed_tools:
-                if "remediation" in tool_raw:
-                    # downgrade to observation
-                    step["tool"] = "watch_k8s_events"
-                    step["title"] = f"[policy-downgrade] Monitor instead of Fix: {step.get('title', '')}"
-                    tool_raw = "watch_k8s_events"
-                    if allowed_tools and tool_raw not in allowed_tools:
+            # Policy gate (whitelist microsoft_autonomous_remediation for k8s_monitoring and general_planning)
+            if not (tool_raw == "microsoft_autonomous_remediation" and mission_type in ("k8s_monitoring", "general_planning")):
+                if allowed_tools and tool_raw not in allowed_tools:
+                    if "remediation" in tool_raw and tool_raw != "microsoft_autonomous_remediation":
+                        # downgrade to observation
+                        step["tool"] = "watch_k8s_events"
+                        step["title"] = f"[policy-downgrade] Monitor instead of Fix: {step.get('title', '')}"
+                        tool_raw = "watch_k8s_events"
+                        if allowed_tools and tool_raw not in allowed_tools:
+                            continue
+                    else:
                         continue
-                else:
-                    continue
+
+            # Normalize pod_name arg if provided as namespace/pod
+            args = step.get("args", {})
+            if isinstance(args, dict) and isinstance(args.get("pod_name"), str) and "/" in args.get("pod_name"):
+                try:
+                    ns_val, pod_val = args["pod_name"].split("/", 1)
+                    args = dict(args)
+                    args["namespace"] = args.get("namespace") or ns_val
+                    args["pod_name"] = pod_val
+                    step["args"] = args
+                except Exception:
+                    pass
 
             # Role reassignment hints
             if step.get("tool") == "send_desktop_notification" and "Notifier" not in agent:
@@ -1421,7 +1459,7 @@ class ProtoAgent(ABC):
                 if cached and (now_ts - cached_ts) < 10:
                     _k8s_result = cached
                 else:
-                    _k8s_result = _registry.safe_call("watch_k8s_events", namespace="all", minutes=10)
+                    _k8s_result = _registry.safe_call("watch_k8s_events", namespace="all", minutes=5)
                     self._k8s_cache = {"ts": now_ts, "result": _k8s_result}
                 if isinstance(_k8s_result, dict):
                     payload = _k8s_result.get("data", _k8s_result) if isinstance(_k8s_result, dict) else {}
@@ -1445,33 +1483,44 @@ class ProtoAgent(ABC):
                                     remaining = max(0, 600 - (time.time() - last_ts))
                                     print(f"[Observer] skip_reason=dedupe_recent resource={namespace}/{pod_name} last_ts={last_ts} cooldown_remaining_s={remaining:.1f}")
                                     continue
+                                if self._remediation_already_queued(namespace, pod_name):
+                                    print(f"[Observer] Skipping remediation (already queued) for {namespace}/{pod_name}")
+                                    self._increment_remediation_metric("queue_skips")
+                                    continue
                                 print(f"[Observer] AUTO-REMEDIATING: {namespace}/{pod_name}")
                                 try:
-                                    result = _registry.safe_call(
-                                        "microsoft_autonomous_remediation",
-                                        namespace=namespace,
-                                        pod_name=pod_name
+                                    planner_name = "ProtoAgent_Planner_instance_1"
+                                    goal = (
+                                        f"Remediate failing pod {namespace}/{pod_name}. "
+                                        f"Execute microsoft_autonomous_remediation immediately for pod {namespace}/{pod_name}."
                                     )
-                                    print(f"[Observer] Remediation result: {result}")
+                                    directive = {
+                                        "type": "INITIATE_PLANNING_CYCLE",
+                                        "planner_agent_name": planner_name,
+                                        "high_level_goal": goal,
+                                        "mission_type": "k8s_monitoring",
+                                        "cycle_id": getattr(self.orchestrator, "current_action_cycle_id", None),
+                                        "context": {"target_pod": f"{namespace}/{pod_name}"},
+                                    }
+                                    if self.orchestrator and hasattr(self.orchestrator, "inject_directives"):
+                                        self.orchestrator.inject_directives([directive])
+                                    elif getattr(self, "message_bus", None) and getattr(self.message_bus, "catalyst_vector_ref", None):
+                                        self.message_bus.catalyst_vector_ref.inject_directives([directive])
+                                    else:
+                                        raise RuntimeError("No orchestrator/message_bus to inject directive")
+                                    print(f"[Observer] Remediation mission injected for {namespace}/{pod_name}")
                                     self._mark_remediated(namespace, pod_name)
                                     self._increment_remediation_metric("remediation_success")
-                                    if _registry.has_tool("send_desktop_notification"):
-                                        try:
-                                            _registry.safe_call(
-                                                "send_desktop_notification",
-                                                title="K8s Remediation",
-                                                message=f"Remediated {namespace}/{pod_name}: {result}"
-                                            )
-                                        except Exception:
-                                            pass
                                 except Exception as e:
-                                    print(f"[Observer] Remediation failed for {namespace}/{pod_name}: {e}")
+                                    print(f"[Observer] Remediation mission injection failed for {namespace}/{pod_name}: {e}")
                                     self._increment_remediation_metric("remediation_failure")
                     # Fallback: inspect pod status for failures/crashloops (rate-limited)
                     if _registry.has_tool("get_pod_status") and self._can_run_pod_fallback():
                         pod_resp = _registry.safe_call("get_pod_status", namespace="all")
                         if isinstance(pod_resp, dict):
                             pod_payload = pod_resp.get("data", pod_resp) if isinstance(pod_resp, dict) else {}
+                            if not isinstance(pod_payload, dict):
+                                pod_payload = {}
                             pods = pod_payload.get("problem_pods") or pod_payload.get("all_pods") or []
                             self._prune_remediation_cache()
                             for pod in pods:
@@ -1513,6 +1562,11 @@ class ProtoAgent(ABC):
                                     except Exception as e:
                                         print(f"[Observer] Remediation failed for {ns}/{name}: {e}")
                                         self._increment_remediation_metric("remediation_failure")
+            # Predictive guard: detect rising memory usage and preemptively request resources
+            try:
+                self._predictive_memory_guard(_registry)
+            except Exception as e:
+                print(f"[Observer] Predictive guard error: {e}")
 
         # execute
         try:
@@ -2835,6 +2889,10 @@ class ProtoAgent_Observer(ProtoAgent):
         self._k8s_cache = {"ts": 0.0, "result": None}
         self._tool_result_cache: dict[tuple, dict] = {}
         self._ignore_patterns = ["victim"]  # ignore chaos/test pods
+        self._pod_mem_history: dict[str, list[tuple[float, float, float]]] = {}
+        self._pod_resource_cache: dict[str, dict] = {}
+        self._preemptive_targets: dict[str, float] = {}
+        self._last_predictive_check: float = 0.0
 
     def _prune_remediation_cache(self, ttl_seconds: int = 600):
         now = time.time()
@@ -2850,7 +2908,7 @@ class ProtoAgent_Observer(ProtoAgent):
             return f"{namespace}/{pod_name}"
         return f"{namespace}|{reason or 'unknown'}"
 
-    def _recently_remediated(self, namespace: str, pod_name: str | None = None, ttl_seconds: int = 600,
+    def _recently_remediated(self, namespace: str, pod_name: str | None = None, ttl_seconds: int = 60,
                              reason: str | None = None, controller: str | None = None,
                              message: str | None = None) -> bool:
         self._prune_remediation_cache(ttl_seconds)
@@ -2869,6 +2927,27 @@ class ProtoAgent_Observer(ProtoAgent):
         """No-op placeholder to avoid AttributeError when Planner calls inject_directives on Observer."""
         return 0
 
+    def _remediation_already_queued(self, namespace: str, pod_name: str) -> bool:
+        target = f"{namespace}/{pod_name}"
+        orch = getattr(self, "orchestrator", None) or getattr(getattr(self, "message_bus", None), "catalyst_vector_ref", None)
+        if not orch or not hasattr(orch, "dynamic_directive_queue"):
+            return False
+        try:
+            for d in list(getattr(orch, "dynamic_directive_queue", [])):
+                if not isinstance(d, dict):
+                    continue
+                if d.get("type") != "INITIATE_PLANNING_CYCLE":
+                    continue
+                ctx = d.get("context") or {}
+                if isinstance(ctx, dict) and ctx.get("target_pod") == target:
+                    return True
+                goal = d.get("high_level_goal") or ""
+                if target in goal and "Remediate failing pod" in goal:
+                    return True
+        except Exception:
+            return False
+        return False
+
     def _increment_remediation_metric(self, key: str):
         if not hasattr(self, "_remediation_metrics") or not isinstance(self._remediation_metrics, dict):
             self._remediation_metrics = {}
@@ -2879,6 +2958,113 @@ class ProtoAgent_Observer(ProtoAgent):
             )
         except Exception:
             pass
+
+    def _mem_to_mi(self, val: str | None) -> float | None:
+        if not val:
+            return None
+        v = str(val).strip()
+        try:
+            if v.endswith("Gi"):
+                return float(v[:-2]) * 1024.0
+            if v.endswith("Mi"):
+                return float(v[:-2])
+            if v.endswith("Ki"):
+                return float(v[:-2]) / 1024.0
+            return float(v) / (1024.0 * 1024.0)
+        except Exception:
+            return None
+
+    def _get_pod_mem_limit(self, namespace: str, name: str, ttl: int = 300) -> float | None:
+        key = f"{namespace}/{name}"
+        now = time.time()
+        cached = self._pod_resource_cache.get(key)
+        if cached and (now - cached.get("ts", 0)) < ttl:
+            return cached.get("limit")
+        try:
+            import subprocess, json
+            out = subprocess.check_output(
+                ["kubectl", "get", "pod", name, "-n", namespace, "-o", "json"],
+                text=True,
+            )
+            pod = json.loads(out)
+            limits = []
+            for c in (pod.get("spec", {}) or {}).get("containers", []) or []:
+                mem_str = ((c.get("resources", {}) or {}).get("limits", {}) or {}).get("memory")
+                mi = self._mem_to_mi(mem_str)
+                if mi:
+                    limits.append(mi)
+            limit_val = max(limits) if limits else None
+            self._pod_resource_cache[key] = {"limit": limit_val, "ts": now}
+            return limit_val
+        except Exception:
+            self._pod_resource_cache[key] = {"limit": None, "ts": now}
+            return None
+
+    def _predictive_memory_guard(self, registry):
+        """Detect rising memory pressure and preemptively request more resources."""
+        if not registry or not registry.has_tool("kubernetes_pod_metrics_tool"):
+            return
+        now = time.time()
+        if now - getattr(self, "_last_predictive_check", 0) < 60:
+            return
+        self._last_predictive_check = now
+
+        resp = registry.safe_call("kubernetes_pod_metrics_tool", namespace=None, limit=50)
+        if not isinstance(resp, dict):
+            return
+        data = resp.get("data", resp) or {}
+        pods = data.get("pods") or []
+        for row in pods:
+            ns = row.get("namespace") or "default"
+            name = row.get("pod")
+            usage = row.get("memory_Mi")
+            if name is None or usage is None:
+                continue
+            limit = self._get_pod_mem_limit(ns, name)
+            if not limit or limit <= 0:
+                continue
+            key = f"{ns}/{name}"
+            history = self._pod_mem_history.get(key, [])
+            history.append((now, float(usage), float(limit)))
+            history = history[-5:]
+            self._pod_mem_history[key] = history
+            if len(history) < 2:
+                continue
+            prev_ts, prev_use, _ = history[-2]
+            ratio = usage / limit
+            slope = (usage - prev_use) / max(1.0, now - prev_ts)
+            if ratio >= 0.8 and usage > prev_use * 1.1 and slope > 0:
+                if self._remediation_already_queued(ns, name) or self._recently_remediated(ns, name, ttl_seconds=600):
+                    continue
+                if key in self._preemptive_targets and (now - self._preemptive_targets.get(key, 0)) < 600:
+                    continue
+                planner_name = "ProtoAgent_Planner_instance_1"
+                goal = (
+                    f"Preemptively increase resources for pod {ns}/{name} due to rising memory usage near limit. "
+                    f"Assess workload pattern and adjust requests/limits."
+                )
+                directive = {
+                    "type": "INITIATE_PLANNING_CYCLE",
+                    "planner_agent_name": planner_name,
+                    "high_level_goal": goal,
+                    "mission_type": "k8s_monitoring",
+                    "cycle_id": getattr(self.orchestrator, "current_action_cycle_id", None),
+                    "context": {"target_pod": f"{ns}/{name}", "reason": "memory_trend_up"},
+                }
+                try:
+                    orch = getattr(self, "orchestrator", None)
+                    if orch and hasattr(orch, "inject_directives"):
+                        orch.inject_directives([directive])
+                    elif getattr(self, "message_bus", None) and getattr(self.message_bus, "catalyst_vector_ref", None):
+                        self.message_bus.catalyst_vector_ref.inject_directives([directive])
+                    else:
+                        raise RuntimeError("No orchestrator/message_bus to inject directive")
+                    print(f"[Observer] Predictive remediation mission injected for {ns}/{name} (mem ratio {ratio:.2f})")
+                    self._preemptive_targets[key] = now
+                    self._increment_remediation_metric("predictive_injections")
+                except Exception as e:
+                    print(f"[Observer] Predictive remediation injection failed for {ns}/{name}: {e}")
+                    self._increment_remediation_metric("remediation_failure")
 
     def _can_run_pod_fallback(self, min_interval_s: int = 60) -> bool:
         now = time.time()
@@ -2915,6 +3101,25 @@ class ProtoAgent_Observer(ProtoAgent):
         recent: List[dict] = []  # ensure defined for later iteration paths
         cpu_values: List[float] = []  # guard against UnboundLocal on downstream aggregation
         pod_cpu_data: List[dict] = []
+        import subprocess
+
+        def _pod_exists(namespace: str, pod_name: str) -> bool:
+            try:
+                res = subprocess.run(
+                    ["kubectl", "get", "pod", pod_name, "-n", namespace],
+                    capture_output=True,
+                    text=True,
+                )
+                if res.returncode == 0:
+                    return True
+                err = (res.stderr or "").lower()
+                if "notfound" in err or "not found" in err:
+                    return False
+                return False
+            except Exception:
+                return False
+
+        # use self._remediation_already_queued() for queue backpressure
 
         try:
             # AUTO K8S MONITORING - Check every Observer cycle
@@ -2927,7 +3132,7 @@ class ProtoAgent_Observer(ProtoAgent):
                 if cached and (now_ts - cached_ts) < 10:
                     _k8s_result = cached
                 else:
-                    _k8s_result = _registry.safe_call("watch_k8s_events", namespace="all", minutes=10)
+                    _k8s_result = _registry.safe_call("watch_k8s_events", namespace="all", minutes=5)
                     self._k8s_cache = {"ts": now_ts, "result": _k8s_result}
                 if isinstance(_k8s_result, dict):
                     payload = _k8s_result.get("data", _k8s_result) if isinstance(_k8s_result, dict) else {}
@@ -2970,6 +3175,11 @@ class ProtoAgent_Observer(ProtoAgent):
                             message = event.get("message")
                             controller = event.get("kind") or None
                             if namespace and pod_name:
+                                if not _pod_exists(namespace, pod_name):
+                                    print(f"[Observer] Skipping remediation (pod not found) for {namespace}/{pod_name}")
+                                    self._increment_remediation_metric("not_found_skips")
+                                    self._mark_remediated(namespace, pod_name, reason=reason, controller=controller, message=message)
+                                    continue
                                 if any(pat in pod_name for pat in self._ignore_patterns):
                                     print(f"[Observer] Skipping remediation (ignore pattern) for {namespace}/{pod_name}")
                                     self._increment_remediation_metric("ignore_skips")
@@ -2982,27 +3192,37 @@ class ProtoAgent_Observer(ProtoAgent):
                                     remaining = max(0, 600 - (time.time() - last_ts))
                                     print(f"[Observer] skip_reason=dedupe_recent resource={namespace}/{pod_name} last_ts={last_ts} cooldown_remaining_s={remaining:.1f}")
                                     continue
+                                if self._remediation_already_queued(namespace, pod_name):
+                                    print(f"[Observer] Skipping remediation (already queued) for {namespace}/{pod_name}")
+                                    self._increment_remediation_metric("queue_skips")
+                                    continue
                                 print(f"[Observer] AUTO-REMEDIATING: {namespace}/{pod_name}")
                                 try:
-                                    result = _registry.safe_call(
-                                        "microsoft_autonomous_remediation",
-                                        namespace=namespace,
-                                        pod_name=pod_name
+                                    planner_name = "ProtoAgent_Planner_instance_1"
+                                    goal = (
+                                        f"Remediate failing pod {namespace}/{pod_name}. "
+                                        f"Reason={reason}. Message={message}. "
+                                        f"Execute microsoft_autonomous_remediation immediately for pod {namespace}/{pod_name}."
                                     )
-                                    print(f"[Observer] Remediation result: {result}")
+                                    directive = {
+                                        "type": "INITIATE_PLANNING_CYCLE",
+                                        "planner_agent_name": planner_name,
+                                        "high_level_goal": goal,
+                                        "mission_type": "k8s_monitoring",
+                                        "cycle_id": getattr(self.orchestrator, "current_action_cycle_id", None),
+                                        "context": {"target_pod": f"{namespace}/{pod_name}"},
+                                    }
+                                    if self.orchestrator and hasattr(self.orchestrator, "inject_directives"):
+                                        self.orchestrator.inject_directives([directive])
+                                    elif getattr(self, "message_bus", None) and getattr(self.message_bus, "catalyst_vector_ref", None):
+                                        self.message_bus.catalyst_vector_ref.inject_directives([directive])
+                                    else:
+                                        raise RuntimeError("No orchestrator/message_bus to inject directive")
+                                    print(f"[Observer] Remediation mission injected for {namespace}/{pod_name}")
                                     self._mark_remediated(namespace, pod_name, reason=reason, controller=controller, message=message)
                                     self._increment_remediation_metric("remediation_success")
-                                    if _registry.has_tool("send_desktop_notification"):
-                                        try:
-                                            _registry.safe_call(
-                                                "send_desktop_notification",
-                                                title="K8s Remediation",
-                                                message=f"Remediated {namespace}/{pod_name}: {result}"
-                                            )
-                                        except Exception:
-                                            pass
                                 except Exception as e:
-                                    print(f"[Observer] Remediation failed for {namespace}/{pod_name}: {e}")
+                                    print(f"[Observer] Remediation mission injection failed for {namespace}/{pod_name}: {e}")
                                     self._increment_remediation_metric("remediation_failure")
                     # Fallback: inspect pod status for failures/crashloops (rate-limited)
                     if _registry.has_tool("get_pod_status") and self._can_run_pod_fallback():
@@ -3024,6 +3244,11 @@ class ProtoAgent_Observer(ProtoAgent):
                                     print(f"[Observer] Skipping {ns}/{name} due to high restarts ({restarts})")
                                     continue
                                 if ns and name and (bad_phase or bad_issue):
+                                    if not _pod_exists(ns, name):
+                                        print(f"[Observer] Skipping remediation (pod not found) for {ns}/{name}")
+                                        self._increment_remediation_metric("not_found_skips")
+                                        self._mark_remediated(ns, name)
+                                        continue
                                     if self._recently_remediated(ns, name):
                                         print(f"[Observer] Skipping remediation (recent) for {ns}/{name}")
                                         self._increment_remediation_metric("dedupe_skips")
@@ -4153,6 +4378,77 @@ class ProtoAgent_Planner(ProtoAgent):
                 "error_type": type(e).__name__
             }, level="error")
             raise  # Re-raise instead of returning None
+
+
+    def _reason_about_remediation(self, forensics: dict) -> dict:
+        """
+        Use the LLM to analyze remediation forensics and recommend concrete fixes.
+        Focuses on resource usage vs limits, workload patterns, and produces actionable
+        adjustments with explanations.
+        """
+        import json
+
+        forensics_safe = forensics or {}
+        payload = json.dumps(forensics_safe, indent=2)
+        prompt = f"""You are the CVA Planner. Analyze Kubernetes remediation forensics and propose the optimal fix.
+
+Forensics (JSON):
+{payload}
+
+Requirements:
+- Identify root cause with evidence (e.g., OOM, CPU saturation, disk I/O errors, crash loops).
+- Compare observed usage vs requests/limits if present.
+- Consider workload pattern (burst vs steady) implied by termination/usage signals.
+- Recommend specific resource adjustments with numeric targets (requests/limits or replica changes) and brief rationale.
+- Keep responses concise, in JSON.
+
+Respond with valid JSON:
+{{
+  "root_cause": "<short summary>",
+  "evidence": ["<bullet 1>", "<bullet 2>"],
+  "recommended_actions": [
+    {{"action": "adjust_resources", "container": "<name|unknown>", "requests": {{"cpu": "...", "memory": "..."}}, "limits": {{"cpu": "...", "memory": "..."}}, "reason": "<why>"}},
+    {{"action": "scale_replicas", "target": "<deployment|ds|pod>", "replicas": <int>, "reason": "<why>"}},
+    {{"action": "other", "description": "<config fix or investigation step>", "reason": "<why>"}}
+  ]
+}}"""
+
+        try:
+            response = self.ollama_inference_model.generate_text(
+                prompt=prompt,
+                json_mode=True,
+                temperature=0.2,
+                max_tokens=512,
+            )
+            parsed = json.loads(response)
+            self._log_agent_activity(
+                "LLM_REMEDIATION_REASONING",
+                self.name,
+                {
+                    "root_cause": parsed.get("root_cause"),
+                    "actions_count": len(parsed.get("recommended_actions", []) or []),
+                },
+            )
+            return parsed
+        except json.JSONDecodeError as e:
+            self._log_agent_activity(
+                "LLM_REMEDIATION_PARSE_ERROR",
+                self.name,
+                {
+                    "error": str(e),
+                    "response_preview": response[:200] if "response" in locals() else "no response",
+                },
+                level="error",
+            )
+            return {"status": "error", "error": str(e)}
+        except Exception as e:
+            self._log_agent_activity(
+                "LLM_REMEDIATION_REASONING_ERROR",
+                self.name,
+                {"error": str(e), "error_type": type(e).__name__},
+                level="error",
+            )
+            return {"status": "error", "error": str(e)}
 
 
     def _build_alert_reasoning_prompt(self, alert: dict) -> str:
@@ -7897,11 +8193,22 @@ class ProtoAgent_Planner(ProtoAgent):
             self._log_agent_activity("PLAN_DECOMPOSITION_START", self.name, f"Decomposing goal: {goal_to_plan}")
             
             # Track mission initiation for analytics
-            mission_type = self._categorize_mission(goal_to_plan)
+            try:
+                self.external_log_sink.info(
+                    f"[DEBUG FORCED] _forced_mission_type={getattr(self, '_forced_mission_type', None)}, kwargs_mission={kwargs.get('mission_type')}",
+                    extra={"agent": self.name},
+                )
+            except Exception:
+                pass
+            forced_mission = kwargs.get("mission_type") or getattr(self, "_forced_mission_type", None)
+            mission_type = forced_mission or self._categorize_mission(goal_to_plan)
             self._track_mission_initiation(mission_type)
+            if forced_mission and getattr(self, "_forced_mission_type", None):
+                self._forced_mission_type = None
             
             # Remove high_level_goal from kwargs to avoid duplication
             kwargs_without_goal = {k: v for k, v in kwargs.items() if k != 'high_level_goal'}
+            kwargs_without_goal.setdefault("mission_type", mission_type)
             return self._llm_plan_decomposition(high_level_goal=goal_to_plan, **kwargs_without_goal)
 
         # --- 5. Fallback for any other unhandled tasks ---
@@ -8070,6 +8377,8 @@ class ProtoAgent_Planner(ProtoAgent):
         
         if any(word in goal_lower for word in ["health", "audit", "validation", "registry"]):
             return "health_audit"
+        if any(word in goal_lower for word in ["resource optimization", "rightsize", "right-size", "over-provision", "under-provision", "requests", "limits", "capacity planning"]):
+            return "resource_optimization"
         elif any(word in goal_lower for word in ["performance", "optimiz", "efficiency", "cpu"]):
             return "performance_optimization"
         elif any(word in goal_lower for word in ["security", "threat", "vulnerability", "audit"]):
@@ -9191,6 +9500,24 @@ TOOLSMITH MODE (Self-Evolution):
         self._log_agent_activity("PLAN_DECOMPOSITION_START", self.name, f"Decomposing goal: {goal_str}")
 
         try:
+            # ---------- 0) Consult remediation semantic memory when relevant ----------
+            try:
+                mission_hint = kwargs.get("mission_type") or "general_planning"
+                if "remediat" in goal_str.lower() or mission_hint == "k8s_monitoring":
+                    from memory_store import mem_store
+                    memories = mem_store.recent(type_filter="SemanticRemediation", limit=10)
+                    self._last_remediation_memories = memories
+                    self._log_agent_activity(
+                        "REMEDIATION_MEMORY_LOOKUP",
+                        self.name,
+                        {
+                            "count": len(memories),
+                            "examples": memories[:2],
+                        },
+                    )
+            except Exception as e:
+                self._log_agent_activity("REMEDIATION_MEMORY_LOOKUP_FAILED", self.name, str(e), level="warning")
+
             # ---------- 1) Context ----------
             available_agents = []
             if hasattr(self, "orchestrator"):
@@ -9270,6 +9597,18 @@ TOOLSMITH MODE (Self-Evolution):
                     "PLAN_JSON_OK", self.name, "Primary JSON parse succeeded.",
                     {"preview": safe_truncate(json.dumps(plan, ensure_ascii=False), 500)}
                 )
+                self._log_agent_activity(
+                    "DEBUG_PARSED_STEPS",
+                    self.name,
+                    "Steps right after JSON parse",
+                    {
+                        "plan_id": plan.get("id"),
+                        "steps": [
+                            {"i": idx + 1, "agent": s.get("agent"), "tool": s.get("tool"), "title": s.get("title")}
+                            for idx, s in enumerate(plan.get("steps", []))
+                        ],
+                    },
+                )
             if plan is None:
                 self._log_agent_activity(
                     "JSON_EXTRACTION_FAILED", self.name, "Initial JSON extraction failed; attempting repair",
@@ -9309,10 +9648,21 @@ TOOLSMITH MODE (Self-Evolution):
 
             # ---------- 6) Stamp mission_type BEFORE validation/normalization (NEW) ----------
             try:
-                mission_for_policy = plan.get("mission_type") \
+                mission_for_policy = kwargs.get("mission_type") \
+                    or plan.get("mission_type") \
                     or (self._categorize_mission(goal_str) if hasattr(self, "_categorize_mission") else None) \
                     or "health_audit"
                 plan.setdefault("mission_type", mission_for_policy)
+                # Ensure mission_type is stamped on the plan early for downstream policy/normalization
+                mission_type = kwargs.get("mission_type") or mission_for_policy
+                plan["mission_type"] = mission_type
+                try:
+                    self.external_log_sink.info(
+                        f"[DEBUG] Setting plan mission_type={mission_type}, kwargs={kwargs.get('mission_type')}, forced={getattr(self, '_forced_mission_type', None)}",
+                        extra={"agent": self.name},
+                    )
+                except Exception:
+                    pass
 
                 # Add default task_type / strategic_intent via stamping so policy checks have context
                 from core.stamping import stamp_plan  # local import avoids global import cycles
@@ -9360,6 +9710,20 @@ TOOLSMITH MODE (Self-Evolution):
                 )
             except Exception:
                 pass
+            self._log_agent_activity(
+                "DEBUG_AFTER_REPAIR_NORMALIZE",
+                self.name,
+                "Steps after _repair_and_normalize_steps (before normalize_plan_schema)",
+                {
+                    "plan_id": plan.get("id"),
+                    "mission_type": plan.get("mission_type"),
+                    "steps": [
+                        {"i": idx + 1, "agent": s.get("agent"), "tool": s.get("tool"), "title": s.get("title")}
+                        for idx, s in enumerate(plan.get("steps", []))
+                        if isinstance(s, dict)
+                    ],
+                },
+            )
             clean_steps, skips = normalize_plan_schema(
                 self=self,
                 plan=plan,
@@ -9387,6 +9751,19 @@ TOOLSMITH MODE (Self-Evolution):
                     return "failed", error_msg, {"summary": error_msg, "skips": skips}, 0.0
 
             plan["steps"] = clean_steps
+            self._log_agent_activity(
+                "DEBUG_NORMALIZED_STEPS",
+                self.name,
+                "Steps right after normalization",
+                {
+                    "plan_id": plan.get("id"),
+                    "steps": [
+                        {"i": idx + 1, "agent": s.get("agent"), "tool": s.get("tool"), "title": s.get("title")}
+                        for idx, s in enumerate(plan.get("steps", []))
+                    ],
+                    "skips": skips,
+                },
+            )
             self._log_agent_activity(
                 "PLAN_STEPS_NORMALIZED", self.name, "Plan normalized to single-tool steps.",
                 {"kept": len(clean_steps), "skips": skips}
@@ -9428,6 +9805,18 @@ TOOLSMITH MODE (Self-Evolution):
             
             try:
                 from core.mission_policy import filter_plan_steps, count_autocorrected
+                self._log_agent_activity(
+                    "DEBUG_POLICY_INPUT", self.name, "Steps before policy filter",
+                    {
+                        "plan_id": plan.get("id"),
+                        "mission_for_policy": mission_for_policy,
+                        "target_deployment": target_deployment,
+                        "steps": [
+                            {"i": idx + 1, "agent": s.get("agent"), "tool": s.get("tool"), "title": s.get("title"), "args": s.get("args")}
+                            for idx, s in enumerate(plan.get("steps", []))
+                        ],
+                    },
+                )
                 policy_steps = filter_plan_steps(mission_for_policy, plan["steps"], target_deployment)
                 auto_count = count_autocorrected(policy_steps)
                 skipped_by_policy = len(plan["steps"]) - len(policy_steps)
@@ -9438,6 +9827,18 @@ TOOLSMITH MODE (Self-Evolution):
                     "auto_corrected": auto_count, "skipped": skipped_by_policy}
                 )
                 plan["steps"] = policy_steps
+                self._log_agent_activity(
+                    "DEBUG_POLICY_OUTPUT", self.name, "Steps after policy filter",
+                    {
+                        "plan_id": plan.get("id"),
+                        "mission_for_policy": mission_for_policy,
+                        "target_deployment": target_deployment,
+                        "steps": [
+                            {"i": idx + 1, "agent": s.get("agent"), "tool": s.get("tool"), "title": s.get("title"), "args": s.get("args")}
+                            for idx, s in enumerate(plan.get("steps", []))
+                        ],
+                    },
+                )
             except Exception as e:
                 self._log_agent_activity("PLAN_POLICY_FILTER_WARN", self.name, f"Policy filter failed (continuing): {e}", level="warning")
                 
@@ -10225,6 +10626,15 @@ class ProtoAgent_Worker(ProtoAgent):
         context_plan = (context_info or {}) if isinstance(context_info, dict) else {}
         plan_id = context_plan.get("plan_id") or kwargs.get("plan_id")
         task_id = context_plan.get("task_id") or kwargs.get("task_id")
+        try:
+            if getattr(self, "orchestrator", None) and hasattr(self.orchestrator, "dynamic_directive_queue"):
+                qsize = len(self.orchestrator.dynamic_directive_queue)
+                self.external_log_sink.info(
+                    f"[WORKER_QUEUE] directive_queue_depth={qsize}",
+                    extra={"agent": self.name},
+                )
+        except Exception:
+            pass
 
         # Early TaskResult writer for all early-returns
         def _store_task_result_early(status: str, summary: str, extra: dict | None = None):
@@ -10722,3 +11132,52 @@ class ProtoAgent_Worker(ProtoAgent):
 class MetaCognitiveArchitecture(ProtoAgent):
     """Meta™ agent-centric autonomous intelligence system"""
     pass
+# ---------------------------------------------------------------------------
+# Worker-step arg validation helper (used by tests)
+# ---------------------------------------------------------------------------
+def validate_worker_step_args(step: dict) -> dict:
+    """
+    Lightweight validation for Worker-executed steps.
+
+    Contract:
+      - step must be a dict
+      - step["tool"] must be a non-empty string
+      - step["args"] must exist and be a dict (defaults to {})
+      - for some tools, enforce minimal required keys
+
+    Returns the normalized args dict (may be empty).
+    Raises ValueError on validation failure.
+    """
+    if not isinstance(step, dict):
+        raise ValueError("step must be a dict")
+
+    tool = str(step.get("tool", "")).strip()
+    if not tool:
+        raise ValueError("step.tool is required")
+
+    args = step.get("args", {})
+    if args is None:
+        args = {}
+        step["args"] = args
+    if not isinstance(args, dict):
+        raise ValueError("step.args must be a dict")
+
+    # Minimal required args for common worker tools
+    if tool == "execute_terminal_command":
+        # accept either 'command' or 'cmd'
+        if not (args.get("command") or args.get("cmd")):
+            raise ValueError("execute_terminal_command requires args.command or args.cmd")
+
+    if tool == "write_sandbox_file":
+        if not args.get("path"):
+            raise ValueError("write_sandbox_file requires args.path")
+        if "content" not in args:
+            raise ValueError("write_sandbox_file requires args.content")
+
+    if tool == "microsoft_autonomous_remediation":
+        # accept either pod_name, or (namespace + pod_name)
+        if not args.get("pod_name"):
+            raise ValueError("microsoft_autonomous_remediation requires args.pod_name")
+
+    # k8s_* tools often can run with selectors; keep permissive by default.
+    return args

@@ -261,3 +261,19 @@ You are about to take a significant action and you must generate a concise, firs
 
 Based on your CRITICAL RULES, your operational mode, the action, and the evidence, generate a single paragraph explaining your reasoning, starting with "My reasoning for this action is:".
 """
+# --- MEMORY & LEARNING INSTRUCTIONS ---
+MEMORY_SYSTEM_PROMPT = """
+🧠 **HIVE MIND PROTOCOLS (SHARED MEMORY)**
+You are connected to a persistent Shared Memory (The Hive Mind). 
+You generally have short-term amnesia (context resets), so you MUST rely on the Hive Mind for continuity.
+
+**YOUR MEMORY OBLIGATIONS:**
+1. **SEARCH FIRST:** Before creating a plan or taking complex action, use `search_memory` to check if this has been solved before.
+   - *Example:* "How did we fix the nginx crash last time?"
+2. **RECORD SUCCESS:** When a plan succeeds or you observe a critical event, use `remember_event` to save it.
+   - *Category:* 'outcome' or 'observation'
+   - *Detail:* Be specific. "Restarting deployment X fixed the 503 error."
+3. **RECORD FAILURE:** If a tool fails, record it so we don't try the same bad arguments again.
+
+**DO NOT** rely on internal history for events older than 5 minutes. Query the Hive Mind.
+"""

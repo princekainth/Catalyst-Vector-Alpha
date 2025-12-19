@@ -1739,6 +1739,7 @@ class CatalystVectorAlpha:
         planner_agent_name = directive.get('planner_agent_name')
         high_level_goal = directive.get('high_level_goal')
         cycle_id = directive.get('cycle_id', self.current_action_cycle_id)
+        mission_type = directive.get('mission_type')
 
         if not planner_agent_name or not high_level_goal:
             raise ValueError("INITIATE_PLANNING_CYCLE directive missing 'planner_agent_name' or 'high_level_goal'.")
@@ -1750,11 +1751,13 @@ class CatalystVectorAlpha:
         
         planner_agent.current_intent = high_level_goal
         # This ensures the Planner's internal router knows how to handle the new intent.
-        planner_agent.current_task_type = "INITIATE_PLANNING_CYCLE" 
+        planner_agent.current_task_type = "INITIATE_PLANNING_CYCLE"
+        if mission_type:
+            planner_agent._forced_mission_type = mission_type
 
         self._log_swarm_activity("PLANNING_CYCLE_INITIATED", "CatalystVectorAlpha",
                                 f"Planner '{planner_agent_name}' assigned new high-level goal: '{high_level_goal}'.",
-                                {"planner": planner_agent_name, "goal": high_level_goal, "cycle_id": cycle_id}, level='info')
+                                {"planner": planner_agent_name, "goal": high_level_goal, "cycle_id": cycle_id, "mission_type": mission_type}, level='info')
         
     def report_task_progress(self, task_id: str, step_id: int, status: str):
         """Updates the status of a single step within a larger task."""

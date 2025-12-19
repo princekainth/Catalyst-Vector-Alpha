@@ -52,10 +52,15 @@ class DynamicAgent(ProtoAgent):
         self.db = db
         self.is_expired = False
         
-        # Create minimal eidos_spec
+        # Create minimal eidos_spec with MEMORY INSTRUCTIONS
+        from prompts import MEMORY_SYSTEM_PROMPT
+        
+        # Inject memory rules into the intent so the agent sees them
+        enhanced_intent = f"{spec.purpose}\n\n{MEMORY_SYSTEM_PROMPT}"
+        
         eidos_spec = {
             "role": "dynamic_agent",
-            "initial_intent": spec.purpose,
+            "initial_intent": enhanced_intent,
             "location": "autonomous"
         }
         

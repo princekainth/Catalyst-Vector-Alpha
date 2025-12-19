@@ -653,6 +653,38 @@ class ToolRegistry:
                 roles_allowed={"Observer", "Security", "Planner"},
             ),
 
+            # --- 🧠 MEMORY TOOLS ---
+            Tool(
+                "remember_event",
+                "Save a critical observation or decision to long-term memory.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "category": {"type": "string", "enum": ["observation", "plan", "action", "outcome"]},
+                        "description": {"type": "string"}
+                    },
+                    "required": ["category", "description"]
+                },
+                _tf("remember_event"),
+                task_type="GenericTask",
+                roles_allowed={"Observer", "Planner", "Worker", "Security"}
+            ),
+
+            Tool(
+                "search_memory",
+                "Search long-term memory for past similar events or solutions.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"}
+                    },
+                    "required": ["query"]
+                },
+                _tf("search_memory"),
+                task_type="GenericTask",
+                roles_allowed={"Planner", "Observer", "Worker"}
+            ),
+
             # Responsiveness
             Tool("measure_responsiveness", "Measure system responsiveness by timing a harmless command.", {}, _tf("measure_responsiveness_tool"),
                  cooldown_seconds=0.0, task_type="Observation", roles_allowed={"Observer", "Security"}),

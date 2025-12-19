@@ -37,3 +37,4 @@ config/
 credentials.json
 token.json
 
+minikube-linux-amd64

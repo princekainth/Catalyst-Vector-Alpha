@@ -142,6 +142,23 @@ MISSION_TOOL_POLICY = {
         "fallback": "measure_responsiveness",
     },
 
+    "resource_optimization": {
+        "allow": {
+            "kubernetes_pod_metrics_tool",
+            "find_wasteful_deployments_tool",
+            "get_pod_status",
+            "watch_k8s_events",
+            "k8s_scale",
+            "k8s_restart",
+            "measure_responsiveness",
+            "create_pdf",
+            "generate_report_pdf",
+            "send_desktop_notification",
+        },
+        "deny": set(),
+        "fallback": "kubernetes_pod_metrics_tool",
+    },
+
 }
 
 # ==============================================================================
@@ -150,6 +167,16 @@ MISSION_TOOL_POLICY = {
 
 def filter_plan_steps(mission: str, steps: List[Dict[str, Any]], target_deployment: str = None) -> List[Dict[str, Any]]:
     """Filter and auto-correct plan steps. Overrides deployment names if target_deployment provided."""
+    # Force k8s_monitoring policy if any step looks like remediation (title or tool)
+    try:
+        if any(
+            ("remediat" in str(step.get("title", "")).lower())
+            or ("remediat" in str(step.get("tool", "")).lower())
+            for step in steps
+        ):
+            mission = "k8s_monitoring"
+    except Exception:
+        pass
     policy = MISSION_TOOL_POLICY.get(mission, {"allow": set(), "deny": set(), "fallback": None})
     filtered_steps: List[Dict[str, Any]] = []
 
@@ -203,6 +230,7 @@ def candidate_missions() -> List[str]:
         "health_audit",
         "k8s_monitoring",
         "sandbox_inspection",  # NEW: Terminal inspection mission
+        "resource_optimization",
     ]
 
 def _fetch_recent_outcomes(mem) -> List[Dict[str, Any]]:

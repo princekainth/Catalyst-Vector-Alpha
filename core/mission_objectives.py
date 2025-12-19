@@ -29,5 +29,11 @@ goal_driven_tasks = {
         "Verify Python version in the sandbox using execute_terminal_command",
         "List all files in /workspace using execute_terminal_command",
         "Check available disk space in the sandbox using execute_terminal_command (df -h)"
+    ],
+    "resource_optimization": [
+        "Collect cluster pod metrics (cpu/memory) and identify top 5 over-provisioned workloads by low utilization vs limits",
+        "Identify under-provisioned pods with high restart counts or usage near limits",
+        "Recommend right-sizing (requests/limits) and replica adjustments for the worst offenders",
+        "Produce a concise report of proposed changes and expected savings/impact"
     ]
 }

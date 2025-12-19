@@ -21,6 +21,9 @@ from urllib.parse import urlparse
 from ipaddress import ip_address, IPv4Address
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from shared_memory import SharedMemory
+# Initialize the brain so tools can use it
+SHARED_BRAIN = SharedMemory()
 # Import sandbox tools so registry can find them
 from sandbox_tools import execute_terminal_command as execute_terminal_command_tool
 from sandbox_tools import write_sandbox_file as write_sandbox_file_tool
@@ -881,13 +884,16 @@ def watch_k8s_audit_events(minutes: int = 5, event_types: list = None) -> dict:
         return {"ok": False, "error": str(e)}
 
 
-def microsoft_autonomous_remediation(pod_name, namespace="default"):
+def microsoft_autonomous_remediation(pod_name, namespace="default", recommended_actions=None, resource_patch=None, **kwargs):
     """
     Microsoft™ Enterprise Remediation Protocol v2.0
     1. EXTRACTS logs to a permanent forensic file (Black Box).
     2. ANALYZES logs for root cause.
     3. EXECUTES tactical restart.
     4. VERIFIES stability.
+
+    Enhanced: if resource recommendations are provided (e.g., from Planner reasoning),
+    apply them to the owning Deployment or recreate naked pods with updated resources.
     """
     timestamp = int(time.time())
     results = {
@@ -895,6 +901,11 @@ def microsoft_autonomous_remediation(pod_name, namespace="default"):
         "actions": [],
         "outcome": "failed"
     }
+
+    # Normalize recommendations from kwargs fallback
+    if recommended_actions is None:
+        recommended_actions = kwargs.get("recommended_actions")
+    resource_patch = resource_patch or kwargs.get("resource_patch")
     
     # Create a secure vault for evidence
     evidence_dir = "logs/forensics"
@@ -914,6 +925,7 @@ def microsoft_autonomous_remediation(pod_name, namespace="default"):
         pod_exists = False
         owner_kind = owner_name = None
         pod_labels = {}
+        pod_forensics = {}
         try:
             pod_json = _safe_json(["kubectl", "get", "pod", pod_name, "-n", namespace, "-o", "json"])
             if pod_json:
@@ -923,12 +935,59 @@ def microsoft_autonomous_remediation(pod_name, namespace="default"):
                 if owners:
                     owner_kind = owners[0].get("kind")
                     owner_name = owners[0].get("name")
+                # Track owner references for postmortem
+                pod_forensics["owner_references"] = owners or []
+                if owner_kind or owner_name:
+                    pod_forensics["owner_summary"] = {"kind": owner_kind, "name": owner_name}
+                # Capture termination reason/exit codes from status
+                try:
+                    statuses = (pod_json.get("status", {}) or {}).get("containerStatuses", []) or []
+                    term_info = []
+                    for cs in statuses:
+                        state = cs.get("lastState") or cs.get("state") or {}
+                        term = state.get("terminated") or {}
+                        if term:
+                            term_info.append({
+                                "name": cs.get("name"),
+                                "reason": term.get("reason"),
+                                "exitCode": term.get("exitCode"),
+                                "message": term.get("message"),
+                            })
+                    if term_info:
+                        pod_forensics["termination"] = term_info
+                except Exception:
+                    pass
+                # Capture resource requests/limits
+                try:
+                    specs = (pod_json.get("spec", {}) or {}).get("containers", []) or []
+                    res_info = []
+                    for c in specs:
+                        res = c.get("resources", {}) or {}
+                        res_info.append({
+                            "name": c.get("name"),
+                            "requests": res.get("requests"),
+                            "limits": res.get("limits"),
+                        })
+                    if res_info:
+                        pod_forensics["resources"] = res_info
+                except Exception:
+                    pass
         except Exception:
             pod_exists = False
 
         results["owner_kind"] = owner_kind
         results["owner_name"] = owner_name
         results["labels"] = pod_labels
+        if pod_forensics:
+            results["forensics"] = pod_forensics
+
+        # Extract resource adjustment intents
+        resource_actions = []
+        for action in recommended_actions or []:
+            if action.get("action") == "adjust_resources":
+                resource_actions.append(action)
+        if resource_patch:
+            resource_actions.append(resource_patch)
 
         # Resolve a label selector for safer bulk operations (DaemonSet-friendly)
         label_selector = (
@@ -963,6 +1022,42 @@ def microsoft_autonomous_remediation(pod_name, namespace="default"):
             results["actions"].append("Forensic logs saved to disk")
             results["log_preview"] = logs[:200]
 
+            # --- Log parsing for resource hints ---
+            # Extract rough memory/CPU/IO/error signals from the captured logs.
+            try:
+                import re
+
+                def _extract_numbers(pattern: str, text: str):
+                    return [float(m) for m in re.findall(pattern, text)]
+
+                mem_matches_mb = _extract_numbers(r"([0-9]+(?:\\.[0-9]+)?)\\s*MiB", logs)
+                mem_matches_gb = _extract_numbers(r"([0-9]+(?:\\.[0-9]+)?)\\s*GiB", logs)
+                cpu_matches_pct = _extract_numbers(r"([0-9]+(?:\\.[0-9]+)?)\\s*%\\s*cpu", logs)
+                cpu_matches_mc = _extract_numbers(r"([0-9]+(?:\\.[0-9]+)?)\\s*mCPU", logs)
+                disk_io_matches = re.findall(r"(I/O error|Input/output error|disk failure|read error|write error)", logs, flags=re.IGNORECASE)
+                error_patterns = re.findall(r"(OOMKilled|OutOfMemory|CrashLoopBackOff|BackOff|ImagePull|ErrImagePull|Connection refused|timeout|segmentation fault|exception)", logs, flags=re.IGNORECASE)
+
+                mem_vals = mem_matches_mb + [g * 1024 for g in mem_matches_gb]
+                cpu_vals = cpu_matches_pct + cpu_matches_mc
+
+                parsed_signals = {
+                    "memory_usage_mb_sample": mem_vals,
+                    "cpu_usage_sample": cpu_vals,
+                    "disk_io_errors": disk_io_matches,
+                    "error_patterns": error_patterns,
+                }
+                # Simple heuristics for “what was happening”
+                if mem_vals:
+                    parsed_signals["max_memory_usage_mb"] = max(mem_vals)
+                if cpu_vals:
+                    parsed_signals["max_cpu_observed"] = max(cpu_vals)
+                if "OOMKilled" in error_patterns or "OutOfMemory" in error_patterns:
+                    parsed_signals["root_cause_hint"] = parsed_signals.get("root_cause_hint", "OOM or memory pressure")
+
+                results["log_signals"] = parsed_signals
+            except Exception:
+                pass
+
             if "ImagePullBackOff" in logs or "ErrImagePull" in logs:
                 results["root_cause_hint"] = "Deployment Config Error (Image)"
             elif "OOMKilled" in logs:
@@ -976,8 +1071,111 @@ def microsoft_autonomous_remediation(pod_name, namespace="default"):
         else:
             results["actions"].append("Pod not found; skipping log capture.")
 
-        # STEP 2: Prefer DaemonSet/label-based remediation to avoid stale pod names
-        if owner_kind == "DaemonSet" and owner_name:
+        # STEP 2: Apply calculated fixes if provided, otherwise fallback to restart/delete behavior
+        def _apply_resource_patch_to_deployment(deploy_name: str, actions: list) -> bool:
+            if not deploy_name or not actions:
+                return False
+            # Build strategic merge patch for resources
+            containers_patch = []
+            for act in actions:
+                cname = act.get("container") or None
+                res_block = {}
+                reqs = act.get("requests") or {}
+                limits = act.get("limits") or {}
+                if reqs:
+                    res_block["requests"] = reqs
+                if limits:
+                    res_block["limits"] = limits
+                if not res_block:
+                    continue
+                containers_patch.append({
+                    "name": cname or "",  # empty name is tolerated; K8s will match by merge key if set
+                    "resources": res_block,
+                })
+            if not containers_patch:
+                return False
+            patch_obj = {
+                "spec": {
+                    "template": {
+                        "spec": {
+                            "containers": containers_patch
+                        }
+                    }
+                }
+            }
+            try:
+                import json as _json
+                subprocess.run(
+                    ["kubectl", "patch", "deployment", deploy_name, "-n", namespace, "--type", "merge", "-p", _json.dumps(patch_obj)],
+                    check=True,
+                )
+                results["actions"].append(f"Patched deployment/{deploy_name} resources with recommended limits/requests")
+                return True
+            except Exception as e:
+                results["actions"].append(f"Deployment patch failed: {e}")
+                return False
+
+        def _recreate_naked_pod_with_resources(pod_doc: dict, actions: list) -> bool:
+            if not pod_doc or not actions:
+                return False
+            pod_spec = pod_doc.get("spec", {}) or {}
+            containers = pod_spec.get("containers", []) or []
+            if not containers:
+                return False
+
+            # Apply resource overrides
+            for act in actions:
+                target_name = act.get("container")
+                reqs = act.get("requests") or {}
+                limits = act.get("limits") or {}
+                for c in containers:
+                    if target_name and c.get("name") != target_name:
+                        continue
+                    res = c.get("resources") or {}
+                    if reqs:
+                        res["requests"] = reqs
+                    if limits:
+                        res["limits"] = limits
+                    c["resources"] = res
+
+            # Clean metadata for re-create
+            import copy
+            import json as _json
+            new_pod = copy.deepcopy(pod_doc)
+            new_pod.pop("status", None)
+            meta = new_pod.get("metadata", {}) or {}
+            for k in ["resourceVersion", "uid", "selfLink", "creationTimestamp", "managedFields", "annotations"]:
+                meta.pop(k, None)
+            # Keep name constant; namespace handled by -n flag
+            meta["namespace"] = namespace
+            new_pod["metadata"] = meta
+            new_pod["spec"] = pod_spec
+
+            # Delete existing pod first
+            try:
+                subprocess.run(["kubectl", "delete", "pod", pod_name, "-n", namespace, "--wait=false"], check=False)
+            except Exception:
+                pass
+
+            try:
+                subprocess.run(
+                    ["kubectl", "apply", "-f", "-", "-n", namespace],
+                    input=_json.dumps(new_pod),
+                    text=True,
+                    check=True,
+                )
+                results["actions"].append("Recreated naked pod with updated resources")
+                return True
+            except Exception as e:
+                results["actions"].append(f"Naked pod recreate failed: {e}")
+                return False
+
+        patched = False
+
+        if owner_kind == "Deployment" and owner_name and resource_actions:
+            patched = _apply_resource_patch_to_deployment(owner_name, resource_actions)
+
+        if not patched and owner_kind == "DaemonSet" and owner_name:
             print(f"⚡ [Microsoft Kernel] Restarting DaemonSet/{owner_name} in {namespace}...")
             try:
                 subprocess.run(
@@ -1002,51 +1200,116 @@ def microsoft_autonomous_remediation(pod_name, namespace="default"):
                 except Exception as e:
                     results["actions"].append(f"Selector-based pod delete failed: {e}")
         else:
-            # Legacy single-pod remediation, but only if pod exists
-            if pod_exists:
-                print(f"⚡ [Microsoft Kernel] Initiating tactical termination of {pod_name}...")
-                delete_cmd = f"kubectl delete pod {pod_name} -n {namespace} --wait=false"
-                subprocess.run(delete_cmd, shell=True, check=True)
-                results["actions"].append("Pod termination triggered")
-            else:
-                results["actions"].append("Pod not found; skipping pod delete.")
+            # Deployment patch already attempted or owner not DaemonSet
+            if not patched and not owner_name and resource_actions and pod_exists:
+                # Naked pod: recreate with updated resources
+                patched = _recreate_naked_pod_with_resources(pod_json, resource_actions)
 
-        # STEP 3: VERIFICATION (Wait for replacement)
-        print("⏳ [Microsoft Kernel] Waiting for stabilization (15s)...")
-        time.sleep(15)
+            if not patched:
+                # Legacy single-pod remediation, but only if pod exists
+                if pod_exists:
+                    print(f"⚡ [Microsoft Kernel] Initiating tactical termination of {pod_name}...")
+                    delete_cmd = f"kubectl delete pod {pod_name} -n {namespace} --wait=false"
+                    subprocess.run(delete_cmd, shell=True, check=True)
+                    results["actions"].append("Pod termination triggered")
+                else:
+                    results["actions"].append("Pod not found; skipping pod delete.")
 
-        # Verify via owner selector or pod prefix
-        verify_cmd = None
-        if label_selector:
-            verify_cmd = ["kubectl", "get", "pods", "-n", namespace, "-l", label_selector]
-        elif pod_exists:
-            deployment_name = "-".join(pod_name.split("-")[:-1]) or pod_name
-            verify_cmd = ["kubectl", "get", "pods", "-n", namespace, "--field-selector", f"metadata.name={pod_name}"]
-        elif owner_name and owner_kind == "DaemonSet":
-            verify_cmd = ["kubectl", "get", "pods", "-n", namespace, "-l", f"daemonset={owner_name}"]
-
-        status_output = ""
-        if verify_cmd:
+        # STEP 3: VERIFICATION (monitor up to 60s)
+        def _fetch_pods(selector: str = None, field: str = None):
             try:
-                status_output = subprocess.check_output(verify_cmd, shell=False, text=True)
-            except subprocess.CalledProcessError as e:
-                status_output = e.output or str(e)
+                cmd = ["kubectl", "get", "pods", "-n", namespace, "-o", "json"]
+                if selector:
+                    cmd.extend(["-l", selector])
+                if field:
+                    cmd.extend(["--field-selector", field])
+                out = subprocess.check_output(cmd, shell=False, text=True)
+                return json.loads(out)
+            except Exception:
+                return None
 
-        if status_output and "Running" in status_output and "CrashLoop" not in status_output:
+        def _assess_pods(pod_json: dict):
+            items = (pod_json or {}).get("items", [])
+            if not items:
+                return False, {"reason": "no_pods_found"}
+            unhealthy = []
+            for p in items:
+                meta = p.get("metadata", {}) or {}
+                status = p.get("status", {}) or {}
+                phase = status.get("phase")
+                container_statuses = status.get("containerStatuses", []) or []
+                waiting = any((cs.get("state", {}) or {}).get("waiting") for cs in container_statuses)
+                crash = any(
+                    ((cs.get("state", {}) or {}).get("waiting") or {}).get("reason") in ("CrashLoopBackOff", "ImagePullBackOff", "ErrImagePull")
+                    for cs in container_statuses
+                )
+                restarts = sum(cs.get("restartCount", 0) for cs in container_statuses)
+                if phase != "Running" or waiting or crash or restarts > 3:
+                    unhealthy.append({
+                        "pod": meta.get("name"),
+                        "phase": phase,
+                        "restarts": restarts,
+                        "waiting": waiting,
+                        "crash": crash,
+                    })
+            return len(unhealthy) == 0, {"unhealthy": unhealthy}
+
+        monitor_window_s = 60
+        interval_s = 5
+        monitor_selector = label_selector
+        monitor_field = None
+        if not monitor_selector and pod_exists:
+            monitor_field = f"metadata.name={pod_name}"
+        if not monitor_selector and owner_name and owner_kind == "DaemonSet":
+            monitor_selector = f"daemonset={owner_name}"
+
+        verification_checks = []
+        stable = False
+        for _ in range(max(1, monitor_window_s // interval_s)):
+            pod_list = _fetch_pods(selector=monitor_selector, field=monitor_field)
+            ok, detail = _assess_pods(pod_list)
+            verification_checks.append(detail)
+            if ok:
+                stable = True
+                break
+            time.sleep(interval_s)
+
+        results["verification_checks"] = verification_checks
+        results["verification_window_s"] = monitor_window_s
+
+        if stable:
             results["outcome"] = "SUCCESS"
             results["verification"] = "Workload healthy after remediation"
             results["actions"].append("Service restored to healthy state")
-        elif "CrashLoopBackOff" in status_output:
-            results["outcome"] = "REMEDIATION_FAILED"
-            results["verification"] = "Workload still crashing - escalate to human"
-            results["actions"].append("Escalation flag raised")
-        elif not status_output:
-            results["outcome"] = "PENDING"
-            results["verification"] = "Verification inconclusive (no status output)"
         else:
-            results["outcome"] = "PENDING"
-            results["verification"] = "Workload booting, unclear status"
-            results["current_status"] = status_output.strip()
+            results["outcome"] = "REMEDIATION_FAILED"
+            results["verification"] = "Workload still unhealthy after remediation"
+            results["actions"].append("Escalation flag raised")
+
+        # Persist outcome to memory store for later analytics
+        try:
+            from memory_store import mem_store
+            mem_store.add("RemediationVerification", {
+                "target": pod_name,
+                "namespace": namespace,
+                "outcome": results.get("outcome"),
+                "timestamp": time.time(),
+                "actions": results.get("actions", []),
+                "verification": results.get("verification"),
+            })
+            # Also persist semantic summary for Planner reuse
+            semantic_payload = {
+                "target": pod_name,
+                "namespace": namespace,
+                "outcome": results.get("outcome"),
+                "actions": results.get("actions", []),
+                "recommendations": recommended_actions or [],
+                "verification": results.get("verification"),
+                "confidence": 0.8 if results.get("outcome") == "SUCCESS" else 0.4,
+            }
+            mem_store.add("SemanticRemediation", semantic_payload)
+        except Exception:
+            pass
 
     except Exception as e:
         results["error"] = str(e)
@@ -1058,18 +1321,14 @@ def watch_k8s_events(namespace: str = "all", minutes: int = 5) -> dict:
     """
     Monitor Kubernetes cluster events for incidents.
     Detects: pod kills, crashes, OOMs, restarts, scaling events, failures.
-    
-    Args:
-        namespace: Namespace to watch ("all" for all namespaces)
-        minutes: How far back to look for events
-    
-    Returns:
-        dict with: events list, summary, critical_count, warning_count
+    FILTERS: Ignores known noise (minikube, coredns, normal startups).
     """
     import subprocess
     import json
     from datetime import datetime, timedelta
-    
+    import os
+    from typing import Optional
+
     try:
         fresh_failed_window = int(os.getenv("K8S_FAILED_SCHEDULING_FRESH_SECONDS", "120"))
 
@@ -1086,6 +1345,11 @@ def watch_k8s_events(namespace: str = "all", minutes: int = 5) -> dict:
         
         events_data = json.loads(result.stdout)
         
+        # --- 🛡️ NOISE FILTER DEFINITIONS ---
+        IGNORED_PODS = ["minikube", "coredns", "kube-proxy", "storage-provisioner"]
+        # Reasons we typically don't care about unless specifically debugging
+        IGNORED_REASONS = ["Pulled", "Pulling", "Created", "Started", "Scheduled", "SuccessfulCreate", "ScalingReplicaSet"]
+        
         # Filter recent events
         cutoff = datetime.utcnow() - timedelta(minutes=minutes)
         recent_events = []
@@ -1095,7 +1359,6 @@ def watch_k8s_events(namespace: str = "all", minutes: int = 5) -> dict:
         stale_failed_scheduling_count = 0
         
         critical_reasons = ["OOMKilled", "CrashLoopBackOff", "Failed", "FailedScheduling", "Unhealthy", "BackOff", "Killing"]
-        warning_reasons = ["Pulled", "Created", "Started", "Scheduled", "SuccessfulCreate"]
 
         now = datetime.utcnow()
 
@@ -1109,6 +1372,7 @@ def watch_k8s_events(namespace: str = "all", minutes: int = 5) -> dict:
             if not ts_str:
                 return None
             try:
+                # Handle Zulu time
                 return datetime.fromisoformat(ts_str.replace("Z", "+00:00")).replace(tzinfo=None)
             except Exception:
                 return None
@@ -1118,7 +1382,27 @@ def watch_k8s_events(namespace: str = "all", minutes: int = 5) -> dict:
             message = item.get("message", "")
             event_type = item.get("type", "Normal")
             involved = item.get("involvedObject", {})
+            pod_name = involved.get("name", "unknown")
+            
+            # --- 🛡️ FILTER LOGIC START ---
+            # 1. Skip Known System Noises (Ghost Filter)
+            if any(ignored in pod_name for ignored in IGNORED_PODS):
+                continue
+
+            # 2. Skip Normal Lifecycle Events (Chatter Filter)
+            if reason in IGNORED_REASONS and event_type != "Warning":
+                continue
+            
+            # 3. Skip "nginx" unless it's genuinely failing (Test Filter)
+            if "nginx" in pod_name and reason not in critical_reasons and event_type != "Warning":
+                continue
+            # --- 🛡️ FILTER LOGIC END ---
+
             evt_ts = _parse_event_ts(item)
+            # Skip if older than requested window
+            if evt_ts and evt_ts < cutoff:
+                continue
+
             age_seconds = (now - evt_ts).total_seconds() if evt_ts else None
             is_failed_sched = reason == "FailedScheduling"
             is_fresh_failed = is_failed_sched and age_seconds is not None and age_seconds <= fresh_failed_window
@@ -1126,15 +1410,16 @@ def watch_k8s_events(namespace: str = "all", minutes: int = 5) -> dict:
             event_record = {
                 "namespace": involved.get("namespace", "unknown"),
                 "kind": involved.get("kind", "unknown"),
-                "name": involved.get("name", "unknown"),
+                "name": pod_name,
                 "reason": reason,
-                "message": message[:200],  # Truncate long messages
+                "message": message[:200],
                 "type": event_type,
                 "count": item.get("count", 1),
                 "age_seconds": age_seconds,
                 "fresh_failed_scheduling": is_fresh_failed,
             }
             
+            # Logic for Critical vs Warning
             if is_failed_sched:
                 if is_fresh_failed:
                     critical = True
@@ -1153,10 +1438,9 @@ def watch_k8s_events(namespace: str = "all", minutes: int = 5) -> dict:
             else:
                 warning_count += 1
         
-        # Build summary
-        summary = f"Found {len(recent_events)} events. Critical: {critical_count}, Normal: {warning_count}"
+        summary = f"Found {len(recent_events)} relevant events. Critical: {critical_count}, Normal: {warning_count}"
         
-        # Highlight critical issues (with freshness gating for FailedScheduling)
+        # Highlight critical issues
         critical_events = [e for e in recent_events if e.get("critical")]
         
         return {
@@ -1164,8 +1448,8 @@ def watch_k8s_events(namespace: str = "all", minutes: int = 5) -> dict:
             "summary": summary,
             "critical_count": critical_count,
             "warning_count": warning_count,
-            "critical_events": critical_events[:10],  # Top 10 critical
-            "all_events": recent_events[:20],  # Last 20 events
+            "critical_events": critical_events[:10],
+            "all_events": recent_events[:20],
             "namespace_filter": namespace,
             "minutes_back": minutes,
             "active_failed_scheduling_count": active_failed_scheduling_count,
@@ -2091,6 +2375,43 @@ def prometheus_range_query_tool(query: str, start: str, end: str, step: str = "1
             }
         else:
             return {"ok": False, "error": data.get("error", "Unknown error")}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+# --- 🧠 MEMORY TOOLS ---
+
+def remember_event(category: str, description: str, agent_name: str = "Unknown") -> dict:
+    """
+    Saves a critical event to the Permanent Hive Mind.
+    Args:
+        category: 'observation', 'plan', 'action', 'outcome'
+        description: The full text to remember
+    """
+    try:
+        SHARED_BRAIN.add_memory(
+            agent_name=agent_name,
+            text=description,
+            category=category
+        )
+        return {"ok": True, "summary": "Memory stored successfully."}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+def search_memory(query: str) -> dict:
+    """
+    Consults the Hive Mind for past wisdom.
+    Use this BEFORE planning to see if we've solved this before.
+    """
+    try:
+        memories = SHARED_BRAIN.query_memory(query, n_results=3)
+        if not memories:
+            return {"ok": True, "summary": "No relevant memories found."}
+            
+        formatted = "RELEVANT PAST MEMORIES:\n"
+        for mem in memories:
+            formatted += f"- [{mem['timestamp']}] {mem['agent']} ({mem['category']}): {mem['text']}\n"
+            
+        return {"ok": True, "summary": formatted, "raw_data": memories}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
