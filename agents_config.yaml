@@ -1,0 +1,58 @@
+# Default agent initialization values (extracted from agents.py __init__ patterns)
+# This file is a configuration snapshot only; runtime still uses code defaults unless wired to read this file.
+
+observer:
+  role: observer
+  ignore_patterns: ["victim"]
+  remediation_cache_ttl_seconds: 600
+  pod_status_fallback_interval_seconds: 60
+  watch_k8s_minutes: 5
+  k8s_cache_ttl_seconds: 10
+  rate_limit_seconds: 10
+  remediation_metrics:
+    remediation_success: 0
+    remediation_failure: 0
+    dedupe_skips: 0
+    rate_limit_skips: 0
+    ignore_skips: 0
+    predictive_injections: 0
+
+planner:
+  role: strategic_planner
+  mission_queue:
+    - Conduct security audit
+    - Index local knowledge
+    - Self-evaluate tool accuracy
+    - Explore environment and map endpoints
+    - Refactor memory compression policy
+    - Generate evaluation dataset for tools
+  default_cooldown_seconds: 30
+  max_backoff_seconds: 180
+  router_similarity_threshold: 0.65
+  mission_rotation_index: 0
+  injector_gate:
+    per_cycle_max: 5
+    min_interval_seconds: 1.0
+
+worker:
+  role: worker
+  approval_mode: human
+  max_retries: 1
+  enforce_required_args: true
+
+security:
+  role: security
+  approval_mode: human
+  monitor_interval_seconds: 60
+
+notifier:
+  role: notifier
+  default_channel: desktop
+  throttle_seconds: 5
+
+# Shared settings across agents
+shared:
+  chroma_db_path: persistence_data/chroma_db
+  persistence_dir: persistence_data
+  paused_agents_file_path: persistence_data/paused_agents.json
+  world_model: default

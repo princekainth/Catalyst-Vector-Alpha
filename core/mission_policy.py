@@ -60,6 +60,7 @@ MISSION_TOOL_POLICY = {
             "generate_report_pdf",
             "watch_k8s_events",
             "get_pod_status",
+            "microsoft_autonomous_remediation",
             "check_network_connectivity",
             "watch_k8s_audit_events",
         },

@@ -1075,10 +1075,22 @@ def microsoft_autonomous_remediation(pod_name, namespace="default", recommended_
         def _apply_resource_patch_to_deployment(deploy_name: str, actions: list) -> bool:
             if not deploy_name or not actions:
                 return False
+            # Fetch deployment to map container names
+            deploy_spec = {}
+            try:
+                deploy_json = _safe_json(["kubectl", "-n", namespace, "get", "deploy", deploy_name, "-o", "json"])
+                if deploy_json:
+                    deploy_spec = ((deploy_json.get("spec") or {}).get("template") or {}).get("spec") or {}
+            except Exception:
+                deploy_spec = {}
+            real_containers = [c.get("name") for c in deploy_spec.get("containers", []) or [] if c.get("name")]
+
             # Build strategic merge patch for resources
             containers_patch = []
             for act in actions:
                 cname = act.get("container") or None
+                if (not cname) or (cname == "unknown") or (cname not in real_containers):
+                    cname = real_containers[0] if real_containers else cname
                 res_block = {}
                 reqs = act.get("requests") or {}
                 limits = act.get("limits") or {}
@@ -1171,6 +1183,20 @@ def microsoft_autonomous_remediation(pod_name, namespace="default", recommended_
                 return False
 
         patched = False
+
+        # Resolve parent Deployment if pod belongs to a ReplicaSet
+        if owner_kind == "ReplicaSet" and owner_name:
+            try:
+                rs_json = _safe_json(["kubectl", "get", "rs", owner_name, "-n", namespace, "-o", "json"])
+                rs_owners = (rs_json or {}).get("metadata", {}).get("ownerReferences", []) or []
+                for ref in rs_owners:
+                    if ref.get("kind") == "Deployment" and ref.get("name"):
+                        owner_kind = "Deployment"
+                        owner_name = ref.get("name")
+                        results["actions"].append(f"Resolved parent deployment: {owner_name}")
+                        break
+            except Exception:
+                pass
 
         if owner_kind == "Deployment" and owner_name and resource_actions:
             patched = _apply_resource_patch_to_deployment(owner_name, resource_actions)

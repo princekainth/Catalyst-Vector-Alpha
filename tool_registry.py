@@ -6,6 +6,7 @@ import time
 import logging
 from typing import Optional, Dict, List, Any, Tuple, Set
 from urllib.parse import urlparse
+import json
 
 def _is_standard_response(res: Any) -> bool:
     """Detect if result already matches CVA's standardize_response shape."""
@@ -229,14 +230,6 @@ def _coerce_types_per_schema(args: Dict[str, Any], schema: Dict[str, Any]) -> Di
         except Exception:
             pass
     return coerced
-
-def _merge_defaults(args: Dict[str, Any], schema: Dict[str, Any]) -> Dict[str, Any]:
-    out = dict(args or {})
-    props = (schema or {}).get("properties", {})
-    for k, spec in props.items():
-        if k not in out and "default" in spec:
-            out[k] = spec["default"]
-    return out
 
 def _light_jsonschema_validate(args: Dict[str, Any], schema: Dict[str, Any]) -> Tuple[bool, str]:
     if not schema:
@@ -490,6 +483,59 @@ class ToolRegistry:
         self._per_tool_timeouts = (timeouts_cfg.get("per_tool") or {})
         self.toolsmith_enabled = bool((cfg.get("features", {}) if isinstance(cfg, dict) else {}).get("toolsmith_enabled", False))
         self._initialize_default_tools()
+        self._default_reasoner_llm = None
+
+    def _llm_reason_defaults(self, tool: Tool, args: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        Infer missing optional arguments using an LLM + semantic memory instead of static defaults.
+        """
+        base_args = dict(args or {})
+        schema = tool.parameters or {}
+        props = schema.get("properties") or {}
+        required = set(schema.get("required") or [])
+        missing = [k for k in props.keys() if k not in base_args and k not in required]
+        if not missing:
+            return base_args
+
+        # Collect light context + recent semantic memories
+        memory_samples: List[Dict[str, Any]] = []
+        try:
+            from memory_store import mem_store
+            if hasattr(mem_store, "recent"):
+                # Prefer semantic remediation memories; fallback to recent generic memories
+                memory_samples = mem_store.recent(type_filter="SemanticRemediation", limit=5) or []
+                if not memory_samples:
+                    memory_samples = mem_store.recent(limit=5) or []
+        except Exception as e:
+            log.debug("LLM default reasoning: memory fetch failed: %s", e)
+
+        prompt = f"""You are CVA's tool default reasoner.
+Tool: {tool.name}
+Description: {tool.description}
+Schema: {json.dumps(schema, ensure_ascii=False)}
+ProvidedArgs: {json.dumps(base_args, ensure_ascii=False)}
+Context: {json.dumps(context or {}, default=str, ensure_ascii=False)}
+PastSuccesses: {json.dumps(memory_samples, default=str, ensure_ascii=False)}
+MissingKeys: {missing}
+
+Infer sensible values for ONLY the missing keys, consistent with schema types and past successes.
+Return a JSON object with inferred values for those missing keys. If unsure, return an empty JSON object.
+Do NOT include keys that are not in MissingKeys. Do NOT repeat provided args."""
+
+        try:
+            if self._default_reasoner_llm is None:
+                from shared_models import OllamaLLMIntegration
+                self._default_reasoner_llm = OllamaLLMIntegration(logger=log)
+            resp = self._default_reasoner_llm.generate_text(prompt=prompt, json_mode=True, temperature=0.2, max_tokens=400)
+            inferred = json.loads(resp) if resp else {}
+            if isinstance(inferred, dict):
+                for k in missing:
+                    if k in inferred and k not in base_args:
+                        base_args[k] = inferred[k]
+        except Exception as e:
+            log.warning("LLM default inference failed for %s: %s", tool.name, e)
+
+        return base_args
 
     # --- Registration ---
     def _initialize_default_tools(self) -> None:
@@ -574,7 +620,15 @@ class ToolRegistry:
                     "type": "object",
                     "properties": {
                         "pod_name": {"type": "string", "description": "Target pod name"},
-                        "namespace": {"type": "string", "default": "default", "description": "Pod namespace"}
+                        "namespace": {"type": "string", "default": "default", "description": "Pod namespace"},
+                        "recommended_actions": {
+                            "type": "array",
+                            "description": "LLM-generated resource adjustments from Planner",
+                        },
+                        "resource_patch": {
+                            "type": "object",
+                            "description": "Direct resource patch specification",
+                        },
                     },
                     "required": ["pod_name"],
                     "additionalProperties": False,
@@ -922,7 +976,11 @@ class ToolRegistry:
         tool = self.get_tool(tool_name)
         if not tool:
             return False
-        a = _merge_defaults(args or {}, tool.parameters)
+        ctx = None
+        if isinstance(args, dict) and "_context" in args:
+            ctx = args.get("_context")
+            args = {k: v for k, v in args.items() if k != "_context"}
+        a = self._llm_reason_defaults(tool, args or {}, context=ctx)
         a = _coerce_types_per_schema(a, tool.parameters)
         ok, _ = _light_jsonschema_validate(a, tool.parameters)
         if not ok:
@@ -948,6 +1006,7 @@ class ToolRegistry:
         tool = self.get_tool(tool_name)
         canonical = tool.name
         now = time.time()
+        context = kwargs.pop("_context", None)
 
         # Circuit breaker: short-circuit if tool is marked broken and still in backoff
         with self._failure_lock:
@@ -981,8 +1040,8 @@ class ToolRegistry:
                     return f"[ERROR] Cooldown active for '{canonical}'. Try again in {wait:.2f}s."
                 setattr(tool, "_last_called_ts", now)
         
-        # Merge defaults + validate
-        args = _merge_defaults(kwargs, tool.parameters)
+        # Infer defaults via LLM + validate
+        args = self._llm_reason_defaults(tool, kwargs, context=context)
         args = _coerce_types_per_schema(args, tool.parameters)
         if tool.normalizer:
             args = tool.normalizer(args)

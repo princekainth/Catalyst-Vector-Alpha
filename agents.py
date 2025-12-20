@@ -55,6 +55,7 @@ from typing import Any, Dict, List
 from rewards import compute_reward  # uses the full rewards.py we created
 from alert_store import get_alert_store
 from shared_memory import SharedMemory
+from config_loader import load_agent_config
 
 # --- Utils (defer heavy imports that depend on validate_plan_shape) ---
 from utils import (
@@ -261,10 +262,17 @@ class ProtoAgent(ABC):
                  tool_registry: Any = None,
                  db: Any = None):
 
+        # --- Config-driven defaults ---
+        try:
+            role_guess = infer_agent_role(name, default="general_planning")
+        except Exception:
+            role_guess = "general_planning"
+        cfg_defaults = load_agent_config(role_guess) or {}
+
         # --- Core Attributes & Dependencies ---
         self.name = name
         self.eidos_spec = eidos_spec if isinstance(eidos_spec, dict) else {}
-        self.location = self.eidos_spec.get('location', 'Unknown')
+        self.location = self.eidos_spec.get('location', cfg_defaults.get("location", "Unknown"))
         self.message_bus = message_bus
         self.event_monitor = event_monitor
         self.external_log_sink = external_log_sink
@@ -279,7 +287,8 @@ class ProtoAgent(ABC):
         elif isinstance(reporting_agents, list):
             self.reporting_agents = reporting_agents
         else:
-            self.reporting_agents = []
+            cfg_reports = cfg_defaults.get("reporting_agents")
+            self.reporting_agents = cfg_reports if isinstance(cfg_reports, list) else []
 
         # LLM integration (also expose as self.llm for callers that expect it)
         self.ollama_inference_model = OllamaLLMIntegration()
@@ -289,9 +298,9 @@ class ProtoAgent(ABC):
         self.sovereign_gradient = SovereignGradient(target_entity=self.name, config={})
 
         # --- Persistence Paths ---
-        self.chroma_db_full_path = chroma_db_path
-        self.persistence_dir = persistence_dir
-        self.paused_agents_file_full_path = paused_agents_file_path
+        self.chroma_db_full_path = chroma_db_path or cfg_defaults.get("chroma_db_path", chroma_db_path)
+        self.persistence_dir = persistence_dir or cfg_defaults.get("persistence_dir", persistence_dir)
+        self.paused_agents_file_full_path = paused_agents_file_path or cfg_defaults.get("paused_agents_file_path", paused_agents_file_path)
 
         # Ensure dirs exist before child components that use them
         try:
@@ -436,6 +445,17 @@ class ProtoAgent(ABC):
             tool_raw = str(step.get("tool", "")).strip()
             # Hard whitelist: never drop or rewrite microsoft_autonomous_remediation
             if tool_raw == "microsoft_autonomous_remediation" and mission_type in ("k8s_monitoring", "general_planning"):
+                try:
+                    args = step.get("args", {}) or {}
+                    pod_val = args.get("pod_name")
+                    if isinstance(pod_val, str) and "/" in pod_val:
+                        ns_val, pod_val = pod_val.split("/", 1)
+                        args = dict(args)
+                        args["namespace"] = args.get("namespace") or ns_val
+                        args["pod_name"] = pod_val
+                        step["args"] = args
+                except Exception:
+                    pass
                 repaired_steps.append(step)
                 continue
             agent = step.get("agent", self.name)
@@ -8372,20 +8392,55 @@ Respond with valid JSON:
         self._mission_success_tracker[mission_type]["last_initiated"] = datetime.now()
 
     def _categorize_mission(self, goal_text):
-        """Categorize mission type based on goal content"""
-        goal_lower = goal_text.lower()
-        
-        if any(word in goal_lower for word in ["health", "audit", "validation", "registry"]):
-            return "health_audit"
-        if any(word in goal_lower for word in ["resource optimization", "rightsize", "right-size", "over-provision", "under-provision", "requests", "limits", "capacity planning"]):
-            return "resource_optimization"
-        elif any(word in goal_lower for word in ["performance", "optimiz", "efficiency", "cpu"]):
-            return "performance_optimization"
-        elif any(word in goal_lower for word in ["security", "threat", "vulnerability", "audit"]):
-            return "security_audit"
-        elif any(word in goal_lower for word in ["memory", "storage", "compression", "archival"]):
-            return "memory_optimization"
-        else:
+        """LLM-driven mission categorization with safe fallback."""
+        allowed = [
+            "health_audit",
+            "k8s_monitoring",
+            "security_audit",
+            "resource_optimization",
+            "general_planning",
+        ]
+        prompt = f"""You are CVA's mission classifier.
+Decide which mission type best fits the goal.
+Allowed mission types: {allowed}
+
+Goal:
+\"\"\"{goal_text}\"\"\"
+
+Respond in JSON:
+{{
+  "mission_type": "<one of {allowed}>",
+  "reasoning": "<brief why>"
+}}"""
+        try:
+            resp = self.ollama_inference_model.generate_text(
+                prompt=prompt,
+                json_mode=True,
+                temperature=0.1,
+                max_tokens=200,
+            )
+            import json as _json
+            parsed = _json.loads(resp) if resp else {}
+            mission = parsed.get("mission_type")
+            if mission not in allowed:
+                mission = "general_planning"
+            self._log_agent_activity(
+                "LLM_MISSION_CATEGORIZE",
+                self.name,
+                {"goal": goal_text, "mission": mission, "reasoning": parsed.get("reasoning")},
+            )
+            return mission
+        except Exception:
+            # Safe fallback to heuristic
+            goal_lower = (goal_text or "").lower()
+            if any(word in goal_lower for word in ["health", "audit", "validation", "registry"]):
+                return "health_audit"
+            if any(word in goal_lower for word in ["resource optimization", "rightsize", "right-size", "over-provision", "under-provision", "requests", "limits", "capacity planning"]):
+                return "resource_optimization"
+            if any(word in goal_lower for word in ["security", "threat", "vulnerability", "audit"]):
+                return "security_audit"
+            if "k8s" in goal_lower or "kubernetes" in goal_lower:
+                return "k8s_monitoring"
             return "general_planning"
 
     def _handle_incoming_messages(self):
@@ -9803,6 +9858,79 @@ TOOLSMITH MODE (Self-Evolution):
                 import traceback
                 traceback.print_exc()
             
+            # ---------- 10.5) Inject remediation recommendations into MAR step BEFORE policy filter ----------
+            try:
+                if "remediat" in goal_str.lower():
+                    import re
+                    from pathlib import Path
+                    pod_ref = None
+                    m = re.search(r"pod\s+([A-Za-z0-9._\\-\\/]+)", goal_str, flags=re.IGNORECASE)
+                    if m:
+                        pod_ref = m.group(1)
+
+                    # Gather past semantic memories for this pod (or all if none specified)
+                    memories = []
+                    try:
+                        from memory_store import mem_store
+                        recs = mem_store.recent(type_filter="SemanticRemediation", limit=20) or []
+                        if not recs:
+                            recs = mem_store.recent(limit=20) or []
+                        for r in recs:
+                            if not pod_ref:
+                                memories.append(r)
+                                continue
+                            blob = r
+                            if isinstance(r, dict):
+                                blob = json.dumps(r, ensure_ascii=False)
+                            elif not isinstance(blob, str):
+                                blob = str(blob)
+                            if pod_ref in blob:
+                                memories.append(r)
+                    except Exception:
+                        memories = []
+
+                    # Gather forensics text from disk if present
+                    forensics_text = None
+                    try:
+                        if pod_ref:
+                            fdir = Path("logs") / "forensics"
+                            if fdir.exists():
+                                for fx in fdir.glob(f"*{pod_ref}*"):
+                                    try:
+                                        forensics_text = fx.read_text(errors="ignore")
+                                        break
+                                    except Exception:
+                                        continue
+                    except Exception:
+                        forensics_text = None
+
+                    context_blob = {
+                        "pod": pod_ref,
+                        "goal": goal_str,
+                        "memories": memories,
+                        "forensics_text": forensics_text,
+                    }
+                    analysis = self._reason_about_remediation(context_blob)
+                    rec_actions = []
+                    if isinstance(analysis, dict):
+                        rec_actions = analysis.get("recommended_actions") or []
+
+                    injected = 0
+                    for step in plan.get("steps", []):
+                        if step.get("tool") == "microsoft_autonomous_remediation":
+                            args = step.get("args") or {}
+                            args["recommended_actions"] = rec_actions
+                            args["analysis_context"] = {"pod": pod_ref}
+                            step["args"] = args
+                            injected += 1
+                    self._log_agent_activity(
+                        "REMEDIATION_RECOMMENDATIONS_INJECTED",
+                        self.name,
+                        {"actions": rec_actions, "steps_updated": injected, "pod": pod_ref},
+                    )
+            except Exception as e:
+                self._log_agent_activity("REMEDIATION_RECOMMENDATIONS_FAILED", self.name, str(e), level="warning")
+
             try:
                 from core.mission_policy import filter_plan_steps, count_autocorrected
                 self._log_agent_activity(
@@ -9841,7 +9969,7 @@ TOOLSMITH MODE (Self-Evolution):
                 )
             except Exception as e:
                 self._log_agent_activity("PLAN_POLICY_FILTER_WARN", self.name, f"Policy filter failed (continuing): {e}", level="warning")
-                
+
             # ---------- 11) Dispatch ----------
             self._log_agent_activity(
                 "PLAN_READY_TO_DISPATCH", self.name, f"Dispatching plan '{plan.get('id')}'",
