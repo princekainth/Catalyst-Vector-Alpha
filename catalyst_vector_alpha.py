@@ -305,6 +305,7 @@ class CatalystVectorAlpha:
             persistence_dir=self.persistence_dir,
             chroma_db_path=os.path.join(self.persistence_dir, "chroma_db"),
         )
+        self.recent_remediations: Dict[str, float] = {}
 
         self.ccn_monitor_interface = ccn_monitor_interface
         self.world_model = SharedWorldModel(self.external_log_sink)
@@ -1740,6 +1741,28 @@ class CatalystVectorAlpha:
         high_level_goal = directive.get('high_level_goal')
         cycle_id = directive.get('cycle_id', self.current_action_cycle_id)
         mission_type = directive.get('mission_type')
+        try:
+            ctx = directive.get("context") or {}
+            target_pod = ctx.get("target_pod") or ""
+            if target_pod:
+                now = time.time()
+                # prune old entries
+                self.recent_remediations = {
+                    k: v for k, v in self.recent_remediations.items() if (now - v) < 120
+                }
+                last_ts = self.recent_remediations.get(target_pod)
+                if last_ts and (now - last_ts) < 60:
+                    self._log_swarm_activity(
+                        "DUPLICATE_REMEDIATION_SKIPPED",
+                        "CatalystVectorAlpha",
+                        f"Skipping remediation duplicate for {target_pod}",
+                        {"target": target_pod, "age_s": now - last_ts},
+                        level="info",
+                    )
+                    return
+                self.recent_remediations[target_pod] = now
+        except Exception:
+            pass
 
         if not planner_agent_name or not high_level_goal:
             raise ValueError("INITIATE_PLANNING_CYCLE directive missing 'planner_agent_name' or 'high_level_goal'.")

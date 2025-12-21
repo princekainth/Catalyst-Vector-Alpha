@@ -1118,7 +1118,7 @@ def microsoft_autonomous_remediation(pod_name, namespace="default", recommended_
             try:
                 import json as _json
                 subprocess.run(
-                    ["kubectl", "patch", "deployment", deploy_name, "-n", namespace, "--type", "merge", "-p", _json.dumps(patch_obj)],
+                    ["kubectl", "patch", "deployment", deploy_name, "-n", namespace, "--type", "strategic", "-p", _json.dumps(patch_obj)],
                     check=True,
                 )
                 results["actions"].append(f"Patched deployment/{deploy_name} resources with recommended limits/requests")
