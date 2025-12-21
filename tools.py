@@ -981,6 +981,154 @@ def microsoft_autonomous_remediation(pod_name, namespace="default", recommended_
         if pod_forensics:
             results["forensics"] = pod_forensics
 
+        # Early ImagePullBackOff/ErrImagePull handling before log capture
+        try:
+            container_statuses = (pod_json.get("status", {}) or {}).get("containerStatuses", []) or []
+            waiting_status = None
+            for cs in container_statuses:
+                waiting = (cs.get("state", {}) or {}).get("waiting") or {}
+                if waiting.get("reason") in ["ImagePullBackOff", "ErrImagePull"]:
+                    waiting_status = (cs, waiting)
+                    break
+            if waiting_status:
+                cs, waiting = waiting_status
+                err_msg = waiting.get("message") or ""
+                img_val = None
+                for c in (pod_json.get("spec", {}) or {}).get("containers", []) or []:
+                    if c.get("name") == cs.get("name"):
+                        img_val = c.get("image")
+                        break
+
+                def _get_pod_events(pn: str, ns: str):
+                    try:
+                        ev = _safe_json([
+                            "kubectl", "get", "events",
+                            "-n", ns,
+                            "--field-selector", f"involvedObject.name={pn}",
+                            "-o", "json",
+                        ])
+                        if isinstance(ev, dict):
+                            return ev.get("items", [])
+                    except Exception:
+                        return []
+                    return []
+
+                forensics_data = {
+                    "error_message": err_msg,
+                    "image": img_val,
+                    "container_name": cs.get("name"),
+                    "pod_events": _get_pod_events(pod_name, namespace),
+                    "image_pull_secrets": [
+                        s.get("name") for s in (pod_json.get("spec", {}) or {}).get("imagePullSecrets", []) or []
+                    ],
+                }
+
+                analysis_prompt = (
+                    "You are analyzing an ImagePullBackOff failure in Kubernetes.\n\n"
+                    f"Error: {err_msg}\n"
+                    f"Image: {img_val}\n"
+                    f"Events: {forensics_data.get('pod_events')}\n\n"
+                    "Common causes:\n"
+                    "1. Wrong tag (typo or doesn't exist) → suggest :latest or previous tag\n"
+                    "2. Authentication needed → suggest adding imagePullSecret\n"
+                    "3. Registry unreachable → network issue\n"
+                    "4. Image deleted → rollback to previous version\n\n"
+                    "Recommend a fix. Return JSON with:\n"
+                    "{\n"
+                    '  "root_cause": "...",\n'
+                    '  "recommended_actions": [\n'
+                    '    {"action": "update_image", "image": "nginx:latest", "reason": "..."},\n'
+                    '    {"action": "add_secret", "secret_name": "...", "reason": "..."},\n'
+                    '    {"action": "investigate", "reason": "need manual intervention"}\n'
+                    "  ]\n"
+                    "}"
+                )
+                try:
+                    from shared_models import OllamaLLMIntegration
+                    llm = OllamaLLMIntegration()
+                    analysis = llm.generate_text(analysis_prompt, json_mode=True, temperature=0.2, max_tokens=400)
+                    import json as _json
+                    parsed = _json.loads(analysis) if analysis else {}
+                except Exception:
+                    parsed = {}
+
+                actions_taken = []
+                outcome_state = "ANALYSIS_COMPLETE"
+
+                def _resolve_deployment_name() -> str | None:
+                    try:
+                        if owner_kind == "Deployment" and owner_name:
+                            return owner_name
+                        if owner_kind == "ReplicaSet" and owner_name:
+                            rs_json = _safe_json(["kubectl", "get", "rs", owner_name, "-n", namespace, "-o", "json"])
+                            rs_owners = (rs_json.get("metadata", {}) or {}).get("ownerReferences", []) or []
+                            for ro in rs_owners:
+                                if ro.get("kind") == "Deployment" and ro.get("name"):
+                                    return ro.get("name")
+                        owners = (pod_json.get("metadata", {}) or {}).get("ownerReferences", []) or []
+                        for o in owners:
+                            if o.get("kind") == "Deployment" and o.get("name"):
+                                return o.get("name")
+                            if o.get("kind") == "ReplicaSet":
+                                rs_name = o.get("name")
+                                rs_json = _safe_json(["kubectl", "get", "rs", rs_name, "-n", namespace, "-o", "json"])
+                                rs_owners = (rs_json.get("metadata", {}) or {}).get("ownerReferences", []) or []
+                                for ro in rs_owners:
+                                    if ro.get("kind") == "Deployment" and ro.get("name"):
+                                        return ro.get("name")
+                    except Exception:
+                        return None
+                    return None
+
+                try:
+                    for action in parsed.get("recommended_actions", []) or []:
+                        if action.get("action") == "update_image":
+                            new_image = action.get("image")
+                            dep_name = forensics_data.get("owner_name") or _resolve_deployment_name()
+                            if new_image and dep_name:
+                                patch_cmd = [
+                                    "kubectl", "patch", "deployment", dep_name,
+                                    "-n", namespace,
+                                    "--type", "strategic",
+                                    "-p", json.dumps({
+                                        "spec": {
+                                            "template": {
+                                                "spec": {
+                                                    "containers": [{
+                                                        "name": forensics_data.get("container_name") or "",
+                                                        "image": new_image
+                                                    }]
+                                                }
+                                            }
+                                        }
+                                    })
+                                ]
+                                try:
+                                    result = subprocess.run(patch_cmd, capture_output=True, text=True)
+                                    if result.returncode == 0:
+                                        actions_taken.append(f"Patched deployment {dep_name} image to {new_image}")
+                                        outcome_state = "SUCCESS"
+                                    else:
+                                        actions_taken.append(f"Failed to patch deployment {dep_name}: {result.stderr}")
+                                        outcome_state = "PARTIAL_SUCCESS"
+                                except Exception as e:
+                                    actions_taken.append(f"Error patching deployment {dep_name}: {e}")
+                                    outcome_state = "PARTIAL_SUCCESS"
+                except Exception:
+                    pass
+
+                return {
+                    "target": pod_name,
+                    "issue_type": "ImagePullBackOff",
+                    "root_cause": parsed.get("root_cause"),
+                    "recommended_actions": parsed.get("recommended_actions", []),
+                    "forensics": forensics_data,
+                    "actions_taken": actions_taken,
+                    "outcome": outcome_state,
+                }
+        except Exception:
+            pass
+
         # Extract resource adjustment intents
         resource_actions = []
         for action in recommended_actions or []:
@@ -1068,6 +1216,55 @@ def microsoft_autonomous_remediation(pod_name, namespace="default", recommended_
                 results["root_cause_hint"] = "Dependency/Network Error"
             else:
                 results["root_cause_hint"] = "Unknown/Application Error"
+        # Check for ImagePullBackOff via status as well
+        try:
+            pod_status_json = _safe_json(["kubectl", "get", "pod", pod_name, "-n", namespace, "-o", "json"])
+            statuses = (pod_status_json.get("status", {}) or {}).get("containerStatuses", []) or []
+            has_pull_issue = any(
+                ((cs.get("state", {}) or {}).get("waiting") or {}).get("reason") in ["ImagePullBackOff", "ErrImagePull"]
+                for cs in statuses
+            )
+            if has_pull_issue:
+                try:
+                    forensics = collect_imagepull_forensics(pod_name, namespace)
+                except Exception as e:
+                    forensics = {"error": str(e)}
+                analysis = {}
+                try:
+                    analysis = analyze_imagepull_failure(forensics)
+                except Exception as e:
+                    analysis = {"error": str(e)}
+                recs = []
+                if isinstance(analysis, dict):
+                    recs = analysis.get("recommended_actions") or []
+                exec_result = {}
+                try:
+                    exec_result = execute_imagepull_remediation(pod_name, namespace, recs)
+                except Exception as e:
+                    exec_result = {"error": str(e)}
+
+                def _pod_healthy():
+                    try:
+                        check = _safe_json(["kubectl", "get", "pod", pod_name, "-n", namespace, "-o", "json"])
+                        phase = (check.get("status", {}) or {}).get("phase")
+                        return phase == "Running"
+                    except Exception:
+                        return False
+
+                try:
+                    from memory_store import mem_store
+                    mem_store.add("RemediationOutcome", {
+                        "target": f"{namespace}/{pod_name}",
+                        "issue": "ImagePullBackOff",
+                        "root_cause": analysis.get("root_cause") if isinstance(analysis, dict) else None,
+                        "actions_taken": exec_result,
+                        "outcome": "SUCCESS" if _pod_healthy() else "FAILED",
+                        "timestamp": time.time(),
+                    })
+                except Exception:
+                    pass
+        except Exception:
+            pass
         else:
             results["actions"].append("Pod not found; skipping log capture.")
 
@@ -1487,6 +1684,299 @@ def watch_k8s_events(namespace: str = "all", minutes: int = 5) -> dict:
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
+
+def collect_imagepull_forensics(pod_name: str, namespace: str = "default") -> dict:
+    """
+    Gather detailed forensics for ImagePull issues without making decisions.
+    """
+    import subprocess
+    import json
+
+    def _safe_json(cmd: list[str]):
+        try:
+            out = subprocess.check_output(cmd, text=True)
+            return json.loads(out)
+        except Exception as e:
+            return {"_error": str(e)}
+
+    result = {
+        "target": f"{namespace}/{pod_name}",
+        "pod_status": {},
+        "image": {},
+        "image_pull_secrets": [],
+        "recent_image_pulls": [],
+        "deployment_history": [],
+        "registry_connectivity": {},
+        "similar_pods": [],
+    }
+
+    # 1) Pod status and error
+    pod_json = _safe_json(["kubectl", "get", "pod", pod_name, "-n", namespace, "-o", "json"])
+    result["pod_status"] = pod_json
+
+    # 2) Image info and 4) imagePullSecrets
+    try:
+        containers = (pod_json.get("spec", {}) or {}).get("containers", []) or []
+        if containers:
+            img = containers[0].get("image")
+            if img:
+                result["image"]["full"] = img
+                if "/" in img and ":" in img:
+                    reg_repo, tag = img.rsplit(":", 1)
+                    result["image"]["tag"] = tag
+                    result["image"]["registry_repo"] = reg_repo
+                    # registry URL as first segment before '/' if present
+                    reg_url = reg_repo.split("/")[0] if "/" in reg_repo else reg_repo
+                    result["image"]["registry"] = reg_url
+                elif ":" in img:
+                    repo, tag = img.rsplit(":", 1)
+                    result["image"]["tag"] = tag
+                    result["image"]["registry_repo"] = repo
+            result["image_pull_secrets"] = pod_json.get("spec", {}).get("imagePullSecrets", []) or []
+    except Exception:
+        pass
+
+    # 5) Recent successful image pulls in same namespace (last 10)
+    try:
+        ev_json = _safe_json(["kubectl", "get", "events", "-n", namespace, "-o", "json"])
+        pulls = []
+        for ev in ev_json.get("items", []):
+            reason = ev.get("reason", "")
+            if reason and "Pull" in reason and ev.get("type") == "Normal":
+                pulls.append({
+                    "reason": reason,
+                    "message": ev.get("message"),
+                    "pod": (ev.get("involvedObject") or {}).get("name"),
+                    "ts": ev.get("lastTimestamp") or ev.get("eventTime") or ev.get("firstTimestamp"),
+                })
+        result["recent_image_pulls"] = pulls[-10:]
+    except Exception:
+        pass
+
+    # 6) Deployment history (last 3 revisions with images)
+    try:
+        owners = (pod_json.get("metadata", {}) or {}).get("ownerReferences", []) or []
+        dep_name = None
+        for o in owners:
+            if o.get("kind") == "ReplicaSet":
+                rs_name = o.get("name")
+                rs_json = _safe_json(["kubectl", "get", "rs", rs_name, "-n", namespace, "-o", "json"])
+                rs_owners = (rs_json.get("metadata", {}) or {}).get("ownerReferences", []) or []
+                for ro in rs_owners:
+                    if ro.get("kind") == "Deployment":
+                        dep_name = ro.get("name")
+                        break
+        if dep_name:
+            hist = _safe_json(["kubectl", "rollout", "history", f"deployment/{dep_name}", "-n", namespace, "-o", "json"])
+            entries = hist.get("history", []) if isinstance(hist, dict) else []
+            result["deployment_history"] = entries[:3]
+    except Exception:
+        pass
+
+    # 7) Network connectivity to registry
+    try:
+        reg = result["image"].get("registry")
+        if reg:
+            ping_cmd = ["sh", "-c", f"ping -c 1 -W 2 {reg} >/dev/null 2>&1 && echo ok || echo fail"]
+            status = subprocess.check_output(ping_cmd, text=True).strip()
+            result["registry_connectivity"] = {"registry": reg, "reachable": status == "ok"}
+    except Exception as e:
+        result["registry_connectivity"] = {"error": str(e)}
+
+    # 8) Similar pods in namespace using same registry
+    try:
+        if result["image"].get("registry_repo"):
+            reg_repo = result["image"]["registry_repo"]
+            pods_list = _safe_json(["kubectl", "get", "pods", "-n", namespace, "-o", "json"])
+            sims = []
+            for p in pods_list.get("items", []):
+                imgs = []
+                for c in (p.get("spec", {}) or {}).get("containers", []) or []:
+                    img = c.get("image") or ""
+                    if reg_repo.split("/")[0] in img:
+                        imgs.append(img)
+                if imgs:
+                    sims.append({
+                        "pod": (p.get("metadata", {}) or {}).get("name"),
+                        "images": imgs,
+                    })
+            result["similar_pods"] = sims
+    except Exception:
+        pass
+
+    return result
+
+
+def analyze_imagepull_failure(forensics: dict) -> dict:
+    """
+    Use LLM to analyze ImagePullBackOff forensics and propose actions.
+    """
+    try:
+        from shared_models import OllamaLLMIntegration
+        llm = OllamaLLMIntegration()
+        prompt = f"""You are analyzing an ImagePullBackOff failure in Kubernetes.
+
+Forensics Data:
+- Error: {forensics.get('pod_status', {})}
+- Image: {forensics.get('image')}
+- Registry: {(forensics.get('image') or {}).get('registry') if isinstance(forensics.get('image'), dict) else None}
+- Secrets configured: {forensics.get('image_pull_secrets')}
+- Recent successful pulls: {forensics.get('recent_image_pulls')}
+- Previous working images: {forensics.get('deployment_history')}
+- Network test: {forensics.get('registry_connectivity')}
+- Similar pods: {forensics.get('similar_pods')}
+
+Analyze the root cause. Common scenarios:
+1. Wrong tag (typo, doesn't exist) - check deployment history for correct tag
+2. Authentication missing - check if imagePullSecrets needed
+3. Registry unreachable - network or DNS issue
+4. Image deleted from registry - rollback to previous version
+5. Rate limit hit - wait and retry
+6. Wrong registry URL - check similar working pods
+
+Based on the forensics, determine:
+1. Root cause (be specific)
+2. Recommended actions (ordered by likelihood of success)
+3. Confidence level (0.0-1.0)
+
+Return JSON:
+{{
+  "root_cause": "string",
+  "evidence": ["bullet points"],
+  "recommended_actions": [
+    {{
+      "action": "rollback_image|update_secret|retry_pull|update_image_url",
+      "details": {{"image": "...", "tag": "..." OR "secret_name": "..."}},
+      "reason": "why this will work",
+      "confidence": 0.0-1.0
+    }}
+  ],
+  "overall_confidence": 0.0-1.0
+}}
+"""
+        resp = llm.generate_text(prompt=prompt, json_mode=True, temperature=0.2, max_tokens=512)
+        import json as _json
+        parsed = _json.loads(resp) if resp else {}
+        return parsed if isinstance(parsed, dict) else {"status": "error", "error": "invalid response"}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+def execute_imagepull_remediation(pod_name: str, namespace: str = "default", recommendations: list | None = None) -> dict:
+    """
+    Execute remediation actions for image pull issues based on LLM recommendations.
+    """
+    import subprocess
+    import json
+    recs = recommendations or []
+    results = []
+
+    def _safe_json(cmd: list[str]):
+        try:
+            out = subprocess.check_output(cmd, text=True)
+            return json.loads(out)
+        except Exception as e:
+            return {"_error": str(e)}
+
+    # Helper: find deployment owning this pod
+    dep_name = None
+    try:
+        pod_json = _safe_json(["kubectl", "get", "pod", pod_name, "-n", namespace, "-o", "json"])
+        owners = (pod_json.get("metadata", {}) or {}).get("ownerReferences", []) or []
+        for o in owners:
+            if o.get("kind") == "ReplicaSet":
+                rs_name = o.get("name")
+                rs_json = _safe_json(["kubectl", "get", "rs", rs_name, "-n", namespace, "-o", "json"])
+                rs_owners = (rs_json.get("metadata", {}) or {}).get("ownerReferences", []) or []
+                for ro in rs_owners:
+                    if ro.get("kind") == "Deployment":
+                        dep_name = ro.get("name")
+                        break
+    except Exception:
+        pass
+
+    def _patch_deployment_image(img: str):
+        if not dep_name or not img:
+            return {"status": "error", "error": "missing deployment or image"}
+        try:
+            patch = {"spec": {"template": {"spec": {"containers": [{"name": "", "image": img}]}}}}
+            subprocess.run(
+                ["kubectl", "patch", "deployment", dep_name, "-n", namespace, "--type", "strategic", "-p", json.dumps(patch)],
+                check=True,
+            )
+            return {"status": "ok", "action": "patch_image", "image": img}
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
+    def _create_or_update_secret(secret_name: str):
+        if not secret_name:
+            return {"status": "error", "error": "no secret name provided"}
+        try:
+            subprocess.run(
+                ["kubectl", "-n", namespace, "create", "secret", "docker-registry", secret_name],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            pass
+        try:
+            patch = {"spec": {"template": {"spec": {"imagePullSecrets": [{"name": secret_name}]}}}}
+            subprocess.run(
+                ["kubectl", "patch", "deployment", dep_name, "-n", namespace, "--type", "strategic", "-p", json.dumps(patch)],
+                check=True,
+            )
+            return {"status": "ok", "action": "update_secret", "secret": secret_name}
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
+    def _delete_pod():
+        try:
+            subprocess.run(["kubectl", "delete", "pod", pod_name, "-n", namespace, "--wait=false"], check=False)
+            import time as _t
+            _t.sleep(30)
+            return {"status": "ok", "action": "retry_pull"}
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
+    def _schedule_wait():
+        return {"status": "pending", "action": "wait_retry", "retry_in_minutes": 5}
+
+    # Deployment history for rollback
+    dep_history = []
+    try:
+        if dep_name:
+            hist = _safe_json(["kubectl", "rollout", "history", f"deployment/{dep_name}", "-n", namespace, "-o", "json"])
+            dep_history = hist.get("history", []) if isinstance(hist, dict) else []
+    except Exception:
+        pass
+
+    for rec in recs:
+        action = rec.get("action")
+        det = rec.get("details") or {}
+        if action == "rollback_image":
+            img = None
+            for h in dep_history:
+                if h.get("revision") and h.get("images"):
+                    img = h["images"][0]
+                    break
+            if not img:
+                img = det.get("image")
+            results.append(_patch_deployment_image(img))
+        elif action == "update_secret":
+            sec_name = det.get("secret_name") or det.get("secret")
+            results.append(_create_or_update_secret(sec_name))
+        elif action == "retry_pull":
+            results.append(_delete_pod())
+        elif action == "update_image_url":
+            img = det.get("image")
+            results.append(_patch_deployment_image(img))
+        elif action == "wait_retry":
+            results.append(_schedule_wait())
+        else:
+            results.append({"status": "error", "error": f"unknown action {action}"})
+
+    return {"actions": recs, "results": results}
 
 def get_pod_status(namespace: str = "default") -> dict:
     """
