@@ -1744,6 +1744,13 @@ class CatalystVectorAlpha:
         try:
             ctx = directive.get("context") or {}
             target_pod = ctx.get("target_pod") or ""
+            if not target_pod and high_level_goal:
+                m = re.search(r"\b([a-z0-9-]+)\/([A-Za-z0-9._-]+)", high_level_goal)
+                if m:
+                    ns, pod = m.groups()
+                    target_pod = f"{ns}/{pod}"
+                    ctx["target_pod"] = target_pod
+                    directive["context"] = ctx
             if target_pod:
                 now = time.time()
                 # prune old entries

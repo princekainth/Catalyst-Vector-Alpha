@@ -22,6 +22,7 @@ import traceback
 import uuid
 import signal
 import collections
+import subprocess
 from abc import ABC, abstractmethod
 from collections import deque, defaultdict
 from collections.abc import Iterable
@@ -9916,11 +9917,57 @@ TOOLSMITH MODE (Self-Evolution):
                         rec_actions = analysis.get("recommended_actions") or []
 
                     injected = 0
+                    # Derive target pod from existing step args or parsed goal
+                    def _pod_exists(ns: str, pod: str) -> bool:
+                        try:
+                            subprocess.check_output(["kubectl", "get", "pod", pod, "-n", ns], stderr=subprocess.STDOUT)
+                            return True
+                        except Exception:
+                            return False
+
+                    target_ns = None
+                    target_pod_only = None
+                    # Prefer explicit args from steps
+                    for step in plan.get("steps", []):
+                        if step.get("tool") == "microsoft_autonomous_remediation":
+                            a = step.get("args") or {}
+                            pn = a.get("pod_name") or a.get("pod")
+                            ns = a.get("namespace")
+                            if isinstance(pn, str):
+                                if "/" in pn:
+                                    ns2, pod2 = pn.split("/", 1)
+                                    target_ns = ns or ns2
+                                    target_pod_only = pod2
+                                else:
+                                    target_pod_only = pn
+                                    target_ns = ns or target_ns
+                            break
+                    # Fallback to parsed pod_ref
+                    if not target_pod_only and pod_ref:
+                        if "/" in pod_ref:
+                            target_ns, target_pod_only = pod_ref.split("/", 1)
+                        else:
+                            target_pod_only = pod_ref
+                    # Validate existence if possible
+                    if target_pod_only and not target_ns:
+                        target_ns = "default"
+                    if target_pod_only and target_ns and not _pod_exists(target_ns, target_pod_only):
+                        self._log_agent_activity(
+                            "REMEDIATION_TARGET_NOT_FOUND",
+                            self.name,
+                            {"pod": target_pod_only, "namespace": target_ns},
+                            level="warning",
+                        )
+                    # Inject recommendations
                     for step in plan.get("steps", []):
                         if step.get("tool") == "microsoft_autonomous_remediation":
                             args = step.get("args") or {}
+                            if target_pod_only:
+                                args["pod_name"] = target_pod_only
+                            if target_ns:
+                                args["namespace"] = args.get("namespace") or target_ns
                             args["recommended_actions"] = rec_actions
-                            args["analysis_context"] = {"pod": pod_ref}
+                            args["analysis_context"] = {"pod": target_pod_only, "namespace": target_ns}
                             step["args"] = args
                             injected += 1
                     self._log_agent_activity(
@@ -9969,6 +10016,42 @@ TOOLSMITH MODE (Self-Evolution):
                 )
             except Exception as e:
                 self._log_agent_activity("PLAN_POLICY_FILTER_WARN", self.name, f"Policy filter failed (continuing): {e}", level="warning")
+
+            # ---------- 10.6) Final MAR arg normalization + existence check ----------
+            try:
+                for step in plan.get("steps", []):
+                    if step.get("tool") != "microsoft_autonomous_remediation":
+                        continue
+                    args = step.get("args") or {}
+                    pod_val = args.get("pod_name") or args.get("pod") or ""
+                    ns_val = args.get("namespace") or ""
+                    if isinstance(pod_val, str) and "/" in pod_val:
+                        try:
+                            ns_part, pod_part = pod_val.split("/", 1)
+                            pod_val = pod_part
+                            ns_val = ns_val or ns_part
+                        except Exception:
+                            pass
+                    if not ns_val:
+                        ns_val = "default"
+                    args["pod_name"] = pod_val
+                    args["namespace"] = ns_val
+                    step["args"] = args
+                    # Validate pod existence (log only)
+                    try:
+                        subprocess.check_output(
+                            ["kubectl", "get", "pod", pod_val, "-n", ns_val],
+                            stderr=subprocess.STDOUT,
+                        )
+                    except Exception as e:
+                        self._log_agent_activity(
+                            "REMEDIATION_TARGET_NOT_FOUND",
+                            self.name,
+                            {"pod": pod_val, "namespace": ns_val, "error": str(e)},
+                            level="warning",
+                        )
+            except Exception:
+                pass
 
             # ---------- 11) Dispatch ----------
             self._log_agent_activity(

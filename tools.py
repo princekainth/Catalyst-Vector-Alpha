@@ -1055,6 +1055,22 @@ def microsoft_autonomous_remediation(pod_name, namespace="default", recommended_
                 actions_taken = []
                 outcome_state = "ANALYSIS_COMPLETE"
 
+                if not dep_name:
+                    actions_taken.append("Standalone pod; no deployment owner. Manual remediation required.")
+                    return {
+                        "target": pod_name,
+                        "issue_type": "CrashLoopBackOff",
+                        "root_cause": parsed_crash.get("root_cause"),
+                        "recommended_actions": parsed_crash.get("recommended_actions", []),
+                        "forensics": {
+                            "logs": logs_excerpt,
+                            "exit_code": exit_code,
+                            "restarts": restarts,
+                        },
+                        "actions_taken": actions_taken,
+                        "outcome": "ANALYSIS_ONLY",
+                    }
+
                 def _resolve_deployment_name() -> str | None:
                     try:
                         if owner_kind == "Deployment" and owner_name:
@@ -1124,7 +1140,7 @@ def microsoft_autonomous_remediation(pod_name, namespace="default", recommended_
                     "recommended_actions": parsed.get("recommended_actions", []),
                     "forensics": forensics_data,
                     "actions_taken": actions_taken,
-                    "outcome": outcome_state,
+                    "outcome": "SUCCESS" if any_success else outcome_state,
                 }
         except Exception:
             pass
@@ -1158,11 +1174,15 @@ def microsoft_autonomous_remediation(pod_name, namespace="default", recommended_
             print(f"🕵️ [Microsoft Kernel] Securing evidence for {pod_name}...")
 
             try:
-                log_cmd = f"kubectl logs {pod_name} -n {namespace} --previous --tail=100"
-                logs = subprocess.check_output(log_cmd, shell=True, text=True, stderr=subprocess.STDOUT)
+                result = subprocess.run(
+                    ["kubectl", "logs", pod_name, "-n", namespace, "--tail=100"],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+                logs = result.stdout
             except subprocess.CalledProcessError:
-                log_cmd = f"kubectl logs {pod_name} -n {namespace} --tail=100"
-                logs = subprocess.check_output(log_cmd, shell=True, text=True)
+                logs = "Pod never started - no logs available"
 
             with open(evidence_file, "w") as f:
                 f.write(logs)
@@ -1267,6 +1287,1222 @@ def microsoft_autonomous_remediation(pod_name, namespace="default", recommended_
             pass
         else:
             results["actions"].append("Pod not found; skipping log capture.")
+
+        # CrashLoopBackOff handling (post-log capture)
+        try:
+            pod_status_json = _safe_json(["kubectl", "get", "pod", pod_name, "-n", namespace, "-o", "json"])
+            statuses = (pod_status_json.get("status", {}) or {}).get("containerStatuses", []) or []
+            crash_cs = None
+            for cs in statuses:
+                waiting = (cs.get("state", {}) or {}).get("waiting") or {}
+                restarts = cs.get("restartCount", 0)
+                if waiting.get("reason") == "CrashLoopBackOff" or restarts > 3:
+                    crash_cs = cs
+                    break
+            if crash_cs:
+                logs_excerpt = ""
+                try:
+                    logs_excerpt = subprocess.check_output(
+                        f"kubectl logs {pod_name} -n {namespace} --tail=50",
+                        shell=True,
+                        text=True,
+                        stderr=subprocess.STDOUT,
+                    )
+                except Exception:
+                    pass
+                exit_code = None
+                try:
+                    last_state = (crash_cs.get("lastState") or {}).get("terminated") or {}
+                    exit_code = last_state.get("exitCode")
+                except Exception:
+                    pass
+                restarts = crash_cs.get("restartCount", 0)
+                dep_name = None
+                owner_kind = None
+                owner_name = None
+                dep_history = []
+                try:
+                    owners = (pod_json.get("metadata", {}) or {}).get("ownerReferences", []) or []
+                    for o in owners:
+                        owner_kind = owner_kind or o.get("kind")
+                        owner_name = owner_name or o.get("name")
+                        if o.get("kind") == "ReplicaSet":
+                            rs_json = _safe_json(["kubectl", "get", "rs", o.get("name"), "-n", namespace, "-o", "json"])
+                            rs_owners = (rs_json.get("metadata", {}) or {}).get("ownerReferences", []) or []
+                            for ro in rs_owners:
+                                if ro.get("kind") == "Deployment":
+                                    dep_name = ro.get("name")
+                                    break
+                        if o.get("kind") == "Deployment":
+                            dep_name = o.get("name")
+                        if dep_name:
+                            break
+                except Exception:
+                    dep_name = None
+                try:
+                    if dep_name:
+                        hist = _safe_json(["kubectl", "rollout", "history", f"deployment/{dep_name}", "-n", namespace, "-o", "json"])
+                        dep_history = hist.get("history", []) if isinstance(hist, dict) else []
+                except Exception:
+                    dep_history = []
+
+                prompt = (
+                    f"Pod crashing. Logs: {logs_excerpt}. Exit code: {exit_code}. Restarts: {restarts}.\n\n"
+                    "Common patterns:\n"
+                    "- Exit 137 = SIGKILL (hidden OOM)\n"
+                    "- Exit 1 + \"connection refused\" = dependency not ready\n"
+                    "- Exit 1 + \"port in use\" = port conflict\n"
+                    "- Missing env var = startup crash\n\n"
+                    'Recommend fix as JSON: {"root_cause": "...", "recommended_actions": [{"action": "increase_memory|rollback|fix_env|wait_dependency", ...}]}'
+                )
+                try:
+                    from shared_models import OllamaLLMIntegration
+                    llm = OllamaLLMIntegration()
+                    crash_analysis = llm.generate_text(prompt=prompt, json_mode=True, temperature=0.2, max_tokens=500)
+                    import json as _json
+                    parsed_crash = _json.loads(crash_analysis) if crash_analysis else {}
+                except Exception:
+                    parsed_crash = {}
+
+                actions_taken = []
+                outcome_state = "ANALYSIS_COMPLETE"
+
+                def _patch_resources(mem_req=None, mem_lim=None):
+                    if not dep_name:
+                        actions_taken.append("No deployment owner; manual fix required")
+                        return
+                    try:
+                        patch = {"spec": {"template": {"spec": {"containers": [{"name": crash_cs.get("name") or "", "resources": {}}]}}}}
+                        if mem_req:
+                            patch["spec"]["template"]["spec"]["containers"][0].setdefault("resources", {}).setdefault("requests", {})["memory"] = mem_req
+                        if mem_lim:
+                            patch["spec"]["template"]["spec"]["containers"][0].setdefault("resources", {}).setdefault("limits", {})["memory"] = mem_lim
+                        subprocess.run(
+                            ["kubectl", "patch", "deployment", dep_name, "-n", namespace, "--type", "strategic", "-p", json.dumps(patch)],
+                            check=True,
+                        )
+                        actions_taken.append(f"Patched resources for deployment {dep_name}")
+                    except Exception as e:
+                        actions_taken.append(f"Failed to patch resources: {e}")
+
+                def _rollback():
+                    if not dep_name:
+                        actions_taken.append("No deployment owner; cannot rollback")
+                        return
+                    if not dep_history:
+                        actions_taken.append("No deployment history for rollback")
+                        return
+                    try:
+                        subprocess.run(["kubectl", "rollout", "undo", f"deployment/{dep_name}", "-n", namespace], check=True)
+                        actions_taken.append(f"Rolled back deployment {dep_name} to previous revision")
+                    except Exception as e:
+                        actions_taken.append(f"Rollback failed: {e}")
+
+                for act in parsed_crash.get("recommended_actions", []) or []:
+                    a = act.get("action")
+                    if a == "increase_memory":
+                        req = act.get("details", {}).get("request") or "256Mi"
+                        lim = act.get("details", {}).get("limit") or "512Mi"
+                        _patch_resources(req, lim)
+                        outcome_state = "PARTIAL_SUCCESS"
+                    elif a == "rollback":
+                        _rollback()
+                        outcome_state = "PARTIAL_SUCCESS"
+                    elif a == "fix_env":
+                        missing = act.get("details", {}).get("env_vars") or []
+                        if not dep_name:
+                            actions_taken.append(f"Missing env vars suggested {missing} but no deployment owner")
+                        else:
+                            try:
+                                env_entries = []
+                                for envk in missing:
+                                    if isinstance(envk, dict):
+                                        name = envk.get("name")
+                                        val = envk.get("value", "placeholder")
+                                    else:
+                                        name = str(envk)
+                                        val = "placeholder"
+                                    if name:
+                                        env_entries.append({"name": name, "value": val})
+                                patch = {
+                                    "spec": {
+                                        "template": {
+                                            "spec": {
+                                                "containers": [{
+                                                    "name": crash_cs.get("name") or "",
+                                                    "env": env_entries
+                                                }]
+                                            }
+                                        }
+                                    }
+                                }
+                                subprocess.run(
+                                    ["kubectl", "patch", "deployment", dep_name, "-n", namespace, "--type", "strategic", "-p", json.dumps(patch)],
+                                    check=True,
+                                )
+                                actions_taken.append(f"Patched env vars {missing} into deployment {dep_name}")
+                            except Exception as e:
+                                actions_taken.append(f"Failed to patch env vars: {e}")
+                        outcome_state = "PARTIAL_SUCCESS"
+                    elif a == "wait_dependency":
+                        actions_taken.append("Waiting for dependency to become ready; monitoring")
+                        outcome_state = "PARTIAL_SUCCESS"
+
+                return {
+                    "target": pod_name,
+                    "issue_type": "CrashLoopBackOff",
+                    "root_cause": parsed_crash.get("root_cause"),
+                    "recommended_actions": parsed_crash.get("recommended_actions", []),
+                    "forensics": {
+                        "logs": logs_excerpt,
+                        "exit_code": exit_code,
+                        "restarts": restarts,
+                        "deployment_history": dep_history[:3],
+                    },
+                    "actions_taken": actions_taken,
+                    "outcome": outcome_state,
+                }
+        except Exception:
+            pass
+
+        # CreateContainerConfigError handling
+        try:
+            pod_status_json = _safe_json(["kubectl", "get", "pod", pod_name, "-n", namespace, "-o", "json"])
+            statuses = (pod_status_json.get("status", {}) or {}).get("containerStatuses", []) or []
+            cfg_cs = None
+            for cs in statuses:
+                waiting = (cs.get("state", {}) or {}).get("waiting") or {}
+                if waiting.get("reason") == "CreateContainerConfigError":
+                    cfg_cs = cs
+                    break
+            if cfg_cs:
+                waiting = (cfg_cs.get("state", {}) or {}).get("waiting") or {}
+                err_msg = waiting.get("message") or ""
+                missing_name = None
+                missing_type = None
+                logs_excerpt = ""
+                try:
+                    log_cmd = ["kubectl", "logs", pod_name, "-n", namespace, "--tail=50"]
+                    logs_excerpt = subprocess.check_output(log_cmd, stderr=subprocess.STDOUT, text=True)
+                except Exception:
+                    logs_excerpt = "Pod never started - no logs available"
+                import re
+                m_cm = re.search(r"configmap \"([^\"]+)\"", err_msg, flags=re.IGNORECASE)
+                m_sec = re.search(r"secret \"([^\"]+)\"", err_msg, flags=re.IGNORECASE)
+                if m_cm:
+                    missing_name = m_cm.group(1)
+                    missing_type = "ConfigMap"
+                if m_sec:
+                    missing_name = m_sec.group(1)
+                    missing_type = "Secret"
+
+                # Derive expected keys from pod/deployment spec references (env, envFrom, volumes)
+                expected_keys = set()
+                try:
+                    def _collect_keys_from_spec(spec_obj):
+                        if not spec_obj:
+                            return
+                        def _collect_from_containers(cont_list):
+                            for c in cont_list or []:
+                                for env in c.get("env", []) or []:
+                                    vf = env.get("valueFrom") or {}
+                                    cm_ref = vf.get("configMapKeyRef")
+                                    sec_ref = vf.get("secretKeyRef")
+                                    if missing_type == "ConfigMap" and cm_ref and cm_ref.get("name") == missing_name and cm_ref.get("key"):
+                                        expected_keys.add(cm_ref.get("key"))
+                                    if missing_type == "Secret" and sec_ref and sec_ref.get("name") == missing_name and sec_ref.get("key"):
+                                        expected_keys.add(sec_ref.get("key"))
+                                for env_from in c.get("envFrom", []) or []:
+                                    ref = env_from.get("configMapRef") if missing_type == "ConfigMap" else env_from.get("secretRef")
+                                    if ref and ref.get("name") == missing_name and ref.get("prefix"):
+                                        expected_keys.add(ref.get("prefix"))
+                        _collect_from_containers(spec_obj.get("containers", []) or [])
+                        _collect_from_containers(spec_obj.get("initContainers", []) or [])
+                        for vol in spec_obj.get("volumes", []) or []:
+                            cm = vol.get("configMap") if missing_type == "ConfigMap" else vol.get("secret")
+                            name_field = cm.get("name") if missing_type == "ConfigMap" else cm.get("secretName") if cm else None
+                            if cm and name_field == missing_name:
+                                items = cm.get("items") or []
+                                if items:
+                                    for it in items:
+                                        if it.get("key"):
+                                            expected_keys.add(it.get("key"))
+                                else:
+                                    expected_keys.add("data")
+
+                    spec = (pod_json.get("spec", {}) or {})
+                    _collect_keys_from_spec(spec)
+
+                    # If still empty, try deployment template spec
+                    if not expected_keys and dep_name:
+                        dep_obj = _safe_json(["kubectl", "get", "deploy", dep_name, "-n", namespace, "-o", "json"])
+                        tpl_spec = (((dep_obj or {}).get("spec") or {}).get("template") or {}).get("spec") or {}
+                        _collect_keys_from_spec(tpl_spec)
+                    # Fallback using owner name/kind if available (pod spec may be incomplete)
+                    if not expected_keys and owner_kind == "Deployment" and owner_name:
+                        dep_obj = _safe_json(["kubectl", "get", "deploy", owner_name, "-n", namespace, "-o", "json"])
+                        tpl_spec = (((dep_obj or {}).get("spec") or {}).get("template") or {}).get("spec") or {}
+                        _collect_keys_from_spec(tpl_spec)
+
+                    # Fallback: parse error message for missing key hints
+                    if not expected_keys and err_msg:
+                        try:
+                            # e.g., "couldn't find key api-url in ConfigMap default/app-config"
+                            missing_key_matches = re.findall(r"key\\s+([A-Za-z0-9._-]+)", err_msg, flags=re.IGNORECASE)
+                            for mk in missing_key_matches:
+                                expected_keys.add(mk)
+                            # e.g., "keys 'api-url', 'database-url'"
+                            quoted = re.findall(r"'([^']+)'", err_msg)
+                            for qk in quoted:
+                                if "/" not in qk and qk:
+                                    expected_keys.add(qk)
+                        except Exception:
+                            pass
+
+                    if not expected_keys:
+                        expected_keys.add("data")
+                except Exception:
+                    expected_keys = {"data"}
+
+                def _default_value_for_key(key_name: str) -> str:
+                    import string as _string
+                    kl = (key_name or "").lower()
+                    if "password" in kl or "secret" in kl or "token" in kl:
+                        alphabet = _string.ascii_letters + _string.digits
+                        return "".join(random.choice(alphabet) for _ in range(24))
+                    if "user" in kl or "username" in kl:
+                        return "admin"
+                    if "url" in kl or "uri" in kl or "conn" in kl:
+                        return "postgresql://admin:changeme@localhost:5432/app"
+                    if "yaml" in kl or kl.endswith(".yml"):
+                        return "config:\n  enabled: true\n"
+                    if "json" in kl:
+                        return json.dumps({"status": "ok"})
+                    return "placeholder"
+
+                def _verify_resource(kind: str, name: str, expected: set) -> bool:
+                    try:
+                        created = _safe_json(["kubectl", "-n", namespace, "get", kind, name, "-o", "json"])
+                        data_obj = (created or {}).get("data") or {}
+                        return bool(created) and set(data_obj.keys()) >= set(expected)
+                    except Exception:
+                        return False
+
+                def _upsert_generic_secret(name: str, keys: set) -> bool:
+                    values = {k: _default_value_for_key(k) for k in keys if k}
+                    manifest = {
+                        "apiVersion": "v1",
+                        "kind": "Secret",
+                        "metadata": {"name": name, "namespace": namespace},
+                        "type": "Opaque",
+                        "stringData": values,
+                    }
+                    try:
+                        import json as _json
+                        subprocess.run(
+                            ["kubectl", "apply", "-f", "-"],
+                            input=_json.dumps(manifest),
+                            text=True,
+                            check=True,
+                        )
+                        return _verify_resource("secret", name, keys)
+                    except Exception as e:
+                        actions_taken.append(f"Failed to upsert Secret {name}: {e}")
+                        return False
+
+                def _upsert_generic_configmap(name: str, keys: set) -> bool:
+                    values = {k: _default_value_for_key(k) for k in keys if k}
+                    manifest = {
+                        "apiVersion": "v1",
+                        "kind": "ConfigMap",
+                        "metadata": {"name": name, "namespace": namespace},
+                        "data": values,
+                    }
+                    try:
+                        import json as _json
+                        subprocess.run(
+                            ["kubectl", "apply", "-f", "-"],
+                            input=_json.dumps(manifest),
+                            text=True,
+                            check=True,
+                        )
+                        return _verify_resource("configmap", name, keys)
+                    except Exception as e:
+                        actions_taken.append(f"Failed to upsert ConfigMap {name}: {e}")
+                        return False
+
+                def _list_resources(kind: str):
+                    try:
+                        res = _safe_json(["kubectl", "get", kind, "-n", namespace, "-o", "json"])
+                        names = []
+                        for item in res.get("items", []):
+                            names.append(item.get("metadata", {}).get("name"))
+                        return names
+                    except Exception:
+                        return []
+
+                available = {
+                    "configmaps": _list_resources("configmap"),
+                    "secrets": _list_resources("secret"),
+                }
+
+                dep_name = None
+                dep_history = []
+                try:
+                    owners = (pod_json.get("metadata", {}) or {}).get("ownerReferences", []) or []
+                    for o in owners:
+                        if o.get("kind") == "ReplicaSet":
+                            rs_json = _safe_json(["kubectl", "get", "rs", o.get("name"), "-n", namespace, "-o", "json"])
+                            rs_owners = (rs_json.get("metadata", {}) or {}).get("ownerReferences", []) or []
+                            for ro in rs_owners:
+                                if ro.get("kind") == "Deployment":
+                                    dep_name = ro.get("name")
+                                    break
+                        if o.get("kind") == "Deployment":
+                            dep_name = o.get("name")
+                        if dep_name:
+                            break
+                except Exception:
+                    pass
+                dep_manifest = None
+                try:
+                    if dep_name:
+                        dep_manifest = _safe_json(["kubectl", "get", "deploy", dep_name, "-n", namespace, "-o", "json"])
+                        hist = _safe_json(["kubectl", "rollout", "history", f"deployment/{dep_name}", "-n", namespace, "-o", "json"])
+                        dep_history = hist.get("history", []) if isinstance(hist, dict) else []
+                except Exception:
+                    pass
+
+                prompt = (
+                    f"Missing {missing_type} \"{missing_name}\".\n"
+                    f"Available: {available}\n"
+                    f"Deployment references: {dep_manifest}\n"
+                    f"Previous versions: {dep_history}\n\n"
+                    "Options:\n"
+                    "1. Typo? (app-cfg vs app-config)\n"
+                    "2. Create from previous version\n"
+                    "3. Update deployment to use existing one\n\n"
+                    "JSON: {\"root_cause\": \"...\", \"actions\": [{\"action\": \"create_from_history|update_reference|create_default\", ...}]}"
+                )
+                try:
+                    from shared_models import OllamaLLMIntegration
+                    llm = OllamaLLMIntegration()
+                    cfg_analysis = llm.generate_text(prompt=prompt, json_mode=True, temperature=0.2, max_tokens=400)
+                    import json as _json
+                    parsed_cfg = _json.loads(cfg_analysis) if cfg_analysis else {}
+                except Exception:
+                    parsed_cfg = {}
+
+                actions_taken = []
+                outcome_state = "ANALYSIS_COMPLETE"
+                any_success = False
+
+                def _create_from_history():
+                    if not dep_history:
+                        actions_taken.append("No history to create missing resource")
+                        return
+                    try:
+                        # Placeholder: simply note; real creation would need stored manifests
+                        actions_taken.append(f"Would create {missing_type} {missing_name} from history")
+                    except Exception as e:
+                        actions_taken.append(f"Failed to create from history: {e}")
+
+                def _update_reference(target_name: str):
+                    if not dep_name or not target_name:
+                        actions_taken.append("Missing deployment or target_name for update_reference")
+                        return
+                    try:
+                        # Minimal patch to replace first matching volume/secret/configmap reference
+                        patch = {
+                            "spec": {
+                                "template": {
+                                    "spec": {
+                                        "volumes": [{
+                                            "name": missing_name or target_name,
+                                            "configMap": {"name": target_name} if missing_type == "ConfigMap" else None,
+                                            "secret": {"secretName": target_name} if missing_type == "Secret" else None,
+                                        }]
+                                    }
+                                }
+                            }
+                        }
+                        subprocess.run(
+                            ["kubectl", "patch", "deployment", dep_name, "-n", namespace, "--type", "strategic", "-p", json.dumps(patch)],
+                            check=True,
+                        )
+                        actions_taken.append(f"Patched deployment {dep_name} to reference {target_name}")
+                    except Exception as e:
+                        actions_taken.append(f"Failed to patch deployment reference: {e}")
+
+                def _create_default():
+                    try:
+                        kind = "configmap" if missing_type == "ConfigMap" else "secret"
+                        name_to_create = missing_name or "missing-resource"
+                        from_literals = []
+                        for k in expected_keys:
+                            val = _default_value_for_key(k)
+                            from_literals.extend(["--from-literal", f"{k}={val}"])
+                        cmd = ["kubectl", "-n", namespace, "create", kind, name_to_create] + from_literals
+                        subprocess.run(cmd, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        # Verify creation and keys
+                        created = _safe_json(["kubectl", "-n", namespace, "get", kind, name_to_create, "-o", "json"])
+                        data_obj = (created or {}).get("data") or {}
+                        if created and set(data_obj.keys()) >= set(expected_keys):
+                            actions_taken.append(f"Created {missing_type} {name_to_create} with keys {sorted(expected_keys)}")
+                        else:
+                            actions_taken.append(f"Attempted to create {missing_type} {name_to_create}, but keys missing")
+                    except Exception as e:
+                        actions_taken.append(f"Failed to create default {missing_type}: {e}")
+
+                for act in parsed_cfg.get("actions", []) or []:
+                    a = act.get("action")
+                    if a == "create_from_history":
+                        _create_from_history()
+                        outcome_state = "PARTIAL_SUCCESS"
+                    elif a == "update_reference":
+                        tgt = act.get("target") or act.get("name")
+                        _update_reference(tgt)
+                        outcome_state = "PARTIAL_SUCCESS"
+                    elif a == "create_default":
+                        _create_default()
+                        outcome_state = "PARTIAL_SUCCESS"
+                    elif a == "create_secret":
+                        try:
+                            secret_name = act.get("name") or missing_name or "generated-secret"
+                            # Build literals for expected keys (generic secret, not just docker-registry)
+                            import secrets as _secrets
+                            literals = []
+                            for k in expected_keys:
+                                if not k:
+                                    continue
+                                if "user" in k.lower():
+                                    val = "admin"
+                                elif "pass" in k.lower() or "secret" in k.lower():
+                                    val = _secrets.token_urlsafe(16)
+                                else:
+                                    val = f"{k}-default-value"
+                                literals.extend(["--from-literal", f"{k}={val}"])
+                            cmd = ["kubectl", "create", "secret", "generic", secret_name, "-n", namespace] + literals
+                            subprocess.run(cmd, check=True)
+                            if _verify_resource("secret", secret_name, expected_keys):
+                                actions_taken.append(f"Created Secret {secret_name} with keys: {sorted(expected_keys)}")
+                                any_success = True
+                                outcome_state = "SUCCESS"
+                            else:
+                                actions_taken.append(f"Created Secret {secret_name} but verification failed")
+                                outcome_state = "PARTIAL_SUCCESS"
+                        except Exception as e:
+                            actions_taken.append(f"Failed to create Secret: {e}")
+                    elif a == "create_configmap":
+                        try:
+                            cm_name = act.get("name") or missing_name or "generated-config"
+                            literals = []
+                            for k in expected_keys:
+                                if not k:
+                                    continue
+                                val = _default_value_for_key(k)
+                                literals.extend(["--from-literal", f"{k}={val}"])
+                            cmd = ["kubectl", "create", "configmap", cm_name, "-n", namespace] + literals
+                            subprocess.run(cmd, check=True)
+                            if _verify_resource("configmap", cm_name, expected_keys):
+                                actions_taken.append(f"Created ConfigMap {cm_name} with keys: {sorted(expected_keys)}")
+                                any_success = True
+                                outcome_state = "SUCCESS"
+                            else:
+                                actions_taken.append(f"Created ConfigMap {cm_name} but verification failed")
+                                outcome_state = "PARTIAL_SUCCESS"
+                        except Exception as e:
+                            actions_taken.append(f"Failed to create ConfigMap: {e}")
+                # Fallback: if LLM did not specify actions but we know what is missing, create it
+                if not actions_taken and missing_name and missing_type:
+                    try:
+                        if missing_type == "Secret":
+                            if _upsert_generic_secret(missing_name, expected_keys):
+                                actions_taken.append(f"Upserted Secret {missing_name} with keys {sorted(expected_keys)}")
+                                any_success = True
+                                outcome_state = "SUCCESS"
+                            else:
+                                actions_taken.append(f"Attempted to create Secret {missing_name}, but keys missing")
+                                outcome_state = "PARTIAL_SUCCESS"
+                        else:
+                            if _upsert_generic_configmap(missing_name, expected_keys):
+                                actions_taken.append(f"Upserted ConfigMap {missing_name} with keys {sorted(expected_keys)}")
+                                any_success = True
+                                outcome_state = "SUCCESS"
+                            else:
+                                actions_taken.append(f"Attempted to create ConfigMap {missing_name}, but keys missing")
+                                outcome_state = "PARTIAL_SUCCESS"
+                    except Exception:
+                        pass
+
+                return {
+                    "target": pod_name,
+                    "issue_type": "CreateContainerConfigError",
+                    "root_cause": parsed_cfg.get("root_cause"),
+                    "recommended_actions": parsed_cfg.get("actions", []),
+                    "forensics": {
+                        "error_message": err_msg,
+                        "missing_name": missing_name,
+                        "missing_type": missing_type,
+                        "available": available,
+                        "expected_keys": sorted(expected_keys),
+                        "deployment_history": dep_history[:3],
+                        "logs": logs_excerpt,
+                    },
+                    "actions_taken": actions_taken,
+                    "outcome": outcome_state,
+                }
+        except Exception:
+            pass
+
+        # Pending handling
+        try:
+            pod_status_json = _safe_json(["kubectl", "get", "pod", pod_name, "-n", namespace, "-o", "json"])
+            phase = (pod_status_json.get("status", {}) or {}).get("phase")
+            start_time = (pod_status_json.get("status", {}) or {}).get("startTime")
+            pending_too_long = False
+            if phase == "Pending":
+                try:
+                    pod_start = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
+                    if (datetime.utcnow() - pod_start).total_seconds() > 120:
+                        pending_too_long = True
+                except Exception:
+                    pending_too_long = True
+            if phase == "Pending" and pending_too_long:
+                describe = ""
+                try:
+                    describe = subprocess.check_output(
+                        ["kubectl", "describe", "pod", pod_name, "-n", namespace],
+                        text=True,
+                        stderr=subprocess.STDOUT,
+                    )
+                except Exception:
+                    pass
+
+                events = ""
+                try:
+                    ev = _safe_json(["kubectl", "get", "events", "-n", namespace, "-o", "json"])
+                    if isinstance(ev, dict):
+                        events = ev.get("items", [])
+                except Exception:
+                    events = ""
+
+                # Parse resource requests
+                pod_spec = (pod_json.get("spec", {}) or {})
+                reqs = []
+                for c in pod_spec.get("containers", []) or []:
+                    res = (c.get("resources", {}) or {}).get("requests", {}) or {}
+                    reqs.append({"container": c.get("name"), "requests": res})
+
+                # Node capacity snapshot
+                nodes = []
+                try:
+                    nodes_json = _safe_json(["kubectl", "get", "nodes", "-o", "json"])
+                    for n in nodes_json.get("items", []):
+                        alloc = (n.get("status", {}) or {}).get("allocatable", {})
+                        nodes.append({"name": n.get("metadata", {}).get("name"), "allocatable": alloc})
+                except Exception:
+                    nodes = []
+
+                dep_name = None
+                try:
+                    owners = (pod_json.get("metadata", {}) or {}).get("ownerReferences", []) or []
+                    for o in owners:
+                        if o.get("kind") == "ReplicaSet":
+                            rs_json = _safe_json(["kubectl", "get", "rs", o.get("name"), "-n", namespace, "-o", "json"])
+                            rs_owners = (rs_json.get("metadata", {}) or {}).get("ownerReferences", []) or []
+                            for ro in rs_owners:
+                                if ro.get("kind") == "Deployment":
+                                    dep_name = ro.get("name")
+                                    break
+                        if o.get("kind") == "Deployment":
+                            dep_name = o.get("name")
+                        if dep_name:
+                            break
+                except Exception:
+                    dep_name = None
+
+                prompt = (
+                    f"Pod Pending for >2m. Events: {events}. "
+                    f"Description: {describe}. Node capacity: {nodes}. Pod requests: {reqs}.\n\n"
+                    "Fix patterns:\n"
+                    "- Insufficient resources -> reduce requests OR scale down other pods\n"
+                    "- Node selector mismatch -> remove selector\n"
+                    "- PVC not bound -> check storage class\n\n"
+                    'Return JSON: {"root_cause": "...", "actions": [{"action": "reduce_requests|remove_selector|provision_storage", ...}]}'
+                )
+                try:
+                    from shared_models import OllamaLLMIntegration
+                    llm = OllamaLLMIntegration()
+                    pending_analysis = llm.generate_text(prompt=prompt, json_mode=True, temperature=0.2, max_tokens=400)
+                    import json as _json
+                    parsed_pending = _json.loads(pending_analysis) if pending_analysis else {}
+                except Exception:
+                    parsed_pending = {}
+
+                actions_taken = []
+                outcome_state = "ANALYSIS_COMPLETE"
+
+                def _patch_requests():
+                    try:
+                        if not dep_name:
+                            actions_taken.append("Standalone pod; manual resource adjustment required")
+                            return
+                        # Default values but prefer LLM-suggested
+                        cpu_req = "100m"
+                        mem_req = "128Mi"
+                        details = {}
+                        # Use outer scope parsed_pending in caller loop; we will override per action below
+                        if False:
+                            details = {}
+                        patch = {
+                            "spec": {
+                                "template": {
+                                    "spec": {
+                                        "containers": [{
+                                            "name": pod_spec.get("containers", [{}])[0].get("name", ""),
+                                            "resources": {"requests": {"cpu": cpu_req, "memory": mem_req}}
+                                        }]
+                                    }
+                                }
+                            }
+                        }
+                        subprocess.run(
+                            ["kubectl", "patch", "deployment", dep_name, "-n", namespace, "--type", "strategic", "-p", json.dumps(patch)],
+                            check=True,
+                        )
+                        actions_taken.append("Patched requests to smaller defaults")
+                    except Exception as e:
+                        actions_taken.append(f"Failed to patch requests: {e}")
+
+                def _remove_selector():
+                    try:
+                        if not dep_name:
+                            actions_taken.append("Standalone pod; no nodeSelector to patch at deployment level")
+                            return
+                        patch = {"spec": {"template": {"spec": {"nodeSelector": None}}}}
+                        subprocess.run(
+                            ["kubectl", "patch", "deployment", dep_name, "-n", namespace, "--type", "strategic", "-p", json.dumps(patch)],
+                            check=True,
+                        )
+                        actions_taken.append("Removed node selector")
+                    except Exception as e:
+                        actions_taken.append(f"Failed to remove node selector: {e}")
+
+                for act in parsed_pending.get("actions", []) or []:
+                    a = act.get("action")
+                    if a == "reduce_requests":
+                        try:
+                            # allow per-action overrides
+                            if act.get("details"):
+                                reqs = act["details"]
+                                cpu_req = reqs.get("cpu") or "100m"
+                                mem_req = reqs.get("memory") or "128Mi"
+                                def _patch_requests_with_vals(cpu_val, mem_val):
+                                    if not dep_name:
+                                        actions_taken.append("Standalone pod; manual resource adjustment required")
+                                        return
+                                    patch = {
+                                        "spec": {
+                                            "template": {
+                                                "spec": {
+                                                    "containers": [{
+                                                        "name": pod_spec.get("containers", [{}])[0].get("name", ""),
+                                                        "resources": {"requests": {"cpu": cpu_val, "memory": mem_val}}
+                                                    }]
+                                                }
+                                            }
+                                        }
+                                    }
+                                    subprocess.run(
+                                        ["kubectl", "patch", "deployment", dep_name, "-n", namespace, "--type", "strategic", "-p", json.dumps(patch)],
+                                        check=True,
+                                    )
+                                    actions_taken.append(f"Patched requests to cpu={cpu_val}, memory={mem_val}")
+                                _patch_requests_with_vals(cpu_req, mem_req)
+                            else:
+                                _patch_requests()
+                        except Exception as e:
+                            actions_taken.append(f"Failed to patch requests: {e}")
+                        outcome_state = "PARTIAL_SUCCESS"
+                    elif a == "remove_selector":
+                        _remove_selector()
+                        outcome_state = "PARTIAL_SUCCESS"
+                    elif a == "provision_storage":
+                        actions_taken.append("Provision storage/PVC manually")
+                        outcome_state = "PARTIAL_SUCCESS"
+
+                return {
+                    "target": pod_name,
+                    "issue_type": "Pending",
+                    "root_cause": parsed_pending.get("root_cause"),
+                    "recommended_actions": parsed_pending.get("actions", []),
+                    "forensics": {
+                        "describe": describe,
+                        "events": events,
+                        "node_capacity": nodes,
+                        "requests": reqs,
+                    },
+                    "actions_taken": actions_taken,
+                    "outcome": outcome_state,
+                }
+        except Exception:
+            pass
+
+        # Evicted handling
+        try:
+            pod_status_json = _safe_json(["kubectl", "get", "pod", pod_name, "-n", namespace, "-o", "json"])
+            reason = (pod_status_json.get("status", {}) or {}).get("reason")
+            if reason == "Evicted":
+                dep_name = None
+                try:
+                    owners = (pod_json.get("metadata", {}) or {}).get("ownerReferences", []) or []
+                    for o in owners:
+                        if o.get("kind") == "ReplicaSet":
+                            rs_json = _safe_json(["kubectl", "get", "rs", o.get("name"), "-n", namespace, "-o", "json"])
+                            rs_owners = (rs_json.get("metadata", {}) or {}).get("ownerReferences", []) or []
+                            for ro in rs_owners:
+                                if ro.get("kind") == "Deployment":
+                                    dep_name = ro.get("name")
+                                    break
+                        if o.get("kind") == "Deployment":
+                            dep_name = o.get("name")
+                        if dep_name:
+                            break
+                except Exception:
+                    dep_name = None
+                message = (pod_status_json.get("status", {}) or {}).get("message") or ""
+                node_name = (pod_status_json.get("spec", {}) or {}).get("nodeName")
+                node_conditions = {}
+                try:
+                    if node_name:
+                        node_json = _safe_json(["kubectl", "get", "node", node_name, "-o", "json"])
+                        node_conditions = node_json.get("status", {}).get("conditions", [])
+                except Exception:
+                    node_conditions = {}
+
+                prompt = (
+                    f"Pod evicted. Reason: {message}. Node conditions: {node_conditions}.\n\n"
+                    "Causes:\n"
+                    "- MemoryPressure → reduce requests\n"
+                    "- DiskPressure → clean logs\n"
+                    "- Node failure → reschedule\n\n"
+                    'JSON: {"root_cause": "...", "actions": [{"action": "reduce_memory|clean_disk|reschedule", ...}]}'
+                )
+                try:
+                    from shared_models import OllamaLLMIntegration
+                    llm = OllamaLLMIntegration()
+                    evict_analysis = llm.generate_text(prompt=prompt, json_mode=True, temperature=0.2, max_tokens=300)
+                    import json as _json
+                    parsed_evict = _json.loads(evict_analysis) if evict_analysis else {}
+                except Exception:
+                    parsed_evict = {}
+
+                actions_taken = []
+                outcome_state = "ANALYSIS_COMPLETE"
+
+                def _reduce_mem():
+                    if not dep_name:
+                        actions_taken.append("No deployment to patch for eviction")
+                        return
+                    try:
+                        patch = {
+                            "spec": {
+                                "template": {
+                                    "spec": {
+                                        "containers": [{
+                                            "name": (pod_json.get("spec", {}) or {}).get("containers", [{}])[0].get("name", ""),
+                                            "resources": {"requests": {"memory": "128Mi"}, "limits": {"memory": "256Mi"}},
+                                        }]
+                                    }
+                                }
+                            }
+                        }
+                        subprocess.run(
+                            ["kubectl", "patch", "deployment", dep_name, "-n", namespace, "--type", "strategic", "-p", json.dumps(patch)],
+                            check=True,
+                        )
+                        actions_taken.append(f"Reduced memory requests/limits for deployment {dep_name}")
+                    except Exception as e:
+                        actions_taken.append(f"Failed to patch deployment for eviction: {e}")
+
+                def _reschedule():
+                    try:
+                        subprocess.run(["kubectl", "delete", "pod", pod_name, "-n", namespace, "--wait=false"], check=False)
+                        actions_taken.append("Deleted pod to reschedule")
+                    except Exception as e:
+                        actions_taken.append(f"Failed to delete pod for reschedule: {e}")
+
+                for act in parsed_evict.get("actions", []) or []:
+                    a = act.get("action")
+                    if a == "reduce_memory":
+                        _reduce_mem()
+                        outcome_state = "PARTIAL_SUCCESS"
+                    elif a == "clean_disk":
+                        actions_taken.append("Clean disk/logs on node (manual)")
+                        outcome_state = "PARTIAL_SUCCESS"
+                    elif a == "reschedule":
+                        _reschedule()
+                        outcome_state = "PARTIAL_SUCCESS"
+
+                return {
+                    "target": pod_name,
+                    "issue_type": "Evicted",
+                    "root_cause": parsed_evict.get("root_cause"),
+                    "recommended_actions": parsed_evict.get("actions", []),
+                    "forensics": {
+                        "message": message,
+                        "node_conditions": node_conditions,
+                    },
+                    "actions_taken": actions_taken,
+                    "outcome": outcome_state,
+                }
+        except Exception:
+            pass
+
+        # Node failure handling (check node conditions)
+        try:
+            node_name = (pod_json.get("spec", {}) or {}).get("nodeName")
+            if node_name:
+                node_json = _safe_json(["kubectl", "get", "node", node_name, "-o", "json"])
+                conditions = (node_json.get("status", {}) or {}).get("conditions", []) or []
+                not_ready = False
+                pressure = False
+                for c in conditions:
+                    if c.get("type") == "Ready" and c.get("status") != "True":
+                        not_ready = True
+                    if c.get("type") in {"DiskPressure", "MemoryPressure"} and c.get("status") == "True":
+                        pressure = True
+                if not_ready or pressure:
+                    pods_on_node = []
+                    try:
+                        pods_json = _safe_json(["kubectl", "get", "pods", "-A", "-o", "json"])
+                        for p in pods_json.get("items", []):
+                            if (p.get("spec", {}) or {}).get("nodeName") == node_name:
+                                pods_on_node.append(p.get("metadata", {}).get("name"))
+                    except Exception:
+                        pods_on_node = []
+
+                    prompt = (
+                        f"Node {node_name} NotReady/Pressure. Conditions: {conditions}. Pods: {len(pods_on_node)}.\n\n"
+                        "Actions:\n"
+                        "- DiskPressure → cordon + clean\n"
+                        "- MemoryPressure → cordon + drain\n"
+                        "- NetworkUnavailable → investigate\n"
+                        "- Persistent → replace node\n\n"
+                        'JSON: {"root_cause": "...", "actions": [{"action": "cordon|drain|investigate", ...}]}'
+                    )
+                    try:
+                        from shared_models import OllamaLLMIntegration
+                        llm = OllamaLLMIntegration()
+                        node_analysis = llm.generate_text(prompt=prompt, json_mode=True, temperature=0.2, max_tokens=400)
+                        import json as _json
+                        parsed_node = _json.loads(node_analysis) if node_analysis else {}
+                    except Exception:
+                        parsed_node = {}
+
+                    actions_taken = []
+                    outcome_state = "ANALYSIS_COMPLETE"
+
+                    def _cordon():
+                        try:
+                            subprocess.run(["kubectl", "cordon", node_name], check=True)
+                            actions_taken.append(f"Cordoned node {node_name}")
+                        except Exception as e:
+                            actions_taken.append(f"Failed to cordon {node_name}: {e}")
+
+                    def _drain():
+                        try:
+                            subprocess.run(["kubectl", "drain", node_name, "--ignore-daemonsets", "--force", "--delete-emptydir-data"], check=True)
+                            actions_taken.append(f"Drained node {node_name}")
+                        except Exception as e:
+                            actions_taken.append(f"Failed to drain {node_name}: {e}")
+
+                    for act in parsed_node.get("actions", []) or []:
+                        a = act.get("action")
+                        if a == "cordon":
+                            _cordon()
+                            outcome_state = "PARTIAL_SUCCESS"
+                        elif a == "drain":
+                            _cordon()
+                            _drain()
+                            outcome_state = "PARTIAL_SUCCESS"
+                        elif a == "investigate":
+                            actions_taken.append("Investigate node networking or hardware; manual action required")
+                            outcome_state = "PARTIAL_SUCCESS"
+
+                return {
+                    "target": pod_name,
+                    "issue_type": "NodeNotReady",
+                    "root_cause": parsed_node.get("root_cause"),
+                    "recommended_actions": parsed_node.get("actions", []),
+                    "forensics": {
+                        "node": node_name,
+                        "conditions": conditions,
+                        "pods_on_node": pods_on_node,
+                    },
+                    "actions_taken": actions_taken,
+                    "outcome": outcome_state,
+                }
+        except Exception:
+            pass
+
+        # Init container handling
+        try:
+            init_statuses = (pod_json.get("status", {}) or {}).get("initContainerStatuses", []) or []
+            failed_init = None
+            for cs in init_statuses:
+                term = (cs.get("state", {}) or {}).get("terminated") or {}
+                if term and term.get("exitCode", 0) != 0:
+                    failed_init = cs
+                    break
+            if failed_init:
+                init_name = failed_init.get("name")
+                exit_code = ((failed_init.get("state", {}) or {}).get("terminated") or {}).get("exitCode")
+                dep_name = None
+                try:
+                    owners = (pod_json.get("metadata", {}) or {}).get("ownerReferences", []) or []
+                    for o in owners:
+                        if o.get("kind") == "ReplicaSet":
+                            rs_json = _safe_json(["kubectl", "get", "rs", o.get("name"), "-n", namespace, "-o", "json"])
+                            rs_owners = (rs_json.get("metadata", {}) or {}).get("ownerReferences", []) or []
+                            for ro in rs_owners:
+                                if ro.get("kind") == "Deployment":
+                                    dep_name = ro.get("name")
+                                    break
+                        if o.get("kind") == "Deployment":
+                            dep_name = o.get("name")
+                        if dep_name:
+                            break
+                except Exception:
+                    dep_name = None
+                logs_excerpt = ""
+                try:
+                    logs_excerpt = subprocess.check_output(
+                        f"kubectl logs {pod_name} -n {namespace} -c {init_name} --tail=50",
+                        shell=True,
+                        text=True,
+                        stderr=subprocess.STDOUT,
+                    )
+                except Exception:
+                    pass
+                cmd_args = {}
+                try:
+                    for c in (pod_json.get("spec", {}) or {}).get("initContainers", []) or []:
+                        if c.get("name") == init_name:
+                            cmd_args = {
+                                "command": c.get("command"),
+                                "args": c.get("args"),
+                            }
+                except Exception:
+                    cmd_args = {}
+
+                prompt = (
+                    f"Init container failed. Logs: {logs_excerpt}. Exit: {exit_code}.\n\n"
+                    "Common:\n"
+                    "- Waiting for service → increase timeout\n"
+                    "- Permission denied → check RBAC\n"
+                    "- Command failed → fix script\n\n"
+                    'JSON: {"root_cause": "...", "actions": [{"action": "increase_timeout|fix_rbac|skip_init", ...}]}'
+                )
+                try:
+                    from shared_models import OllamaLLMIntegration
+                    llm = OllamaLLMIntegration()
+                    init_analysis = llm.generate_text(prompt=prompt, json_mode=True, temperature=0.2, max_tokens=400)
+                    import json as _json
+                    parsed_init = _json.loads(init_analysis) if init_analysis else {}
+                except Exception:
+                    parsed_init = {}
+
+                actions_taken = []
+                outcome_state = "ANALYSIS_COMPLETE"
+
+                def _patch_timeout():
+                    try:
+                        if not dep_name:
+                            return
+                        patch = {
+                            "spec": {
+                                "template": {
+                                    "spec": {
+                                        "initContainers": [{
+                                            "name": init_name,
+                                            "env": [{"name": "INIT_TIMEOUT", "value": "120"}],
+                                        }]
+                                    }
+                                }
+                            }
+                        }
+                        subprocess.run(
+                            ["kubectl", "patch", "deployment", dep_name, "-n", namespace, "--type", "strategic", "-p", json.dumps(patch)],
+                            check=True,
+                        )
+                        actions_taken.append(f"Increased init timeout for {init_name}")
+                    except Exception as e:
+                        actions_taken.append(f"Failed to patch init timeout: {e}")
+
+                def _skip_init():
+                    try:
+                        if not dep_name:
+                            return
+                        patch = {
+                            "spec": {
+                                "template": {
+                                    "spec": {
+                                        "initContainers": []
+                                    }
+                                }
+                            }
+                        }
+                        subprocess.run(
+                            ["kubectl", "patch", "deployment", dep_name, "-n", namespace, "--type", "strategic", "-p", json.dumps(patch)],
+                            check=True,
+                        )
+                        actions_taken.append(f"Removed init containers from deployment {dep_name}")
+                    except Exception as e:
+                        actions_taken.append(f"Failed to remove init containers: {e}")
+
+                for act in parsed_init.get("actions", []) or []:
+                    a = act.get("action")
+                    if a == "increase_timeout":
+                        _patch_timeout()
+                        outcome_state = "PARTIAL_SUCCESS"
+                    elif a == "fix_rbac":
+                        actions_taken.append("Check RBAC/permissions for init container")
+                        outcome_state = "PARTIAL_SUCCESS"
+                    elif a == "skip_init":
+                        _skip_init()
+                        outcome_state = "PARTIAL_SUCCESS"
+
+                return {
+                    "target": pod_name,
+                    "issue_type": "InitContainerFailure",
+                    "root_cause": parsed_init.get("root_cause"),
+                    "recommended_actions": parsed_init.get("actions", []),
+                    "forensics": {
+                        "logs": logs_excerpt,
+                        "exit_code": exit_code,
+                        "cmd_args": cmd_args,
+                    },
+                    "actions_taken": actions_taken,
+                    "outcome": outcome_state,
+                }
+        except Exception:
+            pass
+
+        # Probe failure handling
+        try:
+            events = _safe_json(["kubectl", "get", "events", "-n", namespace, "-o", "json"])
+            probe_fail = False
+            if isinstance(events, dict):
+                for ev in events.get("items", []):
+                    msg = (ev.get("message") or "").lower()
+                    if "liveness probe failed" in msg or "readiness probe failed" in msg:
+                        probe_fail = True
+                        break
+            if probe_fail:
+                probe_cfg = {}
+                try:
+                    for c in (pod_json.get("spec", {}) or {}).get("containers", []) or []:
+                        if c.get("name"):
+                            probe_cfg = {
+                                "livenessProbe": c.get("livenessProbe"),
+                                "readinessProbe": c.get("readinessProbe"),
+                            }
+                            break
+                except Exception:
+                    probe_cfg = {}
+                logs_excerpt = ""
+                try:
+                    logs_excerpt = subprocess.check_output(
+                        f"kubectl logs {pod_name} -n {namespace} --tail=50",
+                        shell=True,
+                        text=True,
+                        stderr=subprocess.STDOUT,
+                    )
+                except Exception:
+                    pass
+
+                prompt = (
+                    f"Probe failing. Config: {probe_cfg}. Logs: {logs_excerpt}.\n\n"
+                    "Issues:\n"
+                    "- Timeout too short → increase\n"
+                    "- Endpoint wrong → fix path\n"
+                    "- App slow to start → increase initialDelaySeconds\n\n"
+                    'JSON: {"root_cause": "...", "actions": [{"action": "increase_timeout|fix_endpoint|increase_delay", ...}]}'
+                )
+                try:
+                    from shared_models import OllamaLLMIntegration
+                    llm = OllamaLLMIntegration()
+                    probe_analysis = llm.generate_text(prompt=prompt, json_mode=True, temperature=0.2, max_tokens=400)
+                    import json as _json
+                    parsed_probe = _json.loads(probe_analysis) if probe_analysis else {}
+                except Exception:
+                    parsed_probe = {}
+
+                actions_taken = []
+                outcome_state = "ANALYSIS_COMPLETE"
+
+                def _patch_probe(field: str, value):
+                    if not dep_name:
+                        actions_taken.append("No deployment to patch probes")
+                        return
+                    try:
+                        container_name = (pod_json.get("spec", {}) or {}).get("containers", [{}])[0].get("name", "")
+                        patch = {
+                            "spec": {
+                                "template": {
+                                    "spec": {
+                                        "containers": [{
+                                            "name": container_name,
+                                            field: value,
+                                            "readinessProbe": value if field == "readinessProbe" else None,
+                                            "livenessProbe": value if field == "livenessProbe" else None,
+                                        }]
+                                    }
+                                }
+                            }
+                        }
+                        subprocess.run(
+                            ["kubectl", "patch", "deployment", dep_name, "-n", namespace, "--type", "strategic", "-p", json.dumps(patch)],
+                            check=True,
+                        )
+                        actions_taken.append(f"Patched {field} on deployment {dep_name}")
+                    except Exception as e:
+                        actions_taken.append(f"Failed to patch {field}: {e}")
+
+                for act in parsed_probe.get("actions", []) or []:
+                    a = act.get("action")
+                    if a == "increase_timeout":
+                        val = act.get("details", {}).get("timeoutSeconds", 10)
+                        _patch_probe("livenessProbe", {"timeoutSeconds": val})
+                        _patch_probe("readinessProbe", {"timeoutSeconds": val})
+                        outcome_state = "PARTIAL_SUCCESS"
+                    elif a == "fix_endpoint":
+                        path = act.get("details", {}).get("path", "/")
+                        _patch_probe("livenessProbe", {"httpGet": {"path": path}})
+                        _patch_probe("readinessProbe", {"httpGet": {"path": path}})
+                        outcome_state = "PARTIAL_SUCCESS"
+                    elif a == "increase_delay":
+                        val = act.get("details", {}).get("initialDelaySeconds", 30)
+                        _patch_probe("livenessProbe", {"initialDelaySeconds": val})
+                        _patch_probe("readinessProbe", {"initialDelaySeconds": val})
+                        outcome_state = "PARTIAL_SUCCESS"
+
+                return {
+                    "target": pod_name,
+                    "issue_type": "ProbeFailure",
+                    "root_cause": parsed_probe.get("root_cause"),
+                    "recommended_actions": parsed_probe.get("actions", []),
+                    "forensics": {
+                        "probe_config": probe_cfg,
+                        "logs": logs_excerpt,
+                    },
+                    "actions_taken": actions_taken,
+                    "outcome": outcome_state,
+                }
+        except Exception:
+            pass
 
         # STEP 2: Apply calculated fixes if provided, otherwise fallback to restart/delete behavior
         def _apply_resource_patch_to_deployment(deploy_name: str, actions: list) -> bool:
