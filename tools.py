@@ -901,6 +901,44 @@ def microsoft_autonomous_remediation(pod_name, namespace="default", recommended_
         "actions": [],
         "outcome": "failed"
     }
+    createcontainer_result = None
+    skip_fallback_actions = False
+
+    # Resolve current pod name in case the original pod was replaced
+    try:
+        check = subprocess.run(
+            ["kubectl", "get", "pod", pod_name, "-n", namespace],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        if check.returncode != 0:
+            rs_name = pod_name.rsplit("-", 1)[0] if "-" in pod_name else None
+            if rs_name and rs_name != pod_name:
+                hash_part = rs_name.split("-")[-1]
+                selector = f"pod-template-hash={hash_part}"
+                pods_json = None
+                try:
+                    out = subprocess.check_output(
+                        ["kubectl", "get", "pods", "-n", namespace, "-l", selector, "-o", "json"],
+                        text=True,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    pods_json = json.loads(out)
+                except Exception:
+                    pods_json = None
+                if pods_json:
+                    items = pods_json.get("items", []) or []
+                    for item in items:
+                        phase = (item.get("status") or {}).get("phase")
+                        if phase and phase != "Running":
+                            new_name = (item.get("metadata") or {}).get("name")
+                            if new_name:
+                                pod_name = new_name
+                                break
+    except Exception:
+        pass
+    results["target"] = pod_name
 
     # Normalize recommendations from kwargs fallback
     if recommended_actions is None:
@@ -926,6 +964,8 @@ def microsoft_autonomous_remediation(pod_name, namespace="default", recommended_
         owner_kind = owner_name = None
         pod_labels = {}
         pod_forensics = {}
+        dep_name = None
+        dep_history = []
         try:
             pod_json = _safe_json(["kubectl", "get", "pod", pod_name, "-n", namespace, "-o", "json"])
             if pod_json:
@@ -935,6 +975,30 @@ def microsoft_autonomous_remediation(pod_name, namespace="default", recommended_
                 if owners:
                     owner_kind = owners[0].get("kind")
                     owner_name = owners[0].get("name")
+                try:
+                    owners = (pod_status_json.get("metadata", {}) or {}).get("ownerReferences", []) or []
+                    for o in owners:
+                        owner_kind = owner_kind or o.get("kind")
+                        owner_name = owner_name or o.get("name")
+                        if o.get("kind") == "ReplicaSet":
+                            rs_json = _safe_json(["kubectl", "get", "rs", o.get("name"), "-n", namespace, "-o", "json"])
+                            rs_owners = (rs_json.get("metadata", {}) or {}).get("ownerReferences", []) or []
+                            for ro in rs_owners:
+                                if ro.get("kind") == "Deployment":
+                                    dep_name = ro.get("name")
+                                    break
+                        if o.get("kind") == "Deployment":
+                            dep_name = o.get("name")
+                        if dep_name:
+                            break
+                except Exception:
+                    dep_name = None
+                try:
+                    if dep_name:
+                        hist = _safe_json(["kubectl", "rollout", "history", f"deployment/{dep_name}", "-n", namespace, "-o", "json"])
+                        dep_history = hist.get("history", []) if isinstance(hist, dict) else []
+                except Exception:
+                    dep_history = []
                 # Track owner references for postmortem
                 pod_forensics["owner_references"] = owners or []
                 if owner_kind or owner_name:
@@ -983,7 +1047,9 @@ def microsoft_autonomous_remediation(pod_name, namespace="default", recommended_
 
         # Early ImagePullBackOff/ErrImagePull handling before log capture
         try:
+            print(f"DEBUG: Checking for ImagePullBackOff - pod_json exists: {pod_json is not None}")
             container_statuses = (pod_json.get("status", {}) or {}).get("containerStatuses", []) or []
+            print(f"DEBUG: container_statuses count: {len(container_statuses)}")
             waiting_status = None
             for cs in container_statuses:
                 waiting = (cs.get("state", {}) or {}).get("waiting") or {}
@@ -1023,6 +1089,34 @@ def microsoft_autonomous_remediation(pod_name, namespace="default", recommended_
                     ],
                 }
 
+                def _resolve_deployment_name() -> str | None:
+                    try:
+                        if owner_kind == "Deployment" and owner_name:
+                            return owner_name
+                        if owner_kind == "ReplicaSet" and owner_name:
+                            rs_json = _safe_json(["kubectl", "get", "rs", owner_name, "-n", namespace, "-o", "json"])
+                            rs_owners = (rs_json.get("metadata", {}) or {}).get("ownerReferences", []) or []
+                            for ro in rs_owners:
+                                if ro.get("kind") == "Deployment" and ro.get("name"):
+                                    return ro.get("name")
+                        owners = (pod_json.get("metadata", {}) or {}).get("ownerReferences", []) or []
+                        for o in owners:
+                            if o.get("kind") == "Deployment" and o.get("name"):
+                                return o.get("name")
+                            if o.get("kind") == "ReplicaSet":
+                                rs_name = o.get("name")
+                                rs_json = _safe_json(["kubectl", "get", "rs", rs_name, "-n", namespace, "-o", "json"])
+                                rs_owners = (rs_json.get("metadata", {}) or {}).get("ownerReferences", []) or []
+                                for ro in rs_owners:
+                                    if ro.get("kind") == "Deployment" and ro.get("name"):
+                                        return ro.get("name")
+                    except Exception:
+                        return None
+                    return None
+
+                if not dep_name:
+                    dep_name = _resolve_deployment_name()
+
                 analysis_prompt = (
                     "You are analyzing an ImagePullBackOff failure in Kubernetes.\n\n"
                     f"Error: {err_msg}\n"
@@ -1059,47 +1153,20 @@ def microsoft_autonomous_remediation(pod_name, namespace="default", recommended_
                     actions_taken.append("Standalone pod; no deployment owner. Manual remediation required.")
                     return {
                         "target": pod_name,
-                        "issue_type": "CrashLoopBackOff",
-                        "root_cause": parsed_crash.get("root_cause"),
-                        "recommended_actions": parsed_crash.get("recommended_actions", []),
-                        "forensics": {
-                            "logs": logs_excerpt,
-                            "exit_code": exit_code,
-                            "restarts": restarts,
-                        },
+                        "issue_type": "ImagePullBackOff",
+                        "root_cause": parsed.get("root_cause"),
+                        "recommended_actions": parsed.get("recommended_actions", []),
+                        "forensics": forensics_data,
                         "actions_taken": actions_taken,
                         "outcome": "ANALYSIS_ONLY",
                     }
 
-                def _resolve_deployment_name() -> str | None:
-                    try:
-                        if owner_kind == "Deployment" and owner_name:
-                            return owner_name
-                        if owner_kind == "ReplicaSet" and owner_name:
-                            rs_json = _safe_json(["kubectl", "get", "rs", owner_name, "-n", namespace, "-o", "json"])
-                            rs_owners = (rs_json.get("metadata", {}) or {}).get("ownerReferences", []) or []
-                            for ro in rs_owners:
-                                if ro.get("kind") == "Deployment" and ro.get("name"):
-                                    return ro.get("name")
-                        owners = (pod_json.get("metadata", {}) or {}).get("ownerReferences", []) or []
-                        for o in owners:
-                            if o.get("kind") == "Deployment" and o.get("name"):
-                                return o.get("name")
-                            if o.get("kind") == "ReplicaSet":
-                                rs_name = o.get("name")
-                                rs_json = _safe_json(["kubectl", "get", "rs", rs_name, "-n", namespace, "-o", "json"])
-                                rs_owners = (rs_json.get("metadata", {}) or {}).get("ownerReferences", []) or []
-                                for ro in rs_owners:
-                                    if ro.get("kind") == "Deployment" and ro.get("name"):
-                                        return ro.get("name")
-                    except Exception:
-                        return None
-                    return None
-
                 try:
+                    print(f"DEBUG: ImagePullBackOff early handler - parsed: {parsed}")
+                    print(f"DEBUG: recommended_actions: {parsed.get('recommended_actions', [])}")
                     for action in parsed.get("recommended_actions", []) or []:
-                        if action.get("action") == "update_image":
-                            new_image = action.get("image")
+                        if action.get("action") in ["update_image", "update_image_url", "update_reference"]:
+                            new_image = action.get("image") or action.get("new_url") or action.get("target")
                             dep_name = forensics_data.get("owner_name") or _resolve_deployment_name()
                             if new_image and dep_name:
                                 patch_cmd = [
@@ -1111,7 +1178,7 @@ def microsoft_autonomous_remediation(pod_name, namespace="default", recommended_
                                             "template": {
                                                 "spec": {
                                                     "containers": [{
-                                                        "name": forensics_data.get("container_name") or "",
+                                                        "name": cs.get("name") or forensics_data.get("container_name") or "app",
                                                         "image": new_image
                                                     }]
                                                 }
@@ -1147,11 +1214,12 @@ def microsoft_autonomous_remediation(pod_name, namespace="default", recommended_
 
         # Extract resource adjustment intents
         resource_actions = []
-        for action in recommended_actions or []:
-            if action.get("action") == "adjust_resources":
-                resource_actions.append(action)
-        if resource_patch:
-            resource_actions.append(resource_patch)
+        if not skip_fallback_actions:
+            for action in recommended_actions or []:
+                if action.get("action") == "adjust_resources":
+                    resource_actions.append(action)
+            if resource_patch:
+                resource_actions.append(resource_patch)
 
         # Resolve a label selector for safer bulk operations (DaemonSet-friendly)
         label_selector = (
@@ -1300,6 +1368,24 @@ def microsoft_autonomous_remediation(pod_name, namespace="default", recommended_
                     crash_cs = cs
                     break
             if crash_cs:
+                # Resolve deployment owner
+                dep_name = None
+                try:
+                    owners = (pod_status_json.get("metadata", {}) or {}).get("ownerReferences", []) or []
+                    for o in owners:
+                        if o.get("kind") == "ReplicaSet":
+                            rs_json = _safe_json(["kubectl", "get", "rs", o.get("name"), "-n", namespace, "-o", "json"])
+                            for ro in (rs_json.get("metadata", {}) or {}).get("ownerReferences", []) or []:
+                                if ro.get("kind") == "Deployment":
+                                    dep_name = ro.get("name")
+                                    break
+                        elif o.get("kind") == "Deployment":
+                            dep_name = o.get("name")
+                        if dep_name:
+                            break
+                except Exception:
+                    pass
+                print(f"DEBUG CrashLoop: dep_name={dep_name}, pod={pod_name}")
                 logs_excerpt = ""
                 try:
                     logs_excerpt = subprocess.check_output(
@@ -1317,34 +1403,6 @@ def microsoft_autonomous_remediation(pod_name, namespace="default", recommended_
                 except Exception:
                     pass
                 restarts = crash_cs.get("restartCount", 0)
-                dep_name = None
-                owner_kind = None
-                owner_name = None
-                dep_history = []
-                try:
-                    owners = (pod_json.get("metadata", {}) or {}).get("ownerReferences", []) or []
-                    for o in owners:
-                        owner_kind = owner_kind or o.get("kind")
-                        owner_name = owner_name or o.get("name")
-                        if o.get("kind") == "ReplicaSet":
-                            rs_json = _safe_json(["kubectl", "get", "rs", o.get("name"), "-n", namespace, "-o", "json"])
-                            rs_owners = (rs_json.get("metadata", {}) or {}).get("ownerReferences", []) or []
-                            for ro in rs_owners:
-                                if ro.get("kind") == "Deployment":
-                                    dep_name = ro.get("name")
-                                    break
-                        if o.get("kind") == "Deployment":
-                            dep_name = o.get("name")
-                        if dep_name:
-                            break
-                except Exception:
-                    dep_name = None
-                try:
-                    if dep_name:
-                        hist = _safe_json(["kubectl", "rollout", "history", f"deployment/{dep_name}", "-n", namespace, "-o", "json"])
-                        dep_history = hist.get("history", []) if isinstance(hist, dict) else []
-                except Exception:
-                    dep_history = []
 
                 prompt = (
                     f"Pod crashing. Logs: {logs_excerpt}. Exit code: {exit_code}. Restarts: {restarts}.\n\n"
@@ -1353,7 +1411,7 @@ def microsoft_autonomous_remediation(pod_name, namespace="default", recommended_
                     "- Exit 1 + \"connection refused\" = dependency not ready\n"
                     "- Exit 1 + \"port in use\" = port conflict\n"
                     "- Missing env var = startup crash\n\n"
-                    'Recommend fix as JSON: {"root_cause": "...", "recommended_actions": [{"action": "increase_memory|rollback|fix_env|wait_dependency", ...}]}'
+                    'Respond ONLY with JSON. action MUST be exactly one of: increase_memory, rollback, fix_env, wait_dependency. Example: {"root_cause": "missing env", "recommended_actions": [{"action": "fix_env", "description": "Set POSTGRES_PASSWORD"}]}'
                 )
                 try:
                     from shared_models import OllamaLLMIntegration
@@ -1408,8 +1466,15 @@ def microsoft_autonomous_remediation(pod_name, namespace="default", recommended_
                     elif a == "rollback":
                         _rollback()
                         outcome_state = "PARTIAL_SUCCESS"
-                    elif a == "fix_env":
+                    elif a in ("fix_env", "set_env_var", "set_env"):
                         missing = act.get("details", {}).get("env_vars") or []
+                        if not missing:
+                            import re
+                            desc = act.get("description") or act.get("reason") or ""
+                            extracted = re.findall(r"\b[A-Z][A-Z0-9_]{2,}\b", desc)
+                            if extracted:
+                                # Deduplicate while preserving order
+                                missing = list(dict.fromkeys(extracted))
                         if not dep_name:
                             actions_taken.append(f"Missing env vars suggested {missing} but no deployment owner")
                         else:
@@ -1489,14 +1554,21 @@ def microsoft_autonomous_remediation(pod_name, namespace="default", recommended_
                 import re
                 m_cm = re.search(r"configmap \"([^\"]+)\"", err_msg, flags=re.IGNORECASE)
                 m_sec = re.search(r"secret \"([^\"]+)\"", err_msg, flags=re.IGNORECASE)
+                if not m_cm:
+                    m_cm = re.search(r"configmap\s+([a-z0-9-]+/)?([a-z0-9-]+)", err_msg, flags=re.IGNORECASE)
                 if m_cm:
-                    missing_name = m_cm.group(1)
+                    missing_name = m_cm.group(2) if m_cm.lastindex == 2 else m_cm.group(1).rstrip("/")
                     missing_type = "ConfigMap"
+                if not m_sec:
+                    m_sec = re.search(r"secret\s+([a-z0-9-]+/)?([a-z0-9-]+)", err_msg, flags=re.IGNORECASE)
                 if m_sec:
-                    missing_name = m_sec.group(1)
+                    missing_name = m_sec.group(2) if m_sec.lastindex == 2 else m_sec.group(1).rstrip("/")
                     missing_type = "Secret"
 
                 # Derive expected keys from pod/deployment spec references (env, envFrom, volumes)
+                dep_name = locals().get("dep_name")
+                print(f"DEBUG: missing_name={missing_name}, missing_type={missing_type}")
+                print(f"DEBUG: dep_name={dep_name}, owner_name={owner_name}, owner_kind={owner_kind}")
                 expected_keys = set()
                 try:
                     def _collect_keys_from_spec(spec_obj):
@@ -1520,7 +1592,7 @@ def microsoft_autonomous_remediation(pod_name, namespace="default", recommended_
                         _collect_from_containers(spec_obj.get("initContainers", []) or [])
                         for vol in spec_obj.get("volumes", []) or []:
                             cm = vol.get("configMap") if missing_type == "ConfigMap" else vol.get("secret")
-                            name_field = cm.get("name") if missing_type == "ConfigMap" else cm.get("secretName") if cm else None
+                            name_field = cm.get("name") if cm and missing_type == "ConfigMap" else cm.get("secretName") if cm else None
                             if cm and name_field == missing_name:
                                 items = cm.get("items") or []
                                 if items:
@@ -1530,8 +1602,9 @@ def microsoft_autonomous_remediation(pod_name, namespace="default", recommended_
                                 else:
                                     expected_keys.add("data")
 
-                    spec = (pod_json.get("spec", {}) or {})
+                    spec = (pod_status_json.get("spec", {}) or {})
                     _collect_keys_from_spec(spec)
+                    print(f"DEBUG: expected_keys after pod spec: {expected_keys}")
 
                     # If still empty, try deployment template spec
                     if not expected_keys and dep_name:
@@ -1543,6 +1616,7 @@ def microsoft_autonomous_remediation(pod_name, namespace="default", recommended_
                         dep_obj = _safe_json(["kubectl", "get", "deploy", owner_name, "-n", namespace, "-o", "json"])
                         tpl_spec = (((dep_obj or {}).get("spec") or {}).get("template") or {}).get("spec") or {}
                         _collect_keys_from_spec(tpl_spec)
+                    print(f"DEBUG: expected_keys after deployment spec: {expected_keys}")
 
                     # Fallback: parse error message for missing key hints
                     if not expected_keys and err_msg:
@@ -1561,7 +1635,9 @@ def microsoft_autonomous_remediation(pod_name, namespace="default", recommended_
 
                     if not expected_keys:
                         expected_keys.add("data")
-                except Exception:
+                except Exception as e:
+                    import traceback
+                    print(f"DEBUG: Exception in key extraction: {e}\\n{traceback.format_exc()}")
                     expected_keys = {"data"}
 
                 def _default_value_for_key(key_name: str) -> str:
@@ -1835,7 +1911,7 @@ def microsoft_autonomous_remediation(pod_name, namespace="default", recommended_
                     except Exception:
                         pass
 
-                return {
+                createcontainer_result = {
                     "target": pod_name,
                     "issue_type": "CreateContainerConfigError",
                     "root_cause": parsed_cfg.get("root_cause"),
@@ -1852,6 +1928,12 @@ def microsoft_autonomous_remediation(pod_name, namespace="default", recommended_
                     "actions_taken": actions_taken,
                     "outcome": outcome_state,
                 }
+                results["issue_type"] = "CreateContainerConfigError"
+                results["root_cause"] = parsed_cfg.get("root_cause")
+                results["outcome"] = outcome_state
+                results["actions"].extend(actions_taken)
+                results["createcontainerconfigerror"] = createcontainer_result
+                skip_fallback_actions = True
         except Exception:
             pass
 
@@ -2666,7 +2748,9 @@ def microsoft_autonomous_remediation(pod_name, namespace="default", recommended_
 
             if not patched:
                 # Legacy single-pod remediation, but only if pod exists
-                if pod_exists:
+                if skip_fallback_actions:
+                    results["actions"].append("Skipping pod delete; CreateContainerConfigError remediation already applied.")
+                elif pod_exists:
                     print(f"⚡ [Microsoft Kernel] Initiating tactical termination of {pod_name}...")
                     delete_cmd = f"kubectl delete pod {pod_name} -n {namespace} --wait=false"
                     subprocess.run(delete_cmd, shell=True, check=True)
@@ -2817,7 +2901,7 @@ def watch_k8s_events(namespace: str = "all", minutes: int = 5) -> dict:
         active_failed_scheduling_count = 0
         stale_failed_scheduling_count = 0
         
-        critical_reasons = ["OOMKilled", "CrashLoopBackOff", "Failed", "FailedScheduling", "Unhealthy", "BackOff", "Killing"]
+        critical_reasons = ["OOMKilled", "FailedToRetrieveImagePullSecret", "CrashLoopBackOff", "Failed", "FailedScheduling", "Unhealthy", "BackOff", "Killing"]
 
         now = datetime.utcnow()
 

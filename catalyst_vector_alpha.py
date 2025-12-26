@@ -405,6 +405,19 @@ class CatalystVectorAlpha:
             self.meta_monitor.start()
         except Exception as _e:
             self.external_log_sink.warning(f"[SwarmHealthMonitor] failed to start: {_e}")
+        # --- K8s Student Agent (autonomous, runs in own thread) ---
+        try:
+            from students import K8sStudent
+            self.k8s_student = K8sStudent(
+                shared_memory=self.memetic_kernel,
+                tool_registry=self.tool_registry,
+                cycle_time=30
+            )
+            self.k8s_student.start()
+            self.external_log_sink.info("[K8sStudent] Started autonomous K8s remediation agent")
+        except Exception as _e:
+            self.external_log_sink.warning(f"[K8sStudent] failed to start: {_e}")
+            self.k8s_student = None
 
         # --- Log initial setup completion ---
         self._log_swarm_activity(

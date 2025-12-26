@@ -1473,7 +1473,7 @@ class ProtoAgent(ABC):
         # K8S MONITORING - Run for Observer before task execution
         if self.name and "Observer" in self.name:
             _registry = getattr(self, "tool_registry", None)
-            if _registry and _registry.has_tool("watch_k8s_events"):
+            if not getattr(self, "_k8s_student_active", True) and _registry and _registry.has_tool("watch_k8s_events"):
                 now_ts = time.time()
                 cached = self._k8s_cache.get("result")
                 cached_ts = self._k8s_cache.get("ts", 0)
@@ -1488,53 +1488,93 @@ class ProtoAgent(ABC):
                     if _crit > 0:
                         print(f"[Observer] 🚨 K8S ALERT: {_crit} critical events detected!")
                         self._prune_remediation_cache()
-                        # DIRECT REMEDIATION - No Planner needed
-                        for event in payload.get("critical_events", [])[:3]:
+                        
+                        # === SCALABLE REMEDIATION - Dedupe by pod, prioritize by severity ===
+                        SEVERITY_ORDER = {
+                            "OOMKilled": 1, "CrashLoopBackOff": 1, "BackOff": 1,
+                            "Failed": 2, "FailedScheduling": 2, "Unhealthy": 2,
+                            "FailedToRetrieveImagePullSecret": 3, "Killing": 3,
+                        }
+                        
+                        # Dedupe: collect unique pods with highest severity
+                        pod_events = {}  # key: "namespace/pod" -> event with best severity
+                        for event in payload.get("critical_events", []):
+                            ns = event.get("namespace")
+                            pod = event.get("name")
+                            if not ns or not pod:
+                                continue
+                            key = f"{ns}/{pod}"
+                            severity = SEVERITY_ORDER.get(event.get("reason"), 5)
+                            if key not in pod_events or severity < pod_events[key][1]:
+                                pod_events[key] = (event, severity)
+                        
+                        # Sort by severity (lower = more urgent), then process
+                        sorted_pods = sorted(pod_events.items(), key=lambda x: x[1][1])
+                        processed = 0
+                        max_per_cycle = 10
+                        
+                        for key, (event, severity) in sorted_pods:
+                            if processed >= max_per_cycle:
+                                print(f"[Observer] Rate limit: {len(sorted_pods) - processed} pods deferred to next cycle")
+                                break
                             namespace = event.get("namespace")
                             pod_name = event.get("name")
-                            if namespace and pod_name:
-                                if any(pat in pod_name for pat in self._ignore_patterns):
-                                    print(f"[Observer] Skipping remediation (ignore pattern) for {namespace}/{pod_name}")
-                                    self._increment_remediation_metric("ignore_skips")
+                            
+                            if any(pat in pod_name for pat in self._ignore_patterns):
+                                print(f"[Observer] Skipping remediation (ignore pattern) for {namespace}/{pod_name}")
+                                self._increment_remediation_metric("ignore_skips")
+                                continue
+                            if self._recently_remediated(namespace, pod_name):
+                                print(f"[Observer] Skipping remediation (recent) for {namespace}/{pod_name}")
+                                self._increment_remediation_metric("dedupe_skips")
+                                continue
+                            if self._remediation_already_queued(namespace, pod_name):
+                                print(f"[Observer] Skipping remediation (already queued) for {namespace}/{pod_name}")
+                                self._increment_remediation_metric("queue_skips")
+                                continue
+                                
+                            # Check if pod still exists
+                            try:
+                                import subprocess
+                                result = subprocess.run(["kubectl", "get", "pod", pod_name, "-n", namespace], capture_output=True, text=True)
+                                if result.returncode != 0:
+                                    print(f"[Observer] Skipping remediation (pod gone) for {namespace}/{pod_name}")
+                                    self._increment_remediation_metric("not_found_skips")
                                     continue
-                                if self._recently_remediated(namespace, pod_name):
-                                    print(f"[Observer] Skipping remediation (recent) for {namespace}/{pod_name}")
-                                    self._increment_remediation_metric("dedupe_skips")
-                                    last_ts = self._remediated_pods.get(f"{namespace}/{pod_name}", 0)
-                                    remaining = max(0, 600 - (time.time() - last_ts))
-                                    print(f"[Observer] skip_reason=dedupe_recent resource={namespace}/{pod_name} last_ts={last_ts} cooldown_remaining_s={remaining:.1f}")
-                                    continue
-                                if self._remediation_already_queued(namespace, pod_name):
-                                    print(f"[Observer] Skipping remediation (already queued) for {namespace}/{pod_name}")
-                                    self._increment_remediation_metric("queue_skips")
-                                    continue
-                                print(f"[Observer] AUTO-REMEDIATING: {namespace}/{pod_name}")
-                                try:
-                                    planner_name = "ProtoAgent_Planner_instance_1"
-                                    goal = (
-                                        f"Remediate failing pod {namespace}/{pod_name}. "
-                                        f"Execute microsoft_autonomous_remediation immediately for pod {namespace}/{pod_name}."
-                                    )
-                                    directive = {
-                                        "type": "INITIATE_PLANNING_CYCLE",
-                                        "planner_agent_name": planner_name,
-                                        "high_level_goal": goal,
-                                        "mission_type": "k8s_monitoring",
-                                        "cycle_id": getattr(self.orchestrator, "current_action_cycle_id", None),
-                                        "context": {"target_pod": f"{namespace}/{pod_name}"},
-                                    }
-                                    if self.orchestrator and hasattr(self.orchestrator, "inject_directives"):
-                                        self.orchestrator.inject_directives([directive])
-                                    elif getattr(self, "message_bus", None) and getattr(self.message_bus, "catalyst_vector_ref", None):
-                                        self.message_bus.catalyst_vector_ref.inject_directives([directive])
-                                    else:
-                                        raise RuntimeError("No orchestrator/message_bus to inject directive")
-                                    print(f"[Observer] Remediation mission injected for {namespace}/{pod_name}")
-                                    self._mark_remediated(namespace, pod_name)
-                                    self._increment_remediation_metric("remediation_success")
-                                except Exception as e:
-                                    print(f"[Observer] Remediation mission injection failed for {namespace}/{pod_name}: {e}")
-                                    self._increment_remediation_metric("remediation_failure")
+                            except Exception:
+                                pass
+                            # K8sStudent handles this now - skip Observer remediation
+                            if getattr(self, "_k8s_student_active", True):
+                                print(f"[Observer] K8s delegated to K8sStudent - skipping {namespace}/{pod_name}")
+                                continue
+                            print(f"[Observer] AUTO-REMEDIATING [{severity}]: {namespace}/{pod_name} (reason: {event.get('reason')})")
+                            try:
+                                planner_name = "ProtoAgent_Planner_instance_1"
+                                goal = (
+                                    f"Remediate failing pod {namespace}/{pod_name}. "
+                                    f"Execute microsoft_autonomous_remediation immediately for pod {namespace}/{pod_name}."
+                                )
+                                directive = {
+                                    "type": "INITIATE_PLANNING_CYCLE",
+                                    "planner_agent_name": planner_name,
+                                    "high_level_goal": goal,
+                                    "mission_type": "k8s_monitoring",
+                                    "cycle_id": getattr(self.orchestrator, "current_action_cycle_id", None),
+                                    "context": {"target_pod": f"{namespace}/{pod_name}", "severity": severity},
+                                }
+                                if self.orchestrator and hasattr(self.orchestrator, "inject_directives"):
+                                    self.orchestrator.inject_directives([directive])
+                                elif getattr(self, "message_bus", None) and getattr(self.message_bus, "catalyst_vector_ref", None):
+                                    self.message_bus.catalyst_vector_ref.inject_directives([directive])
+                                else:
+                                    raise RuntimeError("No orchestrator/message_bus to inject directive")
+                                print(f"[Observer] Remediation mission injected for {namespace}/{pod_name}")
+                                self._mark_remediated(namespace, pod_name)
+                                self._increment_remediation_metric("remediation_success")
+                                processed += 1
+                            except Exception as e:
+                                print(f"[Observer] Remediation mission injection failed for {namespace}/{pod_name}: {e}")
+                                self._increment_remediation_metric("remediation_failure")
                     # Fallback: inspect pod status for failures/crashloops (rate-limited)
                     if _registry.has_tool("get_pod_status") and self._can_run_pod_fallback():
                         pod_resp = _registry.safe_call("get_pod_status", namespace="all")
@@ -1560,6 +1600,10 @@ class ProtoAgent(ABC):
                                     if self._recently_remediated(ns, name):
                                         print(f"[Observer] Skipping remediation (recent) for {ns}/{name}")
                                         self._increment_remediation_metric("dedupe_skips")
+                                        continue
+                                    # K8sStudent handles this
+                                    if getattr(self, "_k8s_student_active", True):
+                                        print(f"[Observer] K8s delegated to K8sStudent - skipping {ns}/{name}")
                                         continue
                                     print(f"[Observer] AUTO-REMEDIATING pod failure: {ns}/{name} phase={phase} issues={issues}")
                                     try:
@@ -2913,6 +2957,7 @@ class ProtoAgent_Observer(ProtoAgent):
         self._pod_mem_history: dict[str, list[tuple[float, float, float]]] = {}
         self._pod_resource_cache: dict[str, dict] = {}
         self._preemptive_targets: dict[str, float] = {}
+        self._k8s_student_active = True  # K8sStudent handles k8s remediation
         self._last_predictive_check: float = 0.0
 
     def _prune_remediation_cache(self, ttl_seconds: int = 600):
@@ -3146,7 +3191,7 @@ class ProtoAgent_Observer(ProtoAgent):
             # AUTO K8S MONITORING - Check every Observer cycle
             print("[DEBUG] Observer: Checking for watch_k8s_events tool...")
             _registry = getattr(self, "tool_registry", None)
-            if _registry and _registry.has_tool("watch_k8s_events"):
+            if not getattr(self, "_k8s_student_active", True) and _registry and _registry.has_tool("watch_k8s_events"):
                 now_ts = time.time()
                 cached = self._k8s_cache.get("result")
                 cached_ts = self._k8s_cache.get("ts", 0)
@@ -3189,7 +3234,7 @@ class ProtoAgent_Observer(ProtoAgent):
                             pass
 
                         # DIRECT REMEDIATION - No Planner needed
-                        for event in payload.get("critical_events", [])[:3]:
+                        for event in payload.get("critical_events", [])[:10]:
                             namespace = event.get("namespace")
                             pod_name = event.get("name")
                             reason = event.get("reason")
@@ -3273,6 +3318,10 @@ class ProtoAgent_Observer(ProtoAgent):
                                     if self._recently_remediated(ns, name):
                                         print(f"[Observer] Skipping remediation (recent) for {ns}/{name}")
                                         self._increment_remediation_metric("dedupe_skips")
+                                        continue
+                                    # K8sStudent handles this
+                                    if getattr(self, "_k8s_student_active", True):
+                                        print(f"[Observer] K8s delegated to K8sStudent - skipping {ns}/{name}")
                                         continue
                                     print(f"[Observer] AUTO-REMEDIATING pod failure: {ns}/{name} phase={phase} issues={issues}")
                                     try:
@@ -4408,9 +4457,61 @@ class ProtoAgent_Planner(ProtoAgent):
         adjustments with explanations.
         """
         import json
+        import re
 
         forensics_safe = forensics or {}
         payload = json.dumps(forensics_safe, indent=2)
+        current_status = forensics_safe.get("current_pod_status")
+        if current_status:
+            container_statuses = (current_status.get("status", {}) or {}).get("containerStatuses", []) or []
+            for cs in container_statuses:
+                waiting = (cs.get("state", {}) or {}).get("waiting") or {}
+                if waiting:
+                    forensics_safe["live_pod_error"] = {
+                        "reason": waiting.get("reason"),
+                        "message": waiting.get("message"),
+                        "container": cs.get("name"),
+                    }
+                    self._log_agent_activity(
+                        "REMEDIATION_LIVE_POD_ERROR",
+                        self.name,
+                        forensics_safe["live_pod_error"],
+                    )
+                    break
+            payload = json.dumps(forensics_safe, indent=2)
+        forensics_blob = json.dumps(forensics_safe, ensure_ascii=False)
+        config_missing = False
+        missing_kind = None
+        missing_name = None
+        missing_match = None
+        kind_patterns = [
+            r"(configmap|secret)[^\\n]*?(?:not found|missing|does not exist)",
+            r"(?:couldn't find|cannot find|not found)[^\\n]*?\\bkey\\b[^\\n]*?\\b(?:in|from)\\b[^\\n]*?(configmap|secret)",
+            r"\\bkey\\b[^\\n]*?(?:not found|missing)[^\\n]*?\\b(?:in|from)\\b[^\\n]*?(configmap|secret)",
+        ]
+        for pattern in kind_patterns:
+            missing_match = re.search(pattern, forensics_blob, flags=re.IGNORECASE)
+            if missing_match:
+                break
+        if missing_match:
+            config_missing = True
+            missing_kind = missing_match.group(1).lower()
+        elif "createcontainerconfigerror" in forensics_blob.lower():
+            config_missing = True
+        if config_missing and not missing_kind:
+            if re.search(r"configmap", forensics_blob, flags=re.IGNORECASE):
+                missing_kind = "configmap"
+            elif re.search(r"secret", forensics_blob, flags=re.IGNORECASE):
+                missing_kind = "secret"
+            name_match = re.search(
+                r"(?:configmap|secret)\\s+[\"']?([A-Za-z0-9._/-]+)[\"']?",
+                forensics_blob,
+                flags=re.IGNORECASE,
+            )
+            if name_match:
+                missing_name = name_match.group(1)
+                if "/" in missing_name:
+                    missing_name = missing_name.split("/", 1)[-1]
         prompt = f"""You are the CVA Planner. Analyze Kubernetes remediation forensics and propose the optimal fix.
 
 Forensics (JSON):
@@ -4420,6 +4521,8 @@ Requirements:
 - Identify root cause with evidence (e.g., OOM, CPU saturation, disk I/O errors, crash loops).
 - Compare observed usage vs requests/limits if present.
 - Consider workload pattern (burst vs steady) implied by termination/usage signals.
+- If forensics indicate missing ConfigMap/Secret or CreateContainerConfigError, treat it as a configuration error
+  and do NOT recommend resource adjustments or scaling.
 - Recommend specific resource adjustments with numeric targets (requests/limits or replica changes) and brief rationale.
 - Keep responses concise, in JSON.
 
@@ -4428,6 +4531,9 @@ Respond with valid JSON:
   "root_cause": "<short summary>",
   "evidence": ["<bullet 1>", "<bullet 2>"],
   "recommended_actions": [
+    {{"action": "create_configmap", "name": "<name|unknown>", "reason": "<why>"}},
+    {{"action": "create_secret", "name": "<name|unknown>", "reason": "<why>"}},
+    {{"action": "update_reference", "name": "<existing_name>", "target": "<desired_name>", "reason": "<why>"}},
     {{"action": "adjust_resources", "container": "<name|unknown>", "requests": {{"cpu": "...", "memory": "..."}}, "limits": {{"cpu": "...", "memory": "..."}}, "reason": "<why>"}},
     {{"action": "scale_replicas", "target": "<deployment|ds|pod>", "replicas": <int>, "reason": "<why>"}},
     {{"action": "other", "description": "<config fix or investigation step>", "reason": "<why>"}}
@@ -4442,6 +4548,31 @@ Respond with valid JSON:
                 max_tokens=512,
             )
             parsed = json.loads(response)
+            if config_missing:
+                actions = parsed.get("recommended_actions", []) or []
+                filtered = [a for a in actions if a.get("action") not in {"adjust_resources", "scale_replicas"}]
+                if not filtered:
+                    if missing_kind == "configmap":
+                        filtered = [{
+                            "action": "create_configmap",
+                            "name": missing_name or "unknown",
+                            "reason": "Missing ConfigMap referenced by pod",
+                        }]
+                    elif missing_kind == "secret":
+                        filtered = [{
+                            "action": "create_secret",
+                            "name": missing_name or "unknown",
+                            "reason": "Missing Secret referenced by pod",
+                        }]
+                    else:
+                        filtered = [{
+                            "action": "other",
+                            "description": "Create missing ConfigMap/Secret referenced by pod",
+                            "reason": "CreateContainerConfigError detected in forensics",
+                        }]
+                parsed["recommended_actions"] = filtered
+                if not parsed.get("root_cause"):
+                    parsed["root_cause"] = "Missing ConfigMap/Secret"
             self._log_agent_activity(
                 "LLM_REMEDIATION_REASONING",
                 self.name,
@@ -9556,6 +9687,7 @@ TOOLSMITH MODE (Self-Evolution):
         self._log_agent_activity("PLAN_DECOMPOSITION_START", self.name, f"Decomposing goal: {goal_str}")
 
         try:
+            import json
             # ---------- 0) Consult remediation semantic memory when relevant ----------
             try:
                 mission_hint = kwargs.get("mission_type") or "general_planning"
@@ -9905,11 +10037,25 @@ TOOLSMITH MODE (Self-Evolution):
                     except Exception:
                         forensics_text = None
 
+                    # Fetch live pod status for accurate LLM reasoning
+                    import subprocess, json
+                    try:
+                        pod_status_cmd = ["kubectl", "get", "pod", pod_ref, "-o", "json"]
+                        pod_status_output = subprocess.check_output(
+                            pod_status_cmd,
+                            text=True,
+                            stderr=subprocess.DEVNULL,
+                        )
+                        current_pod_status = json.loads(pod_status_output)
+                    except Exception:
+                        current_pod_status = None
+
                     context_blob = {
                         "pod": pod_ref,
                         "goal": goal_str,
                         "memories": memories,
                         "forensics_text": forensics_text,
+                        "current_pod_status": current_pod_status,
                     }
                     analysis = self._reason_about_remediation(context_blob)
                     rec_actions = []
@@ -10098,6 +10244,7 @@ TOOLSMITH MODE (Self-Evolution):
             )
 
         except Exception as e:
+            import traceback
             error_msg = f"Plan decomposition failed critically: {e}"
             self._log_agent_activity(
                 "PLAN_DECOMPOSITION_ERROR",
