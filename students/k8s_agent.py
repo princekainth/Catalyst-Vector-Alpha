@@ -281,7 +281,13 @@ class K8sStudent(BaseStudent):
                     outcome = data.get("outcome", "UNKNOWN")
                     actions = data.get("actions_taken", data.get("actions", []))
                     
-                    if outcome in ("SUCCESS", "PARTIAL_SUCCESS"):
+                    # Check if actually fixed - not just "manual fix required"
+                    actually_fixed = outcome in ("SUCCESS", "PARTIAL_SUCCESS") and not any(
+                        "manual" in str(a).lower() or "no deployment" in str(a).lower() 
+                        for a in actions
+                    )
+                    
+                    if actually_fixed:
                         print(f"[{self.name}] ✅ Fixed {namespace}/{name}: {actions}")
                         return {"success": True, "action": f"remediated_{reason}", "details": data}
                     else:
@@ -625,14 +631,29 @@ class K8sStudent(BaseStudent):
             # Extract deployment name from pod
             dep_name = pod_name.rsplit('-', 2)[0] if '-' in pod_name else pod_name
             
+            # Choose fix strategy based on error type
+            if reason == "OOMKilled":
+                fix_hint = f"kubectl set resources deployment/{dep_name} -n {namespace} --limits=memory=512Mi --requests=memory=256Mi"
+            elif reason == "CrashLoopBackOff":
+                fix_hint = f"kubectl rollout restart deployment/{dep_name} -n {namespace}"
+            elif reason == "ImagePullBackOff":
+                fix_hint = "NO_FIX (image issues need manual correction)"
+            elif reason == "CreateContainerConfigError":
+                fix_hint = "NO_FIX (missing configmap/secret needs manual creation)"
+            else:
+                fix_hint = f"kubectl rollout restart deployment/{dep_name} -n {namespace}"
+            
             prompt = f"""Fix Kubernetes {reason} issue.
 
 DEPLOYMENT: {dep_name}
 NAMESPACE: {namespace}
+ERROR TYPE: {reason}
 
-Command MUST use deployment name: {dep_name}
+RECOMMENDED FIX FOR {reason}:
+{fix_hint}
 
-Example: kubectl rollout restart deployment/{dep_name} -n {namespace}
+If the recommended fix looks correct, return it exactly.
+Otherwise say NO_FIX.
 
 Reply ONLY the command or NO_FIX."""
 
