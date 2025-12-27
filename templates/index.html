@@ -71,7 +71,7 @@
             <label class="text-sm text-slate-400 mb-1 block">Agent Purpose</label>
             <textarea id="agent-purpose" rows="3" placeholder="e.g., Monitor disk usage and alert when low" class="input resize-none"></textarea>
           </div>
-          <button id="spawn-btn" class="btn btn-primary w-full">
+          <button id="spawn-btn" class="btn btn-primary w-full" onclick="spawnAgent()">
             <span id="spawn-text">🚀 Spawn Agent</span>
             <div id="spawn-spinner" class="spinner hidden mx-auto"></div>
           </button>
@@ -109,6 +109,14 @@
         <h2 class="text-xl font-semibold text-blue-300 mb-4">System Health</h2>
         <div class="space-y-2 text-sm text-slate-300" id="system-health">
           <p class="text-slate-500">Loading...</p>
+        </div>
+      </div>
+
+      <!-- Live Event Feed -->
+      <div class="metric-card">
+        <h2 class="text-xl font-semibold text-slate-300 mb-4">Live Event Feed</h2>
+        <div id="log-feed" class="space-y-2 text-sm text-slate-300 max-h-64 overflow-y-auto">
+          <p class="text-slate-500">Waiting for logs...</p>
         </div>
       </div>
 
@@ -169,12 +177,13 @@
       <div class="metric-card">
         <div class="flex justify-between items-center mb-6">
           <h2 class="text-2xl font-semibold text-cyan-400">Active Agents</h2>
-          <span id="status-indicator" class="text-sm text-slate-400">
+          <span id="system-status" class="text-sm text-slate-400">
             <span class="status-dot status-idle"></span>
             Idle
           </span>
         </div>
         
+        <div id="agents-list" class="space-y-2 text-sm text-slate-400 mb-4"></div>
         <div id="agents-container" class="space-y-4 max-h-[calc(100vh-250px)] overflow-y-auto pr-2">
           <!-- Agent cards will be inserted here -->
           <div class="text-center text-slate-500 py-12">
@@ -204,7 +213,7 @@
     
     init() {
       // Event listeners
-      document.getElementById('spawn-btn').addEventListener('click', () => this.spawnAgent());
+      document.getElementById('spawn-btn').addEventListener('click', () => spawnAgent());
       document.getElementById('refresh-btn').addEventListener('click', () => this.fetchAgents());
       document.getElementById('clear-expired-btn').addEventListener('click', () => this.clearExpired());
       document.getElementById('agent-purpose').addEventListener('keydown', e => {
@@ -245,7 +254,16 @@
         if(!r.ok) throw new Error('Failed to fetch agents');
         const data = await r.json();
         console.log('Fetched data:', data);
-        this.agents = Object.entries(data.agents || {}).map(([name, info]) => ({
+        let agentsPayload = {};
+        if (Array.isArray(data.agents)) {
+          agentsPayload = data.agent_details || {};
+          if (!Object.keys(agentsPayload).length) {
+            agentsPayload = Object.fromEntries(data.agents.map(name => [name, { role: 'Agent', state: {} }]));
+          }
+        } else {
+          agentsPayload = data.agents || {};
+        }
+        this.agents = Object.entries(agentsPayload).map(([name, info]) => ({
           agent_id: name,
           name: name,
           purpose: info.role || 'Agent',
@@ -750,6 +768,107 @@
   const unpauseBtn = document.getElementById('unpause-btn');
   if (pauseBtn) pauseBtn.addEventListener('click', () => App.pauseSystem());
   if (unpauseBtn) unpauseBtn.addEventListener('click', () => App.unpauseSystem());
+  </script>
+
+  <script>
+    const API_BASE = window.location.origin;
+
+    function statusColor(type) {
+      const t = (type || "").toUpperCase();
+      if (t.includes("ERROR")) return "text-red-400";
+      if (t.includes("WARN")) return "text-yellow-400";
+      if (t.includes("SUCCESS")) return "text-green-400";
+      return "text-slate-300";
+    }
+
+    async function updateDashboard() {
+      try {
+        const healthRes = await fetch(`${API_BASE}/api/health`);
+        const health = await healthRes.json();
+        const statusEl = document.getElementById("system-status");
+        if (statusEl) {
+          const online = healthRes.ok && (health.status === "ok" || health.status === "online" || health.ok);
+          const dotClass = online ? "status-dot status-active" : "status-dot status-idle";
+          statusEl.className = `text-sm ${online ? "text-green-400" : "text-red-400"}`;
+          statusEl.innerHTML = `<span class="${dotClass}"></span>${online ? "Online" : "Offline"}`;
+        }
+      } catch (err) {
+        const statusEl = document.getElementById("system-status");
+        if (statusEl) {
+          statusEl.className = "text-sm text-red-400";
+          statusEl.innerHTML = '<span class="status-dot status-idle"></span>Offline';
+        }
+      }
+
+      try {
+        const agentsRes = await fetch(`${API_BASE}/api/agents`);
+        const agentsData = await agentsRes.json();
+        const listEl = document.getElementById("agents-list");
+        if (listEl) {
+          const agents = Array.isArray(agentsData.agents)
+            ? agentsData.agents
+            : Object.keys(agentsData.agents || {});
+          if (!agents.length) {
+            listEl.innerHTML = '<div class="text-slate-500">No active agents</div>';
+          } else {
+            listEl.innerHTML = agents.map((name) => (
+              `<div class="flex items-center justify-between border border-slate-800 rounded-lg px-3 py-2">
+                <span class="text-slate-200">${name}</span>
+                <span class="text-xs text-slate-500">active</span>
+              </div>`
+            )).join("");
+          }
+        }
+      } catch (err) {
+        const listEl = document.getElementById("agents-list");
+        if (listEl) {
+          listEl.innerHTML = '<div class="text-slate-500">Failed to load agents</div>';
+        }
+      }
+
+      try {
+        const feedRes = await fetch(`${API_BASE}/feed`);
+        const feedData = await feedRes.json();
+        const feedEl = document.getElementById("log-feed");
+        if (feedEl) {
+          if (!Array.isArray(feedData) || !feedData.length) {
+            feedEl.innerHTML = '<div class="text-slate-500">No recent logs</div>';
+          } else {
+            feedEl.innerHTML = feedData.slice(-50).reverse().map((entry) => (
+              `<div class="border border-slate-800 rounded-lg px-3 py-2">
+                <div class="text-xs ${statusColor(entry.type)}">${entry.timestamp || ""} ${entry.type || ""}</div>
+                <div class="text-sm text-slate-300">${entry.message || ""}</div>
+              </div>`
+            )).join("");
+          }
+        }
+      } catch (err) {
+        const feedEl = document.getElementById("log-feed");
+        if (feedEl) {
+          feedEl.innerHTML = '<div class="text-slate-500">Failed to load logs</div>';
+        }
+      }
+    }
+
+    async function spawnAgent() {
+      const purposeEl = document.getElementById("agent-purpose");
+      const purpose = purposeEl ? purposeEl.value.trim() : "";
+      if (!purpose) return;
+      try {
+        await fetch(`${API_BASE}/api/agents/spawn`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({purpose}),
+        });
+        if (purposeEl) purposeEl.value = "";
+        updateDashboard();
+      } catch (err) {
+        // ignore
+      }
+    }
+
+    updateDashboard();
+    setInterval(updateDashboard, 2000);
   </script>
 </body>
 </html>

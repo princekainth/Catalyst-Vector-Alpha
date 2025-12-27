@@ -419,6 +419,16 @@ class CatalystVectorAlpha:
             self.external_log_sink.warning(f"[K8sStudent] failed to start: {_e}")
             self.k8s_student = None
 
+        # --- Start Curiosity Loop (idle-time learning) ---
+        try:
+            from curiosity_loop import CuriosityLoop
+            self.curiosity_loop = CuriosityLoop(cycle_time=300)  # Explore every 5 min
+            self.curiosity_loop.start()
+            self.external_log_sink.info("[Curiosity] Started idle-time learning loop")
+        except Exception as _e:
+            self.external_log_sink.warning(f"[Curiosity] failed to start: {_e}")
+            self.curiosity_loop = None
+
         # --- Log initial setup completion ---
         self._log_swarm_activity(
             "SYSTEM_INITIALIZATION",
@@ -3791,6 +3801,15 @@ if __name__ == "__main__":
     parameters={}
     ))
     central_logger.info("Spawn tool registered")
+    
+    # --- Register Browser Tools for Teachers ---
+    try:
+        from services.browser.tools_integration import register_browser_tools
+        browser_service = register_browser_tools(GLOBAL_TOOL_REGISTRY)
+        catalyst_alpha.browser_service = browser_service
+        central_logger.info("Browser tools registered (web_fetch, web_search, web_api)")
+    except Exception as e:
+        central_logger.warning(f"Browser tools not registered: {e}")
         
     # --- CRITICAL: System Startup Sequence (Moved from __init__) ---
     # Log initial object initialization

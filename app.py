@@ -14,6 +14,7 @@ import time
 import uuid
 import json
 import logging
+import psutil
 from supervisor import CognitiveSupervisor
 import threading
 from threading import Thread, Lock
@@ -76,6 +77,10 @@ RECENT_TASKS = deque(maxlen=100)
 LIVE_EVENTS = deque(maxlen=50)
 events_lock = Lock()
 
+# Dashboard UI log buffer
+ui_events = deque(maxlen=50)
+ui_lock = Lock()
+
 # Minimal pending plan store (task_id -> plan)
 # Expected keys: task_id, status, action, namespace, deployment, replicas, ts, approval_token
 plan_store: Dict[str, Dict[str, Any]] = {}
@@ -133,6 +138,25 @@ logger.addHandler(json_handler)
 
 # Confirmation print
 print(f"✅ Logging enabled: Console + File (logs/catalyst.log)")
+
+# --- Dashboard Log Handler ----------------------------------------------------
+class DashboardLogHandler(logging.Handler):
+    """Append log records to a small in-memory buffer for the dashboard."""
+    def emit(self, record):
+        try:
+            log_entry = {
+                "timestamp": getattr(record, "timestamp", timestamp_now()),
+                "type": getattr(record, "event_type", record.levelname),
+                "message": record.getMessage(),
+            }
+            with ui_lock:
+                ui_events.append(log_entry)
+        except Exception:
+            pass
+
+dashboard_handler = DashboardLogHandler()
+dashboard_handler.setLevel(logging.INFO)
+logger.addHandler(dashboard_handler)
 
 # --- UI Broadcast Handler -----------------------------------------------------
 class UIBroadcastHandler(logging.Handler):
@@ -350,7 +374,17 @@ CORS(app)  # tighten with resources={r"/api/*": {"origins": "..."}}
 @app.get("/api/health")
 def api_health():
     loop_alive = bool(system_thread and system_thread.is_alive())
-    return jsonify({"status": "ok", "data": {"loop_alive": loop_alive, "ts": time.time()}}), 200
+    uptime = None
+    try:
+        uptime = int(time.time() - psutil.Process(os.getpid()).create_time())
+    except Exception:
+        uptime = None
+    return jsonify({
+        "status": "online",
+        "uptime": uptime,
+        "active_thread_count": threading.active_count(),
+        "data": {"loop_alive": loop_alive, "ts": time.time()},
+    }), 200
 
 @app.get("/api/metrics/stats")
 def api_metrics_stats():
@@ -511,7 +545,7 @@ def index():
 # Dashboard route - serves the React app
 @app.route('/dashboard')
 def dashboard():
-    return render_template('dashboard.html')
+    return render_template('index.html')
 
 # Dashboard diagnostics page
 @app.route('/dashboard-diagnostics')
@@ -571,6 +605,12 @@ def get_event_stream():
                     yield f"data: {json.dumps(event)}\n\n"
             time.sleep(1)
     return Response(generate(), mimetype='text/event-stream')
+
+@app.get("/feed")
+def dashboard_feed():
+    with ui_lock:
+        events = list(ui_events)
+    return jsonify(events), 200
 
 # --- Routes: System Metrics & Insights ---------------------------------------
 @app.route('/api/system_metrics')
@@ -924,6 +964,7 @@ def api_restart_agent(agent_name):
 def api_list_agents():
     """List all agents with basic state."""
     agents = {}
+    agent_list = ["CVA-Orchestrator"]
     try:
         with getattr(system_instance, "_agents_lock", agent_instances_lock):
             snapshot = dict(getattr(system_instance, "agent_instances", {}) or {})
@@ -943,7 +984,16 @@ def api_list_agents():
                 "last_task_outcome": getattr(agent, "last_task_outcome", None),
                 "state": agent_state,
             }
-        return jsonify({"agents": agents})
+        if system_instance and getattr(system_instance, "agent_factory", None):
+            try:
+                with agent_instances_lock:
+                    active = list(system_instance.agent_factory.active_agents.keys())
+                for name in active:
+                    if name not in agent_list:
+                        agent_list.append(name)
+            except Exception:
+                pass
+        return jsonify({"agents": agent_list, "agent_details": agents})
     except Exception as e:
         return jsonify({"status": "error", "error": str(e)}), 500
 
@@ -1108,12 +1158,44 @@ def api_kill_agent(agent_id):
 @app.route('/api/agents/spawn', methods=['POST'])
 def gemini_agent_deployment():
     """Gemini™ cloud agent deployment endpoint"""
-    # This currently just returns a status, but connects to the system
-    return {
-        "status": "Gemini Protocol Initiated", 
-        "orchestrator": "GeminiOrchestrator v1.0",
-        "timestamp": time.time()
-    }
+    data = request.get_json(silent=True) or {}
+    purpose = data.get("purpose", "Test agent")
+    context = data.get("context", {})
+
+    if system_instance is None or not hasattr(system_instance, "handle_spawn_request"):
+        return jsonify({"success": False, "error": "System is not running."}), 503
+
+    try:
+        with agent_instances_lock:
+            result = system_instance.handle_spawn_request(
+                purpose=purpose,
+                context=context,
+                parent_agent="api_manual",
+            )
+
+        if isinstance(result, dict):
+            return jsonify({
+                "success": False,
+                "error": result.get("error", "Unknown error"),
+                "suggestions": result.get("suggestions", []),
+                "hint": result.get("hint", ""),
+                "status": "Gemini Protocol Initiated",
+                "orchestrator": "GeminiOrchestrator v1.0",
+                "timestamp": time.time(),
+            }), 400
+
+        if result:
+            return jsonify({
+                "success": True,
+                "agent_id": result,
+                "status": "Gemini Protocol Initiated",
+                "orchestrator": "GeminiOrchestrator v1.0",
+                "timestamp": time.time(),
+            })
+
+        return jsonify({"success": False, "error": "Spawn failed"}), 500
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
 # --- Health Monitoring Helper Functions ---------------------------------------
 def calculate_health_score(swarm, tool_stats, task_stats):

@@ -286,6 +286,13 @@ class K8sStudent(BaseStudent):
                         return {"success": True, "action": f"remediated_{reason}", "details": data}
                     else:
                         print(f"[{self.name}] ⚠️ Outcome {outcome} for {namespace}/{name}")
+                        
+                        # Try web search as fallback
+                        web_fix = self._search_web_for_fix(reason, namespace, name)
+                        if web_fix:
+                            print(f"[{self.name}] 🌐 Found: {web_fix.get('title', '')[:50]}")
+                            self._apply_web_fix(web_fix['url'], reason, name, namespace)
+                        
                         return {"success": False, "error": f"Outcome: {outcome}"}
                         
                 return {"success": False, "error": "Invalid result from tool"}
@@ -559,3 +566,102 @@ class K8sStudent(BaseStudent):
             k: v for k, v in self._remediated_pods.items()
             if (now - v) < self._cooldown_seconds * 2
         }
+
+    # ─────────────────────────────────────────────────────────────
+    # Web Search & Learning
+    # ─────────────────────────────────────────────────────────────
+    
+    def _search_web_for_fix(self, reason: str, namespace: str, pod_name: str) -> Optional[dict]:
+        """Search web for fix when local remediation fails."""
+        if not self.tools:
+            return None
+        
+        query = f"kubernetes {reason} fix solution"
+        print(f"[{self.name}] 🔍 Searching: {query}")
+        
+        try:
+            result = self.tools.safe_call('web_search', query=query, max_results=3)
+            if result.get('status') != 'ok':
+                return None
+            
+            data = result.get('data', {}).get('data', {})
+            results = data.get('results', [])
+            
+            if results:
+                top = results[0]
+                return {
+                    "title": top.get('title', ''),
+                    "url": top.get('href', top.get('url', '')),
+                }
+            return None
+        except Exception as e:
+            print(f"[{self.name}] Web search failed: {e}")
+            return None
+    
+    def _apply_web_fix(self, url: str, reason: str, pod_name: str, namespace: str) -> Optional[dict]:
+        """Fetch article, extract fix with LLM, apply it."""
+        if not self.tools:
+            return None
+        
+        try:
+            # 1. Fetch article
+            print(f"[{self.name}] 📖 Reading: {url[:50]}...")
+            result = self.tools.safe_call('read_webpage', url=url)
+            
+            if not isinstance(result, dict) or result.get('status') != 'ok':
+                return None
+            
+            outer_data = result.get('data', {})
+            inner_data = outer_data.get('data', outer_data) if isinstance(outer_data, dict) else {}
+            content = inner_data.get('content', '')[:3000]
+            
+            if not content:
+                return None
+            
+            # 2. Ask LLM to extract kubectl fix
+            from shared_models import OllamaLLMIntegration
+            llm = OllamaLLMIntegration()
+            
+            # Extract deployment name from pod
+            dep_name = pod_name.rsplit('-', 2)[0] if '-' in pod_name else pod_name
+            
+            prompt = f"""Fix Kubernetes {reason} issue.
+
+DEPLOYMENT: {dep_name}
+NAMESPACE: {namespace}
+
+Command MUST use deployment name: {dep_name}
+
+Example: kubectl rollout restart deployment/{dep_name} -n {namespace}
+
+Reply ONLY the command or NO_FIX."""
+
+            response = llm.generate_text(prompt)
+            fix_command = response.strip() if response else ""
+            
+            print(f"[{self.name}] 🤖 LLM suggested: {fix_command[:80]}")
+            
+            if not fix_command or "NO_FIX" in fix_command or len(fix_command) < 10:
+                return {"status": "no_fix_found"}
+            
+            # 3. Safety check - only allow certain kubectl commands
+            allowed_prefixes = ['kubectl set', 'kubectl patch', 'kubectl scale', 'kubectl rollout']
+            if not any(fix_command.startswith(p) for p in allowed_prefixes):
+                print(f"[{self.name}] ⚠️ Command not in allowed list, skipping")
+                return {"status": "unsafe_command", "command": fix_command}
+            
+            # 4. Apply the fix
+            print(f"[{self.name}] 🔨 Applying: {fix_command}")
+            import subprocess
+            result = subprocess.run(fix_command, shell=True, capture_output=True, text=True, timeout=30)
+            
+            if result.returncode == 0:
+                print(f"[{self.name}] ✅ Web fix applied successfully!")
+                return {"status": "applied", "command": fix_command, "output": result.stdout}
+            else:
+                print(f"[{self.name}] ❌ Command failed: {result.stderr[:100]}")
+                return {"status": "failed", "command": fix_command, "error": result.stderr}
+            
+        except Exception as e:
+            print(f"[{self.name}] Web fix failed: {e}")
+            return None
