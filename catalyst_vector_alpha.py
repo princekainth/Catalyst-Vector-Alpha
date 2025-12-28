@@ -345,12 +345,10 @@ class CatalystVectorAlpha:
             tool_registry=self.tool_registry,
             llm=self.llm_integration
         )
-        self.external_log_sink.info("AgentFactory initialized")
         self.guardian = GuardianAgent(
             factory=self.agent_factory,
             db=self.db
         )
-        self.external_log_sink.info("Guardian Agent initialized")
         self.swarm_protocols = {}
         self.dynamic_directive_queue = deque()
         self._directive_lock = threading.Lock()

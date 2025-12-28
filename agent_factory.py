@@ -272,6 +272,23 @@ class DynamicAgent(ProtoAgent):
 
 class AgentFactory:
     """Spawns and manages dynamic agents."""
+    _instance = None
+    _lock = None
+
+    @classmethod
+    def _get_lock(cls):
+        if cls._lock is None:
+            import threading
+            cls._lock = threading.Lock()
+        return cls._lock
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            with cls._get_lock():
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+                    cls._instance._initialized = False
+        return cls._instance
 
     # Vague keywords that indicate a purpose is too ambiguous
     VAGUE_KEYWORDS = [
@@ -305,6 +322,10 @@ class AgentFactory:
     }
 
     def __init__(self, db: CVADatabase, tool_registry: ToolRegistry, llm):
+        # Skip if already initialized (singleton)
+        if getattr(self, '_initialized', False):
+            return
+
         self.db = db
         self.tool_registry = tool_registry
         self.llm = llm
@@ -330,6 +351,7 @@ class AgentFactory:
         # Initialize factory table
         self._init_db()
         logger.info("AgentFactory initialized")
+        self._initialized = True
 
     def _validate_purpose(self, purpose: str) -> Dict[str, Any]:
         """
@@ -401,23 +423,52 @@ class AgentFactory:
     # ============== PHASE 2: Semantic Tool Matching ==============
 
     def _precompute_tool_embeddings(self):
-        """Pre-compute embeddings for all registered tools."""
+        """Pre-compute embeddings for all registered tools (with disk cache)."""
         if not self.semantic_model:
             return
 
+        import json
+        import os
+        cache_path = "./persistence_data/tool_embeddings_cache.json"
+
+        # Try to load from cache
+        if os.path.exists(cache_path):
+            try:
+                with open(cache_path, 'r') as f:
+                    cached = json.load(f)
+                # Verify cache has same tools
+                tool_specs = self.tool_registry.get_all_tool_specs()
+                tool_names = {spec['name'] for spec in tool_specs}
+                cached_names = set(cached.keys())
+                if tool_names == cached_names:
+                    self.tool_embeddings = cached
+                    logger.info(f"Loaded {len(cached)} tool embeddings from cache")
+                    return
+            except Exception as e:
+                logger.warning(f"Cache load failed: {e}, recomputing...")
+
+        # Compute embeddings
         tool_specs = self.tool_registry.get_all_tool_specs()
         for spec in tool_specs:
             tool_name = spec['name']
-            # Create rich description for better semantic matching
             description = f"{tool_name}: {spec.get('description', '')}".strip()
             try:
                 embedding = self.semantic_model.generate_embedding(description)
                 self.tool_embeddings[tool_name] = {
-                    'embedding': embedding,
+                    'embedding': embedding if isinstance(embedding, list) else embedding.tolist(),
                     'description': description
                 }
             except Exception as e:
                 logger.warning(f"Failed to embed tool {tool_name}: {e}")
+
+        # Save to cache
+        try:
+            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+            with open(cache_path, 'w') as f:
+                json.dump(self.tool_embeddings, f)
+            logger.info(f"Cached {len(self.tool_embeddings)} tool embeddings")
+        except Exception as e:
+            logger.warning(f"Failed to save embedding cache: {e}")
 
     def _cosine_similarity(self, a: np.ndarray, b: np.ndarray) -> float:
         """Compute cosine similarity between two vectors."""

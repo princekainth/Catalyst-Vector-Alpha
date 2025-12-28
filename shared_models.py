@@ -989,6 +989,17 @@ class OllamaLLMIntegration:
     - Clean logging; no print()
     """
 
+    _instance = None
+    _lock = Lock()
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+                    cls._instance._initialized = False
+        return cls._instance
+
     def __init__(
         self,
         host: str = "http://localhost:11434",
@@ -996,11 +1007,14 @@ class OllamaLLMIntegration:
         embedding_model: str = "mxbai-embed-large",
         logger: Optional[logging.Logger] = None,
     ):
+        # Skip if already initialized (singleton)
+        if getattr(self, "_initialized", False):
+            return
+
         # --- core attrs ---
         self.host = host
         self.base_url = host  # compatibility alias
         self.chat_model = chat_model
-        from shared_models import OllamaLLMIntegration
         # Keep BOTH names for compatibility; kernel reads embedding_model
         self.embedding_model = embedding_model
         self.embed_model = embedding_model
@@ -1028,6 +1042,8 @@ class OllamaLLMIntegration:
             self.logger.info(f"Connected to Ollama at {host} (chat={chat_model}, embed={embedding_model})")
         except Exception as e:
             self.logger.error(f"Could not connect to Ollama server at {host}: {e}")
+
+        self._initialized = True
 
     # --- Text generation ---
 

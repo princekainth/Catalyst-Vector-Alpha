@@ -12,7 +12,29 @@ class SharedMemory:
     Stores observations, decisions, and outcomes from ALL agents
     in a single semantic vector space.
     """
+    _instance = None
+    _lock = None
+
+    @classmethod
+    def _get_lock(cls):
+        if cls._lock is None:
+            from threading import Lock
+            cls._lock = Lock()
+        return cls._lock
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            with cls._get_lock():
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+                    cls._instance._initialized = False
+        return cls._instance
+
     def __init__(self, persist_path="./persistence_data/cva_brain"):
+        # Skip if already initialized (singleton)
+        if getattr(self, '_initialized', False):
+            return
+
         # Ensure the directory exists
         os.makedirs(persist_path, exist_ok=True)
         
@@ -32,6 +54,7 @@ class SharedMemory:
             embedding_function=self.ef
         )
         print(f"🧠 [SharedMemory] Connected. Total memories: {self.collection.count()}")
+        self._initialized = True
 
     def add_memory(self, agent_name, text, category, metadata=None):
         """
