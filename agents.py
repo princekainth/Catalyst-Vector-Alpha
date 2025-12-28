@@ -3143,13 +3143,17 @@ class ProtoAgent_Observer(ProtoAgent):
         return True
 
     def _execute_agent_specific_task(self, task_description: str, **kwargs) -> tuple:
+        # === EVENT-DRIVEN GATE: Skip if no real task ===
+        task_lower = (task_description or "").strip().lower()
+        if task_lower in ("", "no specific intent", "none", "idle"):
+            return "idle", None, {"reason": "no_specific_task"}, 0.0
         # Extract params from kwargs
         cycle_id = kwargs.get("cycle_id")
         reporting_agents = kwargs.get("reporting_agents", [])
         context_info = kwargs.get("context_info")
-        print(f"[CRITICAL DEBUG] Observer._execute_agent_specific_task ENTERED for task: {task_description[:50]}")
-        print(f"[DEBUG Observer] kwargs received: {kwargs}")
-        print(f"[DEBUG] context_info parameter: {context_info}")
+        # print(f"[CRITICAL DEBUG] Observer._execute_agent_specific_task ENTERED for task: {task_description[:50]}")
+        # print(f"[DEBUG Observer] kwargs received: {kwargs}")
+        # print(f"[DEBUG] context_info parameter: {context_info}")
         print(f"[{self.name}] Performing specific observation task: {task_description}")
 
         # Extract plan_id from context
@@ -3159,8 +3163,8 @@ class ProtoAgent_Observer(ProtoAgent):
         if not task_id:
             task_id = kwargs.get("task_id")
         
-        print(f"[DEBUG] context from kwargs: {context}")
-        print(f"[DEBUG] plan_id extracted: {plan_id}")
+        # print(f"[DEBUG] context from kwargs: {context}")
+        # print(f"[DEBUG] plan_id extracted: {plan_id}")
         outcome = "completed"
         failure_reason = None
         progress_score = 0.0
@@ -10982,6 +10986,10 @@ class ProtoAgent_Security(ProtoAgent):
         """
         Performs security-related tasks by executing specific tools from the planner.
         """
+        # === EVENT-DRIVEN GATE: Skip if no real task ===
+        task_lower = (task_description or "").strip().lower()
+        if task_lower in ("", "no specific intent", "none", "idle"):
+            return "idle", None, {"reason": "no_specific_task"}, 0.0
         context_info = kwargs.get("context_info")
         specific_tool = kwargs.get("tool_name")
         tool_args = kwargs.get("tool_args", {})
@@ -11161,6 +11169,10 @@ class ProtoAgent_Worker(ProtoAgent):
         - Registry.safe_call execution + optional loop-breaker + success heuristic
         Returns: (status:str, failure_reason:Optional[str], report:dict, progress:float)
         """
+        # === EVENT-DRIVEN GATE: Skip if no real task ===
+        task_lower = (task_description or "").strip().lower()
+        if task_lower in ("", "no specific intent", "none", "idle"):
+            return "idle", None, {"reason": "no_specific_task"}, 0.0
         import json, re, time, traceback
         from datetime import datetime
 
