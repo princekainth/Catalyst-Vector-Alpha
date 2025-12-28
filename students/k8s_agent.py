@@ -281,14 +281,32 @@ class K8sStudent(BaseStudent):
                     outcome = data.get("outcome", "UNKNOWN")
                     actions = data.get("actions_taken", data.get("actions", []))
                     
-                    # Check if actually fixed - not just "manual fix required"
+                    # Check if actually fixed - not just waiting or manual fix
                     actually_fixed = outcome in ("SUCCESS", "PARTIAL_SUCCESS") and not any(
-                        "manual" in str(a).lower() or "no deployment" in str(a).lower() 
+                        "manual" in str(a).lower() or 
+                        "no deployment" in str(a).lower() or
+                        "waiting" in str(a).lower() or
+                        "monitoring" in str(a).lower()
                         for a in actions
                     )
                     
                     if actually_fixed:
-                        print(f"[{self.name}] ✅ Fixed {namespace}/{name}: {actions}")
+                        print(f"[{self.name}] ✅ Remediation applied for {namespace}/{name}: {actions}")
+                        
+                        # Verify fix actually worked - wait and check pod status
+                        import time
+                        time.sleep(10)
+                        still_broken = self._pod_still_broken(name, namespace)
+                        
+                        if still_broken:
+                            print(f"[{self.name}] ❌ Pod still broken after fix - trying web search...")
+                            web_fix = self._search_web_for_fix(reason, namespace, name)
+                            if web_fix:
+                                print(f"[{self.name}] 🌐 Found: {web_fix.get('title', '')[:50]}")
+                                self._apply_web_fix(web_fix['url'], reason, name, namespace)
+                            return {"success": False, "action": "fix_failed_verification", "details": data}
+                        
+                        print(f"[{self.name}] ✅ Verified fixed: {namespace}/{name}")
                         return {"success": True, "action": f"remediated_{reason}", "details": data}
                     else:
                         print(f"[{self.name}] ⚠️ Outcome {outcome} for {namespace}/{name}")
@@ -628,8 +646,12 @@ class K8sStudent(BaseStudent):
             from shared_models import OllamaLLMIntegration
             llm = OllamaLLMIntegration()
             
-            # Extract deployment name from pod
-            dep_name = pod_name.rsplit('-', 2)[0] if '-' in pod_name else pod_name
+            # Get actual deployment name from Kubernetes
+            dep_name = self._get_deployment_owner(pod_name, namespace)
+            if not dep_name:
+                # No deployment owner - can't fix with kubectl rollout/set
+                print(f"[{self.name}] ⚠️ No deployment owner for {pod_name} - cannot auto-fix")
+                return {"status": "no_deployment", "pod": pod_name}
             
             # Choose fix strategy based on error type
             if reason == "OOMKilled":
@@ -686,3 +708,16 @@ Reply ONLY the command or NO_FIX."""
         except Exception as e:
             print(f"[{self.name}] Web fix failed: {e}")
             return None
+    def _pod_still_broken(self, pod_name: str, namespace: str) -> bool:
+        """Check if pod is still in a broken state."""
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["kubectl", "get", "pod", "-l", f"app={pod_name.rsplit('-', 2)[0]}", 
+                 "-n", namespace, "-o", "jsonpath={.items[*].status.containerStatuses[*].state}"],
+                capture_output=True, text=True, timeout=10
+            )
+            output = result.stdout.lower()
+            return "waiting" in output or "crashloop" in output or "error" in output
+        except:
+            return True  # Assume broken if we can't check
