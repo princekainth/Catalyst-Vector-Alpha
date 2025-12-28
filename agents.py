@@ -3223,7 +3223,7 @@ class ProtoAgent_Observer(ProtoAgent):
 
                         # If no fresh FailedScheduling remains, consider incident resolved
                         if active_failed == 0:
-                            print("[Observer] K8s FailedScheduling incidents resolved (no fresh events).")
+                            self.external_log_sink.info("[Observer] K8s FailedScheduling incidents resolved (no fresh events).")
 
                         # Quick histogram of reasons/pods for observability
                         try:
@@ -3398,7 +3398,7 @@ class ProtoAgent_Observer(ProtoAgent):
                     
                     # Measure responsiveness after tool execution
                     if has_resp_tool and tool_name != "measure_responsiveness":
-                        print("[DEBUG] Calling measure_responsiveness")
+                        self.external_log_sink.debug("[DEBUG] Calling measure_responsiveness")
                         resp_cache_key = (
                             kwargs.get("task_id") or context.get("plan_id") or context.get("cycle_id"),
                             "measure_responsiveness",
@@ -3504,7 +3504,7 @@ class ProtoAgent_Observer(ProtoAgent):
                         target_deployment = most_wasteful["deployment"]
                         recommended_replicas = most_wasteful["recommended_replicas"]
                         
-                        print(f"[Observer] Found wasteful deployment: {target_deployment} "
+                        self.external_log_sink.info(f"[Observer] Found wasteful deployment: {target_deployment} "
                             f"({most_wasteful['replicas']} replicas, "
                             f"{most_wasteful['avg_cpu_millicores']:.1f}m CPU)")
 
@@ -3617,7 +3617,7 @@ class ProtoAgent_Observer(ProtoAgent):
                         report_content_dict["summary"] = "No metric data available"
 
         except Exception as e:
-            print("--- OBSERVER ERROR ---")
+            self.external_log_sink.error("--- OBSERVER ERROR ---")
             import traceback
             traceback.print_exc()
             outcome = "failed"
@@ -3647,7 +3647,7 @@ class ProtoAgent_Observer(ProtoAgent):
                     "task_id": task_id,
                 }
                 if task_id:
-                    print(
+                    self.external_log_sink.debug(
                         f"[DEBUG TaskResult Write] writer=observer_final agent={self.name} "
                         f"plan_id={plan_id} task_id={task_id} memdb_id={id(self.memdb)} "
                         f"type={type(self.memdb).__name__}"
@@ -3660,7 +3660,7 @@ class ProtoAgent_Observer(ProtoAgent):
 
                     self.external_log_sink.info(f"[{self.name}] Stored TaskResult for plan_id={plan_id} task_id={task_id}")
                 else:
-                    print(f"[DEBUG TaskResult Write] writer=observer_final SKIP (no task_id) plan_id={plan_id}")
+                    self.external_log_sink.debug(f"[DEBUG TaskResult Write] writer=observer_final SKIP (no task_id) plan_id={plan_id}")
             except Exception as e:
                 self.external_log_sink.info(f"[{self.name}] Warning: Could not store TaskResult via MemeticKernel: {e}")
 
@@ -3843,7 +3843,7 @@ class ProtoAgent_Optimizer(ProtoAgent):
         param_to_change = random.choice(["efficiency_coeff", "decay_rate", "throughput"])
         change_factor = random.uniform(0.95, 1.05) # a +/- 5% random change
         
-        print(f"  [Optimizer Logic] Perturbing '{param_to_change}' by a factor of {change_factor:.3f}")
+        self.external_log_sink.debug(f"[Optimizer Logic] Perturbing '{param_to_change}' by a factor of {change_factor:.3f}")
         params[param_to_change] *= change_factor
         
         # Store the new params so the agent "remembers" its change for the next cycle
@@ -4189,7 +4189,7 @@ class ProtoAgent_Planner(ProtoAgent):
         self._mission_balance_counter += 1
         if self._mission_balance_counter >= 3:
             self._mission_balance_counter = 0
-            print("  [Balance] Skipping alerts this cycle - running background mission")
+            self.external_log_sink.debug("[Balance] Skipping alerts this cycle - running background mission")
             return None, None, None  # Let background missions run
         
         # --- 1. Check AlertStore (User-facing Alerts: Email, Calendar, etc.) ---
@@ -5075,7 +5075,7 @@ Respond with valid JSON:
                                     f"expected_keys={exp_keys} received_keys={recv_keys}"
                                 )
                                 self._log_agent_activity("PLAN_STEP_INVALID_ARGS", self.name, msg, level="warning")
-                                print(msg)
+                                self.external_log_sink.warning(msg)
                                 continue
                         except Exception:
                             # On validator failure, be permissive
@@ -5960,7 +5960,7 @@ Respond with valid JSON:
         Check for completed missions by querying TaskResult memories,
         aggregate results when all tasks are done, and clean up stale missions.
         """
-        print(f"[DEBUG Planner] Checking missions. Pending: {list(self._pending_missions.keys())}")
+        self.external_log_sink.debug(f"[DEBUG Planner] Checking missions. Pending: {list(self._pending_missions.keys())}")
         if not hasattr(self, 'memdb') or not self._pending_missions:
             return
         
@@ -5975,11 +5975,11 @@ Respond with valid JSON:
             age = current_time - mission.get("started_at", current_time)
             if age > MISSION_TIMEOUT:
                 stale_missions.append(plan_id)
-                print(f"[DEBUG Planner] Timing out stale mission {plan_id} (age: {age:.0f}s)")
+                self.external_log_sink.debug(f"[DEBUG Planner] Timing out stale mission {plan_id} (age: {age:.0f}s)")
                 del self._pending_missions[plan_id]
         
         if stale_missions:
-            print(f"[DEBUG Planner] Cleaned up {len(stale_missions)} stale missions")
+            self.external_log_sink.debug(f"[DEBUG Planner] Cleaned up {len(stale_missions)} stale missions")
         
         # If all missions were stale, return early
         if not self._pending_missions:
@@ -5990,7 +5990,7 @@ Respond with valid JSON:
         try:
             primary_recent = self.memdb.recent("TaskResult", limit=500)
             sample = primary_recent[:2]
-            print(
+            self.external_log_sink.debug(
                 f"[DEBUG Planner] memdb={type(self.memdb).__name__} id={id(self.memdb)} "
                 f"recent('TaskResult') count={len(primary_recent)} sample={sample}"
             )
@@ -6018,7 +6018,7 @@ Respond with valid JSON:
         except Exception:
             pass
 
-        print(f"[DEBUG Planner] Found {len(recent)} TaskResult memories total")
+        self.external_log_sink.debug(f"[DEBUG Planner] Found {len(recent)} TaskResult memories total")
         
         # Group by plan_id with dedupe on task_id (latest timestamp wins)
         results_by_plan: dict[str, dict[str, dict]] = {}
@@ -6048,7 +6048,7 @@ Respond with valid JSON:
                 plan_bucket[task_id] = tr_copy
 
         results_by_plan_list = {pid: list(tasks.values()) for pid, tasks in results_by_plan.items()}
-        print(f"[DEBUG Planner] Results grouped by plan (deduped): {[(k, len(v)) for k, v in results_by_plan_list.items()][:10]}")  # Show first 10
+        self.external_log_sink.debug(f"[DEBUG Planner] Results grouped by plan (deduped): {[(k, len(v)) for k, v in results_by_plan_list.items()][:10]}")  # Show first 10
 
         # Attempt single recovery for INVALID_ARGS task results by injecting a clarification/retry step
         def _flatten_status(tr: dict) -> str | None:
@@ -6130,7 +6130,7 @@ Respond with valid JSON:
                             injected = 0
                         if injected:
                             self._invalid_arg_retries.add(key)
-                            print(f"[DEBUG Planner] INVALID_ARGS recovery injected for plan={pid} task_id={task_id} tool={tool_name}")
+                            self.external_log_sink.debug(f"[DEBUG Planner] INVALID_ARGS recovery injected for plan={pid} task_id={task_id} tool={tool_name}")
                             # Do not count this result; wait for retry
                             continue
                     # If still missing or cannot inject, mark blocked
@@ -6151,11 +6151,11 @@ Respond with valid JSON:
             task_results = results_by_plan_list.get(plan_id, [])
             expected_count = mission.get("steps_dispatched", 1)
             
-            print(f"[DEBUG Planner] Plan {plan_id}: {len(task_results)}/{expected_count} tasks")
+            self.external_log_sink.debug(f"[DEBUG Planner] Plan {plan_id}: {len(task_results)}/{expected_count} tasks")
             
             # If we have results for all dispatched steps, aggregate and record
             if len(task_results) >= expected_count:
-                print(f"[DEBUG Planner] Mission {plan_id} complete: {len(task_results)}/{expected_count} tasks")
+                self.external_log_sink.debug(f"[DEBUG Planner] Mission {plan_id} complete: {len(task_results)}/{expected_count} tasks")
                 
                 # Aggregate the results
                 aggregated = self._aggregate_mission_results(task_results)
@@ -9193,7 +9193,7 @@ Respond in JSON:
         """
         Uses an LLM to brainstorm a high-level experimental plan for the swarm.
         """
-        print("  [Planner Logic] Brainstorming a new swarm-wide experiment...")
+        self.external_log_sink.debug("[Planner Logic] Brainstorming a new swarm-wide experiment...")
         # In a real system, you would use an LLM call here. For now, we'll pick from a list.
         possible_experiments = [
             "Experiment: Test the impact of a more aggressive resource optimization strategy.",
@@ -9468,7 +9468,7 @@ Respond in JSON:
         Handles the task of gathering relevant data.
         This is a placeholder; replace with real data gathering logic.
         """
-        print(f"  [Planner.Execute] Actually gathering relevant data: {task_description}")
+        self.external_log_sink.debug(f"[Planner.Execute] Actually gathering relevant data: {task_description}")
         data_summary = "Simulated: Collected 15 recent data points related to planning framework assumptions."
         self.memetic_kernel.add_memory("RelevantDataGathered", {
             "task_description": task_description,
@@ -10156,7 +10156,7 @@ TOOLSMITH MODE (Self-Evolution):
                 
                 # Read from persistent alert store
                 recent_alerts = get_alert_store().get_recent_alerts(limit=20)
-                print(f"[Planner DEBUG] Found {len(recent_alerts)} alerts in AlertStore")
+                self.external_log_sink.debug(f"[Planner DEBUG] Found {len(recent_alerts)} alerts in AlertStore")
                 
                 # Collect all target deployments
                 targets = []
@@ -10165,9 +10165,9 @@ TOOLSMITH MODE (Self-Evolution):
                         t = alert.get("target_deployment")
                         if t:
                             targets.append(t)
-                            print(f"[Planner DEBUG] Alert has target: {t}")
+                            self.external_log_sink.debug(f"[Planner DEBUG] Alert has target: {t}")
                 
-                print(f"[Planner DEBUG] All targets found: {targets}")
+                self.external_log_sink.debug(f"[Planner DEBUG] All targets found: {targets}")
                 
                 # Prefer waste-test over nginx
                 if "waste-test" in targets:
@@ -10425,7 +10425,7 @@ TOOLSMITH MODE (Self-Evolution):
                 "steps_dispatched": dispatched_count,
                 "task_results": [],
             }
-            print(f"[DEBUG Planner] Added to pending_missions: {plan_id}, expected {dispatched_count} tasks")
+            self.external_log_sink.debug(f"[DEBUG Planner] Added to pending_missions: {plan_id}, expected {dispatched_count} tasks")
 
             return (
                 "completed",
@@ -10501,7 +10501,7 @@ TOOLSMITH MODE (Self-Evolution):
         self_diag_count = sum(1 for g in self.diag_history if "self-diagnosis" in g.lower())
 
         if self_diag_count >= self.MAX_DIAGNEST_DEPTH:
-            print(f"  [Planner CRITICAL] Recursion depth {self.MAX_DIAGNEST_DEPTH} exceeded for self-diagnosis. Triggering hard reset via fallback.")
+            self.external_log_sink.critical(f"[Planner CRITICAL] Recursion depth {self.MAX_DIAGNEST_DEPTH} exceeded for self-diagnosis. Triggering hard reset via fallback.")
             return self._generate_fallback_directives(cycle_id)
 
         generated_directives = []
@@ -10605,7 +10605,7 @@ TOOLSMITH MODE (Self-Evolution):
 
         except Exception as e:
             error_source = plan_source if plan_source != "Unknown" else "Unassigned/EarlyError"
-            print(f"  [Planner Error] Failed to generate directives for goal '{high_level_goal}': {str(e)}. Error Source: {error_source}.")
+            self.external_log_sink.error(f"[Planner Error] Failed to generate directives for goal '{high_level_goal}': {str(e)}. Error Source: {error_source}.")
             self.planning_failure_count += 1
             return self._generate_fallback_directives(cycle_id)
 
@@ -10719,7 +10719,7 @@ TOOLSMITH MODE (Self-Evolution):
         """
         Uses an LLM to brainstorm a high-level experimental plan for the swarm.
         """
-        print("  [Planner Logic] Brainstorming a new swarm-wide experiment using LLM...")
+        self.external_log_sink.debug("[Planner Logic] Brainstorming a new swarm-wide experiment using LLM...")
 
         recent_anomalies = self.get_recent_anomalies()
 
@@ -10741,7 +10741,7 @@ TOOLSMITH MODE (Self-Evolution):
             experiment_goal = self.ollama_inference_model.generate_text(prompt)
             return experiment_goal.strip()
         except Exception as e:
-            print(f"  [Planner ERROR] LLM call failed during experiment generation: {e}")
+            self.external_log_sink.error(f"[Planner ERROR] LLM call failed during experiment generation: {e}")
             return "Experiment: Diversify data collection by focusing on a new, adjacent data source."
         
     def _store_successful_plan(self, goal: str, directives: list, source: str = "Unknown"):
@@ -10924,12 +10924,12 @@ TOOLSMITH MODE (Self-Evolution):
                             "timestamp": msg_payload['timestamp'],
                             "reported_task": msg_task_description
                         })
-                        print(f"    [Planner] Tracked outcome for Directive {matched_directive_index} of cycle '{msg_cycle_id}': Status='{msg_status}' from '{msg_sender}'.")
+                        self.external_log_sink.debug(f"[Planner] Tracked outcome for Directive {matched_directive_index} of cycle '{msg_cycle_id}': Status='{msg_status}' from '{msg_sender}'.")
                     else:
-                        print(f"    [Planner] No matching injected directive found for report from '{msg_sender}' with task '{msg_task_description}' in cycle '{msg_cycle_id}'.")
+                        self.external_log_sink.debug(f"[Planner] No matching injected directive found for report from '{msg_sender}' with task '{msg_task_description}' in cycle '{msg_cycle_id}'.")
                 # Handle PeerReviewRequest (from human escalation)
                 elif msg_type == 'PeerReviewRequest':
-                    print(f"    [Planner] Received PeerReviewRequest from {msg_sender} regarding cycle {msg_cycle_id}. Analyzing...")
+                    self.external_log_sink.debug(f"[Planner] Received PeerReviewRequest from {msg_sender} regarding cycle {msg_cycle_id}. Analyzing...")
                     
         # After processing all messages, evaluate completion of the *last active* planning cycle
         if self.last_planning_cycle_id and self.last_planning_cycle_id in self.planned_directives_tracking:
@@ -11044,7 +11044,7 @@ class ProtoAgent_Security(ProtoAgent):
                     "task_id": task_id,
                 }
                 if task_id:
-                    print(
+                    self.external_log_sink.debug(
                         f"[DEBUG TaskResult Write] writer=security_final agent={self.name} "
                         f"plan_id={plan_id} task_id={task_id} memdb_id={id(self.memdb)} "
                         f"type={type(self.memdb).__name__}"
@@ -11056,7 +11056,7 @@ class ProtoAgent_Security(ProtoAgent):
                         pass
                     self.external_log_sink.info(f"[{self.name}] Stored TaskResult for plan_id={plan_id} task_id={task_id}")
                 else:
-                    print(f"[DEBUG TaskResult Write] writer=security_final SKIP (no task_id) plan_id={plan_id}")
+                    self.external_log_sink.debug(f"[DEBUG TaskResult Write] writer=security_final SKIP (no task_id) plan_id={plan_id}")
             except Exception as e:
                 self.external_log_sink.info(f"[{self.name}] Warning: Could not store TaskResult: {e}")
 
@@ -11205,14 +11205,14 @@ class ProtoAgent_Worker(ProtoAgent):
                         "agent": self.name,
                         "task_id": task_id,
                     }
-                    print(
+                    self.external_log_sink.debug(
                         f"[DEBUG TaskResult Write] writer=worker_early agent={self.name} "
                         f"plan_id={plan_id} task_id={task_id} memdb_id={id(self.memdb)} "
                         f"type={type(self.memdb).__name__}"
                     )
                     self.memdb.add("TaskResult", payload)
                 elif plan_id:
-                    print(f"[DEBUG TaskResult Write] writer=worker_early SKIP (no task_id) plan_id={plan_id}")
+                    self.external_log_sink.debug(f"[DEBUG TaskResult Write] writer=worker_early SKIP (no task_id) plan_id={plan_id}")
             except Exception as e:
                 self.external_log_sink.warning(f"Failed to store early TaskResult: {e}", extra={"agent": self.name})
             return report
@@ -11664,7 +11664,7 @@ class ProtoAgent_Worker(ProtoAgent):
                     "task_id": task_id,
                 }
                 if task_id:
-                    print(
+                    self.external_log_sink.debug(
                         f"[DEBUG TaskResult Write] writer=worker_final agent={self.name} "
                         f"plan_id={plan_id} task_id={task_id} memdb_id={id(self.memdb)} "
                         f"type={type(self.memdb).__name__}"
@@ -11676,7 +11676,7 @@ class ProtoAgent_Worker(ProtoAgent):
                         pass
                     self.external_log_sink.info(f"[{self.name}] Stored TaskResult for plan_id={plan_id} task_id={task_id}")
                 else:
-                    print(f"[DEBUG TaskResult Write] writer=worker_final SKIP (no task_id) plan_id={plan_id}")
+                    self.external_log_sink.debug(f"[DEBUG TaskResult Write] writer=worker_final SKIP (no task_id) plan_id={plan_id}")
             except Exception as e:
                 self.external_log_sink.info(f"[{self.name}] Warning: Could not store TaskResult: {e}")
 
