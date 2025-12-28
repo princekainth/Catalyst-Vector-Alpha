@@ -224,10 +224,10 @@ class SwarmProtocol:
             gradient_compliant = compliant
             final_task_description = adjusted_task
             if not compliant:
-                print(f"  [SovereignGradient] Swarm task '{task_description}' was adjusted to '{final_task_description}' due to Sovereign Gradient non-compliance.")
+                logger.debug(f"[SovereignGradient] Swarm task '{task_description}' was adjusted to '{final_task_description}' due to Sovereign Gradient non-compliance.")
         
         self.memetic_kernel.add_memory("TaskCoordination", f"Swarm '{self.name}' coordinating task: '{final_task_description}' (Compliant: {gradient_compliant}) among {len(self.members)} members (conceptual).")
-        print(f"[SwarmProtocol] Swarm '{self.name}' coordinating task: '{final_task_description}' among {len(self.members)} members (conceptual).")
+        logger.info(f"[SwarmProtocol] Swarm '{self.name}' coordinating task: '{final_task_description}' among {len(self.members)} members (conceptual).")
         if self.catalyst_vector_ref:
             self.catalyst_vector_ref._log_swarm_activity(
                 "SWARM_TASK_COORDINATION", # event_type
@@ -436,8 +436,8 @@ class CatalystVectorAlpha:
             level='info'
         )
 
-        print(f"Successfully loaded ISL Schema: {self.isl_schema_validator.schema_path}")
-        print("[IP-Integration] The Eidos Protocol System is initiating, demonstrating the Gemini™ wordmark in its functionality.")
+        logger.info(f"Successfully loaded ISL Schema: {self.isl_schema_validator.schema_path}")
+        logger.info("[IP-Integration] The Eidos Protocol System is initiating, demonstrating the Gemini™ wordmark in its functionality.")
 
         # --- Minimal idle manifest (YAML indentation fixed) ---
         self.isl_manifest_content = textwrap.dedent("""\
@@ -535,7 +535,7 @@ class CatalystVectorAlpha:
             cpu_usage = psutil.cpu_percent(interval=None)
             memory_usage = psutil.virtual_memory().percent
             log_entry['details'].update({"cpu_usage": cpu_usage, "memory_usage": memory_usage})
-            print(f"[System] Resource Usage: CPU {cpu_usage}%, Memory {memory_usage}%")
+            logger.info(f"[System] Resource Usage: CPU {cpu_usage}%, Memory {memory_usage}%")
         except Exception as e:
             log_entry['details'].update({"cpu_usage": "N/A", "memory_usage": "N/A", "resource_error": str(e)})
 
@@ -544,7 +544,7 @@ class CatalystVectorAlpha:
             with open(self.swarm_activity_log_full_path, 'a') as f:
                 f.write(json.dumps(log_entry) + '\n')
         except Exception as e:
-            print(f"ERROR: Exception in _log_swarm_activity file writing for {source}: {e}")
+            logger.error(f"Exception in _log_swarm_activity file writing for {source}: {e}")
             if self.external_log_sink:
                 self.external_log_sink.error(f"Failed to write to swarm activity file for {source}: {e}", extra={"error_details":str(e)})
 
@@ -559,7 +559,7 @@ class CatalystVectorAlpha:
                 else:
                     self.external_log_sink.info(json.dumps(log_entry))
             except Exception as e:
-                print(f"ERROR: Failed to push swarm log to external sink for {source}: {e}")
+                logger.error(f"Failed to push swarm log to external sink for {source}: {e}")
 
     def _ensure_core_agents(self):
         """Ensure Planner and Worker exist both in config and in live instances."""
@@ -666,7 +666,7 @@ class CatalystVectorAlpha:
         user_task = directive.get('task', 'Unspecified task')
         task_id = directive.get('task_id', 'unknown_task')
 
-        print(f"  [CatalystVectorAlpha] Processing user command: '{user_task}' (Task ID: {task_id})")
+        logger.debug(f"[CatalystVectorAlpha] Processing user command: '{user_task}' (Task ID: {task_id})")
         self._log_swarm_activity("USER_COMMAND_RECEIVED", "CatalystVectorAlpha",
                                 f"Processing user command: {user_task}",
                                 {"user_task": user_task, "task_id": task_id}, level='info')
@@ -693,7 +693,7 @@ class CatalystVectorAlpha:
         This is the corrected and final version.
         """
         file_path = self.swarm_state_file_full_path
-        print(f"--- Loading or Creating Swarm State ---")
+        logger.info(f"--- Loading or Creating Swarm State ---")
 
         if os.path.exists(file_path):
             try:
@@ -707,27 +707,27 @@ class CatalystVectorAlpha:
                 self.rehydrate_agents_from_state() # You will need a method like this.
                 
                 self._log_swarm_activity("SYSTEM_STATE_LOADED", "CatalystVectorAlpha", f"Successfully loaded and rehydrated swarm state from '{file_path}'.")
-                print(f"  Successfully loaded swarm state from '{file_path}'.")
+                logger.debug(f"Successfully loaded swarm state from '{file_path}'.")
 
             except Exception as e:
-                print(f"  Error loading or rehydrating swarm state: {e}. Starting fresh.")
+                logger.debug(f"Error loading or rehydrating swarm state: {e}. Starting fresh.")
                 # If loading fails, create a fresh state.
                 self.swarm_state = self._initialize_default_swarm_state()
 
         else:
             # THIS IS THE PATH FOR A CLEAN START
-            print("  No previous swarm state found. Initializing a fresh swarm.")
+            logger.debug("No previous swarm state found. Initializing a fresh swarm.")
             self._log_swarm_activity("SYSTEM_STATE_NEW", "CatalystVectorAlpha", "No state file found. Creating a fresh swarm.")
             self.swarm_state = self._initialize_default_swarm_state()
 
-        print(f"--- State Initialized. Swarm contains {len(self.swarm_state.get('agents', {}))} agents. ---")
+        logger.info(f"--- State Initialized. Swarm contains {len(self.swarm_state.get('agents', {}))} agents. ---")
         
     def _initialize_default_swarm_state(self) -> dict:
         """
         Initializes a fresh, JSON-serializable swarm state.
         Creates live agent instances separately (no objects in the persisted dict).
         """
-        print("Initializing fresh swarm state with default agents...")
+        logger.info("Initializing fresh swarm state with default agents...")
 
         # 1) Persisted CONFIG ONLY (no objects, no deque)
         agents_cfg = {
@@ -789,7 +789,7 @@ class CatalystVectorAlpha:
             {"agents": list(agents_cfg.keys())}
         )
 
-        print(f"Swarm state initialized with {len(swarm_state['agents'])} agents")
+        logger.info(f"Swarm state initialized with {len(swarm_state['agents'])} agents")
         return swarm_state
     
     def rehydrate_agents_from_state(self) -> None:
@@ -802,10 +802,10 @@ class CatalystVectorAlpha:
         
         # PERMANENT FIX: Create default agents if state is empty
         if not cfg_agents:
-            print("⚠️  No agents found in state. Creating default agents...")
+            logger.warning("⚠️  No agents found in state. Creating default agents...")
             cfg_agents = self._create_default_agents(self.world_model)
             self.swarm_state["agents"] = cfg_agents  # Save to state for next time
-            print(f"✅ Created {len(cfg_agents)} default agent configurations")
+            logger.info(f"✅ Created {len(cfg_agents)} default agent configurations")
         
         # Instantiate all agents from config
         for agent_name, agent_conf in cfg_agents.items():
@@ -816,7 +816,7 @@ class CatalystVectorAlpha:
                 self._log_swarm_activity("AGENT_REHYDRATE_ERROR", agent_name,
                                         f"Failed to instantiate agent: {e}", level="error")
         
-        print(f"✅ Loaded {len(self.agent_instances)} agents: {list(self.agent_instances.keys())}")
+        logger.info(f"✅ Loaded {len(self.agent_instances)} agents: {list(self.agent_instances.keys())}")
         self._log_swarm_activity("AGENTS_INSTANTIATED", "CatalystVectorAlpha",
                                 "Rehydrated live agent instances.",
                                 {"agents": list(self.agent_instances.keys())})
@@ -906,7 +906,7 @@ class CatalystVectorAlpha:
                 {"file": file_path},
                 level='info'
             )
-            print(f"  Overall swarm state saved to {file_path}.")
+            logger.debug(f"Overall swarm state saved to {file_path}.")
         except Exception as e:
             self.external_log_sink.error(
                 f"Failed to save swarm state to '{file_path}': {e}",
@@ -919,8 +919,8 @@ class CatalystVectorAlpha:
                 {"error": str(e)},
                 level='error'
             )
-            print(f"  Error saving swarm state: {e}")
-        print("--- System state saved ---")
+            logger.debug(f"Error saving swarm state: {e}")
+        logger.info("--- System state saved ---")
 
     def is_system_paused(self):
         return os.path.exists(self.system_pause_file_full_path)
@@ -934,7 +934,7 @@ class CatalystVectorAlpha:
         response_file_path = os.path.join(self.persistence_dir, f"control_human_response_{request_id}.json")
         original_request_details = self.pending_human_interventions.get(request_id)
         if not original_request_details:
-            print(f"ERROR: Received response for unknown/already cleared request ID: {request_id}. Skipping global clear.")
+            logger.error(f"Received response for unknown/already cleared request ID: {request_id}. Skipping global clear.")
             self._log_swarm_activity(
                 "HUMAN_RESPONSE_NO_MATCH",
                 "Dashboard",
@@ -950,11 +950,11 @@ class CatalystVectorAlpha:
             os.makedirs(self.persistence_dir, exist_ok=True)
             with open(response_file_path, 'w') as f:
                 json.dump(response_data, f, indent=2)
-            print(f"[CatalystVectorAlpha] Human response for request ID '{request_id}' written to {response_file_path}")
+            logger.info(f"[CatalystVectorAlpha] Human response for request ID '{request_id}' written to {response_file_path}")
             
             if os.path.exists(self.system_pause_file_full_path):
                 os.remove(self.system_pause_file_full_path)
-                print(f"[CatalystVectorAlpha] System pause flag removed: {self.system_pause_file_full_path}")
+                logger.info(f"[CatalystVectorAlpha] System pause flag removed: {self.system_pause_file_full_path}")
                 self.is_paused = False
 
             requests_to_remove = []
@@ -995,17 +995,17 @@ class CatalystVectorAlpha:
                     response_for_agent['problem_id'] = original_request_details.get('problem_id')
                     req_agent.human_input_received(response_for_agent)
                 else:
-                    print(f"  Warning: Requesting agent '{requester}' does not have a 'human_input_received' method.")
+                    logger.debug(f"Warning: Requesting agent '{requester}' does not have a 'human_input_received' method.")
             else:
-                print(f"  Warning: Requesting agent '{requester}' not found to inform about human input.")
+                logger.debug(f"Warning: Requesting agent '{requester}' not found to inform about human input.")
         except json.JSONDecodeError as e:
-            print(f"ERROR: Malformed human response file: {response_file_path}")
+            logger.error(f"Malformed human response file: {response_file_path}")
             self._log_swarm_activity("HUMAN_INPUT_ERROR", "CatalystVectorAlpha",
                                      f"Malformed human response file '{os.path.basename(response_file_path)}'. Error: {e}",
                                      {"file": response_file_path, "error": str(e)},
                                      level='error')
         except Exception as e:
-            print(f"ERROR: Failed to process human response file: {response_file_path} - {e}")
+            logger.error(f"Failed to process human response file: {response_file_path} - {e}")
             self._log_swarm_activity("HUMAN_INPUT_ERROR", "CatalystVectorAlpha",
                                      f"Failed to process human response file '{os.path.basename(response_file_path)}'. Error: {e}",
                                      {"file": response_file_path, "error": str(e)},
@@ -1111,7 +1111,7 @@ class CatalystVectorAlpha:
                     self.report_task_progress(task_id, step_id, "completed")
 
             except Exception as e:
-                print(f"ERROR: Exception while processing directive {directive_type}: {e}")
+                logger.error(f"Exception while processing directive {directive_type}: {e}")
                 self._log_swarm_activity("DIRECTIVE_PROCESSING_ERROR", "CatalystVectorAlpha",
                                          f"Error processing directive {directive_type}",
                                          {"error": str(e), "directive": directive}, level='error')
@@ -1120,7 +1120,7 @@ class CatalystVectorAlpha:
                 if task_id is not None and step_id is not None:
                     self.report_task_progress(task_id, step_id, "failed")
         else:
-            print(f"  Unknown Directive: {directive_type}.")
+            logger.debug(f"Unknown Directive: {directive_type}.")
             self._log_swarm_activity("UNKNOWN_DIRECTIVE_TYPE", "CatalystVectorAlpha",
                                      f"Unknown directive encountered: {directive_type}.",
                                      {"directive_type": directive_type, "full_directive": directive}, level='warning')
@@ -1129,7 +1129,7 @@ class CatalystVectorAlpha:
             if task_id is not None and step_id is not None:
                 self.report_task_progress(task_id, step_id, "failed")
 
-        print("\n--- Directives Execution Complete ---")
+        logger.info("--- Directives Execution Complete ---")
 
     def _handle_assert_agent_eidos(self, directive: dict):
         eidos_name = directive['eidos_name']
@@ -1139,9 +1139,9 @@ class CatalystVectorAlpha:
             self.eidos_registry[eidos_name] = eidos_spec
             self._log_swarm_activity("EIDOS_ASSERTED", "CatalystVectorAlpha",
                                      f"Defined EIDOS for '{eidos_name}'.", {"eidos_name": eidos_name}, level='info')
-            print(f"  ASSERT_AGENT_EIDOS: Defined EIDOS for '{eidos_name}'.")
+            logger.debug(f"ASSERT_AGENT_EIDOS: Defined EIDOS for '{eidos_name}'.")
         else:
-            print(f"  ASSERT_AGENT_EIDOS: EIDOS '{eidos_name}' already exists. Reusing.")
+            logger.debug(f"ASSERT_AGENT_EIDOS: EIDOS '{eidos_name}' already exists. Reusing.")
             self._log_swarm_activity("EIDOS_REUSED", "CatalystVectorAlpha",
                                      f"EIDOS '{eidos_name}' already exists, reusing.", {"eidos_name": eidos_name}, level='info')
     
@@ -1153,12 +1153,12 @@ class CatalystVectorAlpha:
         description = directive.get('description', 'A collective intelligence.')
 
         if swarm_name in self.swarm_protocols:
-            print(f"  ESTABLISH_SWARM_EIDOS: Swarm '{swarm_name}' already active. Reusing.")
+            logger.debug(f"ESTABLISH_SWARM_EIDOS: Swarm '{swarm_name}' already active. Reusing.")
             swarm = self.swarm_protocols[swarm_name]
             self._log_swarm_activity("SWARM_REUSED", "CatalystVectorAlpha",
                                      f"Swarm '{swarm_name}' already active, reusing.", {"swarm_name": swarm_name}, level='info')
         else:
-            print(f"  ESTABLISH_SWARM_EIDOS: Establishing new swarm '{swarm_name}'.")
+            logger.debug(f"ESTABLISH_SWARM_EIDOS: Establishing new swarm '{swarm_name}'.")
             specific_swarm_state_file_path = os.path.join(self.persistence_dir, f"swarm_state_{swarm_name}.json")
 
             swarm = SwarmProtocol(
@@ -1199,12 +1199,12 @@ class CatalystVectorAlpha:
             raise ValueError(f"EIDOS '{eidos_name}' not asserted yet. Define it first.")
 
         if instance_name in self.agent_instances:
-            print(f"  SPAWN_AGENT_INSTANCE: Agent '{instance_name}' already exists. Reusing.")
+            logger.debug(f"SPAWN_AGENT_INSTANCE: Agent '{instance_name}' already exists. Reusing.")
             self._log_swarm_activity("AGENT_REUSED", "CatalystVectorAlpha",
                                     f"Agent '{instance_name}' already existed, reusing.",
                                     {"agent_name": instance_name})
         else:
-            print(f"  SPAWN_AGENT_INSTANCE: Spawning new agent '{instance_name}'.")
+            logger.debug(f"SPAWN_AGENT_INSTANCE: Spawning new agent '{instance_name}'.")
             try:
                 agent_state = self.swarm_state.get('agent_instances', {}).get(instance_name)
 
@@ -1231,7 +1231,7 @@ class CatalystVectorAlpha:
             except Exception as e:
                 import traceback
                 import sys
-                print(f"\nCRITICAL DEBUG ERROR: Exception during agent '{instance_name}' post-spawn setup: {e}", file=sys.stderr)
+                logger.critical(f"CRITICAL DEBUG ERROR: Exception during agent '{instance_name}' post-spawn setup: {e}")
                 traceback.print_exc(file=sys.stderr)
                 self._log_swarm_activity("CRITICAL_AGENT_SPAWN_ERROR", "CatalystVectorAlpha",
                                         f"Agent '{instance_name}' failed post-spawn setup: {str(e)}",
@@ -1279,7 +1279,7 @@ class CatalystVectorAlpha:
         self._log_swarm_activity("GRADIENT_ASSERTED", "CatalystVectorAlpha",
                                  f"Sovereign Gradient asserted for {target_type} '{target_ref}'.",
                                  {"entity": target_ref, "type": target_type, "autonomy_vector": new_gradient.autonomy_vector}, level='info')
-        print(f"  ASSERT_GRADIENT_TRAJECTORY: Set gradient for {target_type} '{target_ref}' to '{new_gradient.autonomy_vector}'.")
+        logger.debug(f"ASSERT_GRADIENT_TRAJECTORY: Set gradient for {target_type} '{target_ref}' to '{new_gradient.autonomy_vector}'.")
 
     def _handle_catalyze_transformation(self, directive: dict):
         """Handles the CATALYZE_TRANSFORMATION directive."""
@@ -1292,7 +1292,7 @@ class CatalystVectorAlpha:
             raise ValueError(f"Target agent instance '{target_agent_instance_name}' not found for CATALYZE_TRANSFORMATION.")
         
         target_agent = self.agent_instances[target_agent_instance_name]
-        print(f"  CATALYZE_TRANSFORMATION: Initiating self-transformation for '{target_agent_instance_name}'.")
+        logger.debug(f"CATALYZE_TRANSFORMATION: Initiating self-transformation for '{target_agent_instance_name}'.")
         target_agent.catalyze_transformation(
             new_initial_intent=new_initial_intent,
             new_description=new_description,
@@ -1301,7 +1301,7 @@ class CatalystVectorAlpha:
         self._log_swarm_activity("AGENT_TRANSFORMATION", "CatalystVectorAlpha",
                                  f"Agent '{target_agent_instance_name}' transformed.",
                                  {"agent": target_agent_instance_name, "updates": {"intent": new_initial_intent, "description": new_description, "mk_updates": new_memetic_kernel_config_updates}}, level='info')
-        print(f"  CATALYZE_TRANSFORMATION: Transformation directive processed for '{target_agent_instance_name}'.")
+        logger.debug(f"CATALYZE_TRANSFORMATION: Transformation directive processed for '{target_agent_instance_name}'.")
     
     def _handle_broadcast_swarm_intent(self, directive: dict):
         """Handles the BROADCAST_SWARM_INTENT directive."""
@@ -1313,7 +1313,7 @@ class CatalystVectorAlpha:
             raise ValueError(f"Swarm '{swarm_name}' not found for BROADCAST_SWARM_INTENT.")
         
         swarm = self.swarm_protocols[swarm_name]
-        print(f"  BROADCAST_SWARM_INTENT: Broadcasting '{broadcast_intent_content}' to '{swarm_name}' members.")
+        logger.debug(f"BROADCAST_SWARM_INTENT: Broadcasting '{broadcast_intent_content}' to '{swarm_name}' members.")
         self._log_swarm_activity("SWARM_INTENT_BROADCAST", "CatalystVectorAlpha",
                                  f"Broadcasting '{broadcast_intent_content}' to '{swarm_name}' members.",
                                  {"swarm": swarm_name, "intent": broadcast_intent_content, "threshold": alignment_threshold}, level='info')
@@ -1323,7 +1323,7 @@ class CatalystVectorAlpha:
                 agent = self.agent_instances[agent_ref]
                 agent.process_broadcast_intent(broadcast_intent_content, alignment_threshold)
             else:
-                print(f"  Warning: Agent '{agent_ref}' not found in instance list, skipping broadcast.")
+                logger.debug(f"Warning: Agent '{agent_ref}' not found in instance list, skipping broadcast.")
                 self._log_swarm_activity("AGENT_NOT_FOUND_FOR_BROADCAST", "CatalystVectorAlpha",
                                          f"Agent '{agent_ref}' not found for intent broadcast to swarm '{swarm_name}'.",
                                          {"agent": agent_ref, "swarm": swarm_name}, level='warning')
@@ -1559,7 +1559,7 @@ class CatalystVectorAlpha:
             reporting_agents_list = reporting_agents_ref
 
         agent = self.agent_instances[agent_name]
-        print(f"  AGENT_PERFORM_TASK: Agent '{agent_name}' performing task: '{task_description}'.")
+        logger.debug(f"AGENT_PERFORM_TASK: Agent '{agent_name}' performing task: '{task_description}'.")
         
         try:
             # Special handling: force Planner to run k8s_monitoring mission immediately
@@ -1588,9 +1588,9 @@ class CatalystVectorAlpha:
             # After execution, reflect and log.
             if hasattr(agent, 'memetic_kernel') and agent.memetic_kernel:
                 reflection = agent.memetic_kernel.reflect()
-                print(f"  [MemeticKernel] {agent.name} reflects: '{reflection}'")
+                logger.debug(f"[MemeticKernel] {agent.name} reflects: '{reflection}'")
             else:
-                print(f"  [MemeticKernel] {agent.name} has no MemeticKernel or it's not initialized for reflection (post-task).")
+                logger.debug(f"[MemeticKernel] {agent.name} has no MemeticKernel or it's not initialized for reflection (post-task).")
 
             # Enhanced logging with task_id information
             log_details = {
@@ -1713,7 +1713,7 @@ class CatalystVectorAlpha:
         if not isinstance(agent, ProtoAgent_Observer):
             raise ValueError(f"Agent '{reporting_agent_name_from_manifest}' is not an Observer. Only Observer agents can summarize reports.")
         
-        print(f"  REPORTING_AGENT_SUMMARIZE: Agent '{reporting_agent_name_from_manifest}' summarizing reports for cycle '{cycle_id_to_summarize}'.")
+        logger.debug(f"REPORTING_AGENT_SUMMARIZE: Agent '{reporting_agent_name_from_manifest}' summarizing reports for cycle '{cycle_id_to_summarize}'.")
         agent.summarize_received_reports(cycle_id=cycle_id_to_summarize)
         self._log_swarm_activity("AGENT_REPORT_SUMMARIZED", "CatalystVectorAlpha",
                                  f"Agent '{reporting_agent_name_from_manifest}' summarized reports.",
@@ -1727,7 +1727,7 @@ class CatalystVectorAlpha:
             raise ValueError(f"Agent '{agent_name}' not found for AGENT_ANALYZE_AND_ADAPT.")
         
         agent = self.agent_instances[agent_name]
-        print(f"  AGENT_ANALYZE_AND_ADAPT: Agent '{agent_name}' performing reflexive analysis and adaptation.")
+        logger.debug(f"AGENT_ANALYZE_AND_ADAPT: Agent '{agent_name}' performing reflexive analysis and adaptation.")
         agent.analyze_and_adapt()
         self._log_swarm_activity("AGENT_ANALYZE_ADAPT", "CatalystVectorAlpha",
                                  f"Agent '{agent_name}' performed analysis and adaptation.",
@@ -1744,11 +1744,11 @@ class CatalystVectorAlpha:
             raise ValueError(f"Target agent '{target_agent}' not found for BROADCAST_COMMAND.")
         
         agent = self.agent_instances[target_agent]
-        print(f"  BROADCAST_COMMAND: Agent '{target_agent}' received command '{command_type}' with params: {command_params}.")
+        logger.debug(f"BROADCAST_COMMAND: Agent '{target_agent}' received command '{command_type}' with params: {command_params}.")
         if hasattr(agent, 'process_command') and callable(getattr(agent, 'process_command')):
             agent.process_command(command_type, command_params)
         else:
-            print(f"  Warning: Agent '{target_agent}' does not support 'process_command' method. Command skipped.")
+            logger.debug(f"Warning: Agent '{target_agent}' does not support 'process_command' method. Command skipped.")
             self._log_swarm_activity("AGENT_COMMAND_SKIPPED", "CatalystVectorAlpha",
                                      f"Agent '{target_agent}' does not support command '{command_type}'.",
                                      {"agent": target_agent, "command_type": command_type, "params": command_params})
@@ -1798,7 +1798,7 @@ class CatalystVectorAlpha:
         if not planner_agent:
             raise ValueError(f"Planner agent '{planner_agent_name}' not found.")
 
-        print(f"  INITIATE_PLANNING_CYCLE: Assigning high-level goal to Planner '{planner_agent_name}'.")
+        logger.debug(f"INITIATE_PLANNING_CYCLE: Assigning high-level goal to Planner '{planner_agent_name}'.")
         
         planner_agent.current_intent = high_level_goal
         # This ensures the Planner's internal router knows how to handle the new intent.
@@ -1867,7 +1867,7 @@ class CatalystVectorAlpha:
             with open(self.system_pause_file_full_path, 'w') as f:
                 f.write(reason) # Write the reason into the file
             
-            print(f"\n!!! SYSTEM PAUSED: {reason} !!!")
+            logger.warning(f"!!! SYSTEM PAUSED: {reason} !!!")
             self._log_swarm_activity(
                 "SYSTEM_PAUSED_CRITICAL",
                 "CatalystVectorAlpha",
@@ -1877,7 +1877,7 @@ class CatalystVectorAlpha:
             )
             self.is_running = False # Stop the main cognitive loop
         except Exception as e:
-            print(f"ERROR: Failed to create system pause file: {e}")
+            logger.error(f"Failed to create system pause file: {e}")
             self._log_swarm_activity("SYSTEM_PAUSE_ERROR", "CatalystVectorAlpha",
                                     f"Failed to initiate system pause. Error: {e}",
                                     {"error": str(e)}, level='error')
@@ -1890,7 +1890,7 @@ class CatalystVectorAlpha:
         if os.path.exists(self.system_pause_file_full_path):
             try:
                 os.remove(self.system_pause_file_full_path)
-                print(f"\n--- SYSTEM UNPAUSED ({reason}) ---") # Added reason to print
+                logger.info(f"--- SYSTEM UNPAUSED ({reason}) ---") # Added reason to print
                 self._log_swarm_activity(
                     "SYSTEM_UNPAUSED",
                     "CatalystVectorAlpha",
@@ -1900,12 +1900,12 @@ class CatalystVectorAlpha:
                 )
                 self.is_running = True # Allow the main cognitive loop to continue
             except Exception as e:
-                print(f"ERROR: Failed to remove system pause file: {e}")
+                logger.error(f"Failed to remove system pause file: {e}")
                 self._log_swarm_activity("SYSTEM_UNPAUSE_ERROR", "CatalystVectorAlpha",
                                           f"Failed to unpause system. Error: {e}",
                                           {"error": str(e)}, level='error')
         else:
-            print(f"System not paused. No flag file found: {self.system_pause_file_full_path}")
+            logger.info(f"System not paused. No flag file found: {self.system_pause_file_full_path}")
             self._log_swarm_activity("SYSTEM_ALREADY_UNPAUSED", "CatalystVectorAlpha",
                                       "Attempted to unpause system, but no pause flag was found.",
                                       {}, level='warning')
@@ -1938,10 +1938,10 @@ class CatalystVectorAlpha:
         }
 
         if human_request_counter == 0: # Level 1: Initial request / Peer Review
-            print(f"\n!!! HUMAN INTERVENTION REQUESTED (Initial Request, Urgency: {urgency.upper()}) !!!")
-            print(f"!!! From: {requester} (Target: {target_agent}) !!!")
-            print(f"!!! Message: {message} !!!")
-            print(f"!!! Please review logs for cycle {request_cycle_id} (Request ID: {request_id}) !!!")
+            logger.warning(f"!!! HUMAN INTERVENTION REQUESTED (Initial Request, Urgency: {urgency.upper()}) !!!")
+            logger.warning(f"!!! From: {requester} (Target: {target_agent}) !!!")
+            logger.warning(f"!!! Message: {message} !!!")
+            logger.warning(f"!!! Please review logs for cycle {request_cycle_id} (Request ID: {request_id}) !!!")
 
             self._log_swarm_activity(
                 "HUMAN_INPUT_REQUESTED_LEVEL1",
@@ -1977,7 +1977,7 @@ class CatalystVectorAlpha:
             next_directive = directive.copy()
             next_directive["human_request_counter"] = 1 # Increment counter for next level
             self.inject_directives([next_directive])
-            print(f"  [Escalation] Re-injected REQUEST_HUMAN_INPUT (Level 2) for next cycle check.")
+            logger.debug(f"[Escalation] Re-injected REQUEST_HUMAN_INPUT (Level 2) for next cycle check.")
 
         elif human_request_counter == 1: # Level 2: Human Response Check
             # Correctly define response_file_path using self.persistence_dir
@@ -1988,9 +1988,9 @@ class CatalystVectorAlpha:
                     with open(response_file_path, 'r') as f:
                         human_response_from_file = json.load(f)
 
-                    print(f"\n--- HUMAN RESPONSE RECEIVED (from {requester}, Urgency: {urgency.upper()}) ---")
-                    print(f"Message: {message}")
-                    print(f"Human Input: {human_response_from_file.get('response', 'No specific response.')}")
+                    logger.info(f"--- HUMAN RESPONSE RECEIVED (from {requester}, Urgency: {urgency.upper()}) ---")
+                    logger.info(f"Message: {message}")
+                    logger.info(f"Human Input: {human_response_from_file.get('response', 'No specific response.')}")
 
                     self._log_swarm_activity(
                         "HUMAN_INPUT_RECEIVED",
@@ -2039,15 +2039,15 @@ class CatalystVectorAlpha:
                             # Pass the enriched response_for_agent
                             req_agent.human_input_received(response_for_agent)
                         else:
-                            print(f"  Warning: Requesting agent '{requester}' does not have a 'human_input_received' method.")
+                            logger.debug(f"Warning: Requesting agent '{requester}' does not have a 'human_input_received' method.")
                     else:
-                        print(f"  Warning: Requesting agent '{requester}' not found to inform about human input.")
+                        logger.debug(f"Warning: Requesting agent '{requester}' not found to inform about human input.")
 
                     # Important: If a response was received and processed, this directive should NOT be re-injected.
                     # It has been successfully handled.
 
                 except json.JSONDecodeError as e:
-                    print(f"ERROR: Malformed human response file: {response_file_path}")
+                    logger.error(f"Malformed human response file: {response_file_path}")
                     self._log_swarm_activity("HUMAN_INPUT_ERROR", "CatalystVectorAlpha",
                                             f"Level 2: Malformed human response file '{os.path.basename(response_file_path)}'. Error: {e}",
                                             {"file": response_file_path, "error": str(e)},
@@ -2056,9 +2056,9 @@ class CatalystVectorAlpha:
                     next_directive = directive.copy()
                     next_directive["human_request_counter"] = 2 # Increment to Level 3
                     self.inject_directives([next_directive])
-                    print(f"  [Escalation] Re-injected REQUEST_HUMAN_INPUT (Level 3) due to malformed response.")
+                    logger.debug(f"[Escalation] Re-injected REQUEST_HUMAN_INPUT (Level 3) due to malformed response.")
                 except Exception as e:
-                    print(f"ERROR: Failed to process human response file: {response_file_path} - {e}")
+                    logger.error(f"Failed to process human response file: {response_file_path} - {e}")
                     self._log_swarm_activity("HUMAN_INPUT_ERROR", "CatalystVectorAlpha",
                                             f"Level 2: Failed to process human response file '{os.path.basename(response_file_path)}'. Error: {e}",
                                             {"file": response_file_path, "error": str(e)},
@@ -2067,13 +2067,13 @@ class CatalystVectorAlpha:
                     next_directive = directive.copy()
                     next_directive["human_request_counter"] = 2 # Increment to Level 3
                     self.inject_directives([next_directive])
-                    print(f"  [Escalation] Re-injected REQUEST_HUMAN_INPUT (Level 3) due to processing error.")
+                    logger.debug(f"[Escalation] Re-injected REQUEST_HUMAN_INPUT (Level 3) due to processing error.")
             else: # No human response file found, escalate to Level 3
-                print(f"\n!!! HUMAN INTERVENTION PENDING (Level 2, Urgency: {urgency.upper()}) !!!")
-                print(f"!!! From: {requester} (Target: {target_agent}) !!!")
-                print(f"!!! Message: {message} !!!")
+                logger.warning(f"!!! HUMAN INTERVENTION PENDING (Level 2, Urgency: {urgency.upper()}) !!!")
+                logger.warning(f"!!! From: {requester} (Target: {target_agent}) !!!")
+                logger.warning(f"!!! Message: {message} !!!")
                 # This line needs the fix for PERSISTENCE_DIR -> self.persistence_dir (and use response_file_path)
-                print(f"!!! No human response in '{response_file_path}'. Escalating. !!!") # Used response_file_path here
+                logger.warning(f"!!! No human response in '{response_file_path}'. Escalating. !!!") # Used response_file_path here
 
                 self._log_swarm_activity("HUMAN_INPUT_PENDING_LEVEL2", "CatalystVectorAlpha",
                                         f"Level 2: No human input received for {request_id}. Escalating to Level 3. Expected file: {response_file_path}", # Added expected file path to log
@@ -2082,13 +2082,13 @@ class CatalystVectorAlpha:
                 next_directive = directive.copy()
                 next_directive["human_request_counter"] = 2 # Increment to Level 3
                 self.inject_directives([next_directive])
-                print(f"  [Escalation] Re-injected REQUEST_HUMAN_INPUT (Level 3) for next cycle check.")
+                logger.debug(f"[Escalation] Re-injected REQUEST_HUMAN_INPUT (Level 3) for next cycle check.")
 
         elif human_request_counter >= 2: # Level 3: Full System Pause (Critical)
-            print(f"\n!!! CRITICAL: HUMAN INTERVENTION FAILED (Level 3, Urgency: {urgency.upper()}) !!!")
-            print(f"!!! From: {requester} (Target: {target_agent}) !!!")
-            print(f"!!! Message: {message} !!!")
-            print("!!! No human response. Initiating full system pause. !!!")
+            logger.critical(f"!!! CRITICAL: HUMAN INTERVENTION FAILED (Level 3, Urgency: {urgency.upper()}) !!!")
+            logger.warning(f"!!! From: {requester} (Target: {target_agent}) !!!")
+            logger.warning(f"!!! Message: {message} !!!")
+            logger.critical("!!! No human response. Initiating full system pause. !!!")
             
             # Removed the direct file write for system_pause.flag here.
             # It's now handled by self.pause_system() below.
@@ -2143,7 +2143,7 @@ class CatalystVectorAlpha:
             # If we've identified a user command, transform it into the complex directive the system expects.
             if is_user_command:
                 user_task = directive['task']
-                print(f"  [CatalystVectorAlpha] Transforming user command into plan: '{user_task}'")
+                logger.debug(f"[CatalystVectorAlpha] Transforming user command into plan: '{user_task}'")
                 # Transform the simple user command into a directive the Planner can understand.
                 directive = {
                     'type': 'AGENT_PERFORM_TASK',
@@ -2157,18 +2157,18 @@ class CatalystVectorAlpha:
                 if original_task_id:
                     directive['task_id'] = original_task_id
                     directive['_user_task_id'] = original_task_id  # Internal tracking field
-                    print(f"  [CatalystVectorAlpha] User command has task_id: {original_task_id}")
+                    logger.debug(f"[CatalystVectorAlpha] User command has task_id: {original_task_id}")
             
             # For dashboard API directives, preserve task_id
             elif isinstance(directive, dict) and original_task_id:
                 directive['_user_task_id'] = original_task_id
-                print(f"  [CatalystVectorAlpha] Dashboard directive has task_id: {original_task_id}")
+                logger.debug(f"[CatalystVectorAlpha] Dashboard directive has task_id: {original_task_id}")
             
             # --- END OF NEW LOGIC ---
 
             # Now proceed with the original validation for complex directives...
             if not isinstance(directive, dict) or 'type' not in directive:
-                print(f"  [CatalystVectorAlpha] Warning: Invalid injected directive format, skipping: {directive}")
+                logger.debug(f"[CatalystVectorAlpha] Warning: Invalid injected directive format, skipping: {directive}")
                 self._log_swarm_activity("INJECTED_DIRECTIVE_INVALID_FORMAT", "CatalystVectorAlpha",
                                         "Skipped invalid injected directive due to malformed format.",
                                         {"directive": str(directive)[:200]}, level='warning')
@@ -2210,7 +2210,7 @@ class CatalystVectorAlpha:
 
             # If the directive is invalid, skip it.
             if not is_valid:
-                print(f"  [CatalystVectorAlpha] Warning: Invalid injected directive, skipping. Reason: {validation_reason}, Directive: {directive}")
+                logger.debug(f"[CatalystVectorAlpha] Warning: Invalid injected directive, skipping. Reason: {validation_reason}, Directive: {directive}")
                 self._log_swarm_activity("INJECTED_DIRECTIVE_INVALID_CONTENT", "CatalystVectorAlpha",
                                         f"Skipped invalid injected directive. Reason: {validation_reason}.",
                                         {"directive": str(directive)[:200], "reason": validation_reason}, level='warning')
@@ -2251,7 +2251,7 @@ class CatalystVectorAlpha:
         self._log_swarm_activity("DIRECTIVES_BATCH_INJECTED", "CatalystVectorAlpha",
                                 f"Injected {len(valid_directives)} new directives into queue.",
                                 {"directives_count": len(valid_directives), "first_directive_type": valid_directives[0].get('type') if valid_directives else 'N/A', "total_attempted": total_attempted}, level='info')
-        print(f"[CatalystVectorAlpha] Injected {len(valid_directives)} new directives dynamically (out of {total_attempted} attempted).")
+        logger.info(f"[CatalystVectorAlpha] Injected {len(valid_directives)} new directives dynamically (out of {total_attempted} attempted).")
         
         return len(valid_directives)
 
@@ -2262,7 +2262,7 @@ class CatalystVectorAlpha:
         self._log_swarm_activity("SYSTEM_STARTUP", "CatalystVectorAlpha",
                                  f"Attempting to load previous system state from '{self.persistence_dir}'.",
                                  level='info')
-        print(f"\n--- Loading previous system state from '{self.persistence_dir}' ---")
+        logger.info(f"--- Loading previous system state from '{self.persistence_dir}' ---")
 
         temp_agent_states_to_instantiate = {}
 
@@ -2283,13 +2283,13 @@ class CatalystVectorAlpha:
                             self.eidos_registry[eidos_name_from_state] = loaded_state['eidos_spec']
                         temp_agent_states_to_instantiate[agent_name] = loaded_state
                     else:
-                        print(f"Error loading agent state from {filename}: Missing key 'eidos_spec'. Skipping this old state file.")
+                        logger.error(f"Error loading agent state from {filename}: Missing key 'eidos_spec'. Skipping this old state file.")
                         self.external_log_sink.warning(f"Skipping agent state '{filename}': Missing 'eidos_spec'.")
                 except json.JSONDecodeError:
-                    print(f"Error loading agent state from {filename}: Invalid JSON format. Skipping.")
+                    logger.error(f"Error loading agent state from {filename}: Invalid JSON format. Skipping.")
                     self.external_log_sink.error(f"Skipping agent state '{filename}': Invalid JSON format.")
                 except Exception as e:
-                    print(f"Unexpected error loading agent state from {filename}: {e}. Skipping.")
+                    logger.error(f"Unexpected error loading agent state from {filename}: {e}. Skipping.")
                     self.external_log_sink.error(f"Unexpected error loading agent state '{filename}': {e}.")
 
         for agent_name, loaded_state in temp_agent_states_to_instantiate.items():
@@ -2321,13 +2321,13 @@ class CatalystVectorAlpha:
                         )
                         self.external_log_sink.info(f"Agent '{agent_name}' re-instantiated from loaded state.")
                     except Exception as e:
-                        print(f"Error re-instantiating agent '{agent_name}' from loaded state: {e}. Skipping.")
+                        logger.error(f"Error re-instantiating agent '{agent_name}' from loaded state: {e}. Skipping.")
                         self.external_log_sink.error(f"Error re-instantiating agent '{agent_name}': {e}.")
                 else:
-                    print(f"Warning: Unknown agent EIDOS '{eidos_name}' found in state file for '{agent_name}'. Skipping instantiation.")
+                    logger.warning(f"Warning: Unknown agent EIDOS '{eidos_name}' found in state file for '{agent_name}'. Skipping instantiation.")
                     self.external_log_sink.warning(f"Unknown EIDOS '{eidos_name}' for agent '{agent_name}'. Skipping.")
             else:
-                print(f"Warning: EIDOS for agent '{agent_name}' (type '{eidos_name}') not found in registry. Skipping instantiation.")
+                logger.warning(f"Warning: EIDOS for agent '{agent_name}' (type '{eidos_name}') not found in registry. Skipping instantiation.")
                 self.external_log_sink.warning(f"EIDOS for agent '{agent_name}' not found in registry. Skipping.")
 
         # --- Load Swarm States ---
@@ -2356,24 +2356,24 @@ class CatalystVectorAlpha:
                     )
                     self.external_log_sink.info(f"Successfully reloaded swarm '{current_swarm_name}' state from {file_path}.")
                 except (json.JSONDecodeError, FileNotFoundError, KeyError) as e:
-                    print(f"Error loading swarm state from {file_path}: {e}. Skipping.")
+                    logger.error(f"Error loading swarm state from {file_path}: {e}. Skipping.")
                     self.external_log_sink.error(f"Error loading swarm state from {file_path}: {e}.")
                 except Exception as e:
-                    print(f"Unexpected error loading swarm state from {file_path}: {e}. Skipping.")
+                    logger.error(f"Unexpected error loading swarm state from {file_path}: {e}. Skipping.")
                     self.external_log_sink.error(f"Unexpected error loading swarm state from {file_path}: {e}.")
         
         if not swarm_files_found:
-            print("  No previous swarm states found.")
+            logger.debug("No previous swarm states found.")
             self._log_swarm_activity("SYSTEM_STATE_INFO", "CatalystVectorAlpha",
                                      "No previous swarm states found, starting fresh.", level='info')
         else:
-            print(f"  Successfully loaded {len(self.swarm_protocols)} swarm states.")
+            logger.debug(f"Successfully loaded {len(self.swarm_protocols)} swarm states.")
 
 
-        print("--- Finished loading previous system state ---\n")
+        logger.info("--- Finished loading previous system state ---")
 
     def _save_system_state(self):
-        print("\n--- Saving current system state ---")
+        logger.info("--- Saving current system state ---")
         
         # Helper to convert non-serializable types for JSON (defined locally for clarity)
         def convert_to_serializable_recursive(obj):
@@ -2438,12 +2438,12 @@ class CatalystVectorAlpha:
         try:
             from database import cva_db
             cva_db.save_full_swarm_state(system_state_data)
-            print(f"  Overall swarm state saved to database.")
+            logger.debug(f"Overall swarm state saved to database.")
             self._log_swarm_activity("SYSTEM_SAVE_SUCCESS", "CatalystVectorAlpha", "Overall swarm state saved to database.", {"file": "persistence_data/cva.db"}, level='info')
         except Exception as e:
-            print(f"ERROR: Could not save to database: {e}")
+            logger.error(f"Could not save to database: {e}")
             self._log_swarm_activity("SYSTEM_SAVE_ERROR", "CatalystVectorAlpha", f"Error saving swarm state: {e}", {"error": str(e)}, level='error')
-        print("--- System state saved ---")
+        logger.info("--- System state saved ---")
     
     def is_swarm_stagnant(self) -> bool:
         """
@@ -2479,7 +2479,7 @@ class CatalystVectorAlpha:
         override_files = [f for f in os.listdir(self.persistence_dir) if f.startswith(self.intent_override_prefix) and f.endswith('.json')]
         
         if override_files:
-            print("\n--- Processing Intent Overrides ---")
+            logger.info("--- Processing Intent Overrides ---")
         
         for filename in override_files:
             filepath = os.path.join(self.persistence_dir, filename)
@@ -2493,25 +2493,25 @@ class CatalystVectorAlpha:
                 if target_name and new_intent:
                     if target_name in self.agent_instances:
                         target_entity = self.agent_instances[target_name]
-                        print(f"  Override: Applying new intent '{new_intent}' to Agent '{target_name}'.")
+                        logger.debug(f"Override: Applying new intent '{new_intent}' to Agent '{target_name}'.")
                         target_entity.update_intent(new_intent)
                         self._log_swarm_activity("INTENT_OVERRIDDEN", "CatalystVectorAlpha",
                                                  f"Agent '{target_name}' intent overridden by console.",
                                                  {"agent": target_name, "new_intent": new_intent})
                     elif target_name in self.swarm_protocols:
                         target_entity = self.swarm_protocols[target_name]
-                        print(f"  Override: Applying new goal '{new_intent}' to Swarm '{target_name}'.")
+                        logger.debug(f"Override: Applying new goal '{new_intent}' to Swarm '{target_name}'.")
                         target_entity.set_goal(new_intent) # Swarms have 'goal' instead of 'intent'
                         self._log_swarm_activity("SWARM_GOAL_OVERRIDDEN", "CatalystVectorAlpha",
                                                  f"Swarm '{target_name}' goal overridden by console.",
                                                  {"swarm": target_name, "new_goal": new_intent})
                     else:
-                        print(f"  Override Error: Target '{target_name}' not found for intent override.")
+                        logger.debug(f"Override Error: Target '{target_name}' not found for intent override.")
                         self._log_swarm_activity("OVERRIDE_ERROR", "CatalystVectorAlpha",
                                                  f"Intent override target '{target_name}' not found.",
                                                  {"target": target_name, "new_intent": new_intent})
                 else:
-                    print(f"  Override Error: Malformed override data in '{filename}'.")
+                    logger.debug(f"Override Error: Malformed override data in '{filename}'.")
                     self._log_swarm_activity("OVERRIDE_ERROR", "CatalystVectorAlpha",
                                              f"Malformed intent override data in '{filename}'.",
                                              {"filepath": filepath, "data": override_data})
@@ -2520,7 +2520,7 @@ class CatalystVectorAlpha:
                 mark_override_processed(filepath)
 
             except Exception as e:
-                print(f"  Error processing override file '{filename}': {e}")
+                logger.debug(f"Error processing override file '{filename}': {e}")
                 self._log_swarm_activity("OVERRIDE_ERROR", "CatalystVectorAlpha",
                                          f"Error processing intent override file '{filename}': {e}",
                                          {"filepath": filepath, "error": str(e)})    
@@ -2530,7 +2530,7 @@ class CatalystVectorAlpha:
         Performs a conceptual causal analysis based on recent failure logs from swarm_activity.jsonl.
         For this prototype, it uses rule-based inference on log event types.
         """
-        print(f"\n--- Initiating Causal Failure Analysis (Scanning last {num_recent_log_entries} log entries) ---")
+        logger.info(f"--- Initiating Causal Failure Analysis (Scanning last {num_recent_log_entries} log entries) ---")
         self._log_swarm_activity("CAUSAL_ANALYSIS_INITIATED", "CatalystVectorAlpha",
                                 f"Starting causal analysis on last {num_recent_log_entries} log entries.")
 
@@ -2553,7 +2553,7 @@ class CatalystVectorAlpha:
         ]
 
         if not critical_events_to_analyze:
-            print("  No recent critical failure events found for analysis in the scanned window.")
+            logger.debug("No recent critical failure events found for analysis in the scanned window.")
             self._log_swarm_activity("CAUSAL_ANALYSIS_COMPLETE", "CatalystVectorAlpha",
                                     "Causal analysis finished: No critical events found.", {"analysis_summary": {}})
             return []
@@ -2619,14 +2619,14 @@ class CatalystVectorAlpha:
             cause_category = analysis["inferred_cause"].split(' ')[0]
             failure_patterns_summary[cause_category] = failure_patterns_summary.get(cause_category, 0) + 1
 
-        print(f"\n  Identified Failure Patterns Summary:")
+        logger.info(f"Identified Failure Patterns Summary:")
         for pattern, count in failure_patterns_summary.items():
-            print(f"    - '{pattern}': {count} occurrences.")
+            logger.debug(f"  - '{pattern}': {count} occurrences.")
 
         self._log_swarm_activity("CAUSAL_ANALYSIS_COMPLETE", "CatalystVectorAlpha",
                                 f"Causal analysis finished. Identified {len(failure_patterns_summary)} patterns.",
                                 {"analysis_patterns": failure_patterns_summary, "detailed_results_count": len(analysis_results)})
-        print("--- Causal Failure Analysis Complete ---\n")
+        logger.info("--- Causal Failure Analysis Complete ---")
         return analysis_results
 
     def _get_recent_log_entries(self, log_file, num_entries):
@@ -2639,9 +2639,9 @@ class CatalystVectorAlpha:
                 for line in lines[-num_entries:]:
                     entries.append(json.loads(line))
         except FileNotFoundError:
-            print(f"Log file not found: {log_file}")
+            logger.error(f"Log file not found: {log_file}")
         except json.JSONDecodeError as e:
-            print(f"Error decoding JSON from log file {log_file}: {e}")
+            logger.error(f"Error decoding JSON from log file {log_file}: {e}")
         return entries
 
     def pause_system_for_human_input(self, reason: str, urgency: str = "critical", source_agent: str = "System"):
@@ -2650,7 +2650,7 @@ class CatalystVectorAlpha:
         triggering the multi-phase human escalation protocol.
         This method is called by scenarios or other high-level system components.
         """
-        print(f"\n!!! ORCHESTRATOR INITIATING HUMAN INTERVENTION (Reason: {reason}, Urgency: {urgency.upper()}) !!!")
+        logger.warning(f"!!! ORCHESTRATOR INITIATING HUMAN INTERVENTION (Reason: {reason}, Urgency: {urgency.upper()}) !!!")
         
         # Inject a REQUEST_HUMAN_INPUT directive
         human_input_directive = {
@@ -2674,7 +2674,7 @@ class CatalystVectorAlpha:
         Randomly injects a system-level stimulus (event or command) to promote dynamism
         and potentially break behavioral deadlocks.
         """
-        print(f"\n--- Injecting Random System Stimulus (Cycle {current_cycle_id}) ---")
+        logger.info(f"--- Injecting Random System Stimulus (Cycle {current_cycle_id}) ---")
 
         stimulus_types = [
             "INJECT_EVENT",
@@ -2689,7 +2689,7 @@ class CatalystVectorAlpha:
 
         # If no agents are active, skip stimulus injection that requires targets
         if not all_active_agent_names and chosen_stimulus in ["INJECT_EVENT", "BROADCAST_COMMAND_TO_AGENT", "INITIATE_PLANNING_CYCLE_NEW_GOAL"]:
-            print(f"  [Stimulus] Skipped {chosen_stimulus}: No active agents to target.")
+            logger.debug(f"[Stimulus] Skipped {chosen_stimulus}: No active agents to target.")
             self._log_swarm_activity("RANDOM_STIMULUS_SKIPPED", "CatalystVectorAlpha",
                                      f"Random stimulus '{chosen_stimulus}' skipped: No active agents.",
                                      {"stimulus_type": chosen_stimulus, "cycle_id": current_cycle_id})
@@ -2720,7 +2720,7 @@ class CatalystVectorAlpha:
             payload = {'change_factor': normalized_change_factor, 'urgency': urgency, 'direction': direction}
             
             target_agents_for_directive = all_active_agent_names 
-            print(f"  [Stimulus] Injected {event_type} event targeting ALL active agents (Urgency: {urgency}, Change: {normalized_change_factor}, Direction: {direction}).")
+            logger.debug(f"[Stimulus] Injected {event_type} event targeting ALL active agents (Urgency: {urgency}, Change: {normalized_change_factor}, Direction: {direction}).")
 
             injected_directives.append({
                 "type": "INJECT_EVENT",
@@ -2742,7 +2742,7 @@ class CatalystVectorAlpha:
                 "command_params": command_params,
                 "cycle_id": current_cycle_id
             })
-            print(f"  [Stimulus] Commanded agent {target_agent_name} to {command_type}.")
+            logger.debug(f"[Stimulus] Commanded agent {target_agent_name} to {command_type}.")
 
         elif chosen_stimulus == "INITIATE_PLANNING_CYCLE_NEW_GOAL":
             if 'ProtoAgent_Planner_instance_1' in self.agent_instances:
@@ -2761,9 +2761,9 @@ class CatalystVectorAlpha:
                     "high_level_goal": chosen_goal,
                     "cycle_id": current_cycle_id
                 })
-                print(f"  [Stimulus] Assigned new planning goal to Planner: '{chosen_goal}'.")
+                logger.debug(f"[Stimulus] Assigned new planning goal to Planner: '{chosen_goal}'.")
             else:
-                print(f"  [Stimulus] Skipped INITIATE_PLANNING_CYCLE_NEW_GOAL: Planner not active.")
+                logger.debug(f"[Stimulus] Skipped INITIATE_PLANNING_CYCLE_NEW_GOAL: Planner not active.")
                 return
 
         if injected_directives:
@@ -2785,7 +2785,7 @@ class CatalystVectorAlpha:
 
         if not patterns_found:
             self._no_pattern_reports_count[agent_id] += 1
-            print(f"  Orchestrator: {agent_id} reported no new patterns for {self._no_pattern_reports_count[agent_id]} cycles.")
+            logger.debug(f"Orchestrator: {agent_id} reported no new patterns for {self._no_pattern_reports_count[agent_id]} cycles.")
         else:
             self._no_pattern_reports_count[agent_id] = 0 # Reset count if patterns are found
 
@@ -2796,7 +2796,7 @@ class CatalystVectorAlpha:
                                         if agent_name in self.agent_instances and count >= self.SWARM_RESET_THRESHOLD) # Only count active agents
 
             if stagnant_agents_count / len(self.agent_instances) >= self.NO_PATTERN_AGENT_THRESHOLD:
-                print("\n!!! Orchestrator: Detected swarm-wide cognitive stagnation. Initiating swarm reset. !!!")
+                logger.warning("!!! Orchestrator: Detected swarm-wide cognitive stagnation. Initiating swarm reset. !!!")
                 self._log_swarm_activity("SWARM_STAGNATION_DETECTED", "CatalystVectorAlpha",
                                          "Swarm-wide cognitive stagnation detected. Initiating reset.",
                                          {"stagnant_agents_count": stagnant_agents_count, "total_agents": len(self.agent_instances)})
@@ -2808,10 +2808,10 @@ class CatalystVectorAlpha:
         """
         Performs a swarm-wide reset to break stagnation.
         """
-        print("  Swarm Reset: Resetting memory contexts for all agents...")
+        logger.debug("Swarm Reset: Resetting memory contexts for all agents...")
         for agent in self.agent_instances.values():
             agent.memetic_kernel.clear_working_memory() # Each agent's kernel needs this method
-            print(f"    {agent.name} memory context reset.")
+            logger.debug(f"  {agent.name} memory context reset.")
         
         # You might also want to explicitly reset planner's current goal/state if it's stuck
         if 'ProtoAgent_Planner_instance_1' in self.agent_instances:
@@ -2819,10 +2819,10 @@ class CatalystVectorAlpha:
             if isinstance(planner, ProtoAgent_Planner):
                 planner.current_high_level_goal = None # Clear its current goal
                 planner.planning_failure_count = 0 # Reset planning failures
-                print(f"    Planner's current high-level goal and planning failures reset.")
+                logger.debug(f"  Planner's current high-level goal and planning failures reset.")
 
 
-        print("  Swarm Reset: Injecting diversification events...")
+        logger.debug("Swarm Reset: Injecting diversification events...")
         self.inject_diversification_events()
         self._log_swarm_activity("SWARM_RESET_EXECUTED", "CatalystVectorAlpha",
                                  "Swarm reset executed. Diversification events injected.")
@@ -2831,7 +2831,7 @@ class CatalystVectorAlpha:
         """
         Injects a series of events/directives as per the Emergency Recovery Protocol.
         """
-        print("\n--- EMERGENCY PROTOCOL: Injecting Specific Recovery Directives ---")
+        logger.critical("--- EMERGENCY PROTOCOL: Injecting Specific Recovery Directives ---")
 
         # Your specified new_directives, translated into ISL:
         recovery_directives = [
@@ -2925,7 +2925,7 @@ class CatalystVectorAlpha:
 
         # Final narrative construction and print
         final_narrative = f"My journey includes: {' '.join(narrative_parts)}"
-        print(f"  [Narrative] {self.name} distilled self-narrative: {final_narrative}")
+        logger.debug(f"[Narrative] {self.name} distilled self-narrative: {final_narrative}")
         return final_narrative
 
     def inject_event_to_agents(self, event_type: str, payload: dict, target_agents: Union[str, list]):
@@ -2933,7 +2933,7 @@ class CatalystVectorAlpha:
         Allows the scenario to inject an event to specific agents or all agents.
         """
         event_id = f"SCN-EVT-{int(time.time() * 1000)}_{random.randint(100, 999)}"
-        print(f"[SCENARIO] Injecting event '{event_type}' (ID: {event_id}) to {target_agents} agents.")
+        logger.info(f"[SCENARIO] Injecting event '{event_type}' (ID: {event_id}) to {target_agents} agents.")
         
         agents_to_target = []
         if target_agents == 'all':
@@ -2943,7 +2943,7 @@ class CatalystVectorAlpha:
                 if agent_name in self.agent_instances:
                     agents_to_target.append(self.agent_instances[agent_name])
                 else:
-                    print(f"Warning: Target agent '{agent_name}' not found for event injection.")
+                    logger.warning(f"Warning: Target agent '{agent_name}' not found for event injection.")
         
         for agent_instance in agents_to_target:
             agent_instance.receive_event({
@@ -2984,7 +2984,7 @@ class CatalystVectorAlpha:
             snapshot = list(self.dynamic_directive_queue)
             self.dynamic_directive_queue.clear()
 
-        print(f"--- Processing {len(snapshot)} Injected Directives ---")
+        logger.info(f"--- Processing {len(snapshot)} Injected Directives ---")
 
         actionable_directives = [
             task for task in snapshot if enforce_intent(task)
@@ -3023,7 +3023,7 @@ class CatalystVectorAlpha:
                 self._execute_single_directive(directive)
 
         if actionable_directives: # Only print if we actually did something
-            print("--- Directives Execution Complete ---")
+            logger.info("--- Directives Execution Complete ---")
             
     def _process_completed_user_commands(self):
         """
@@ -3103,7 +3103,7 @@ class CatalystVectorAlpha:
                         level='info'
                     )
                     
-                    print(f"[CatalystVectorAlpha] Sent response for user task: {completed_task['task_id']}")
+                    logger.info(f"[CatalystVectorAlpha] Sent response for user task: {completed_task['task_id']}")
                 
             except Exception as e:
                 # Handle errors in response generation
@@ -3340,7 +3340,7 @@ class CatalystVectorAlpha:
                 return "failed", f"normalization_error: {e}", {}, 0.0
 
         # Startup
-        print("Catalyst Vector Alpha - Autonomous Swarm Intelligence Starting...")
+        logger.info("Catalyst Vector Alpha - Autonomous Swarm Intelligence Starting...")
         self._log_swarm_activity(
             "SYSTEM_STARTUP", "CatalystVectorAlpha",
             "System initiated, starting cognitive loop.",
@@ -3354,10 +3354,10 @@ class CatalystVectorAlpha:
         try:
             self.load_or_create_swarm_state()
         except Exception as e:
-            print(f"Warning: State initialization issue: {e}")
+            logger.warning(f"Warning: State initialization issue: {e}")
             self.swarm_state = {"cycle_count": 0}
 
-        print("\n--- Entering Continuous Cognitive Loop ---")
+        logger.info("--- Entering Continuous Cognitive Loop ---")
         self.message_bus.catalyst_vector_ref = self
 
         loop_cycle_count = int(self.swarm_state.get("cycle_count", 0))
@@ -3386,12 +3386,12 @@ class CatalystVectorAlpha:
                 try:
                     self._process_intent_overrides()
                 except Exception as e:
-                    print(f"Warning: Intent override processing error: {e}")
+                    logger.warning(f"Warning: Intent override processing error: {e}")
                 
                 try:
                     self._process_dynamic_directives()
                 except Exception as e:
-                    print(f"Warning: Dynamic directive processing error: {e}")
+                    logger.warning(f"Warning: Dynamic directive processing error: {e}")
 
                 # Periodic cleanup of expired dynamic agents to prevent leaks
                 try:
@@ -3404,7 +3404,7 @@ class CatalystVectorAlpha:
                                 if not getattr(v, "is_expired", False)
                             }
                 except Exception as e:
-                    print(f"Warning: Dynamic agent cleanup error: {e}")
+                    logger.warning(f"Warning: Dynamic agent cleanup error: {e}")
 
                 # Process each agent
                 work_done_this_cycle = False
@@ -3413,7 +3413,7 @@ class CatalystVectorAlpha:
                     agent_snapshot = list(self.agent_instances.items())
 
                 for agent_name, agent in agent_snapshot:
-                    print(f"\nProcessing Agent: {agent_name}")
+                    logger.info(f"Processing Agent: {agent_name}")
                     
                     try:
                         # Skip paused agents
@@ -3459,7 +3459,7 @@ class CatalystVectorAlpha:
                         self._worker_threads.append({"thread": worker_thread, "agent": agent_name, "started_at": time.time()})
 
                         if not done_evt.wait(timeout=180):  # 180s per agent max
-                            print(f"  ⚠️  {agent_name}: TIMEOUT after 180s - marking as failed")
+                            logger.debug(f"⚠️  {agent_name}: TIMEOUT after 180s - marking as failed")
                             cancel_event.set()  # cooperative cancellation signal
                             if hasattr(agent, "mark_paused"):
                                 agent.mark_paused(reason="task_timeout")
@@ -3489,9 +3489,9 @@ class CatalystVectorAlpha:
                         
                         # Log the result
                         if outcome != "idle":
-                            print(f"  {agent_name}: {outcome} (progress: {progress:.1%})")
+                            logger.debug(f"{agent_name}: {outcome} (progress: {progress:.1%})")
                             if reason:
-                                print(f"    Reason: {reason}")
+                                logger.debug(f"  Reason: {reason}")
                         
                         # Determine if work was done
                         if outcome in ["completed", "success"]:
@@ -3526,7 +3526,7 @@ class CatalystVectorAlpha:
                                 self.external_log_sink.error(f"Guardian check failed: {e}")
 
                     except Exception as e:
-                        print(f"Error processing agent {agent_name}: {e}")
+                        logger.error(f"Error processing agent {agent_name}: {e}")
                         import traceback
                         traceback.print_exc()
 
@@ -3540,12 +3540,12 @@ class CatalystVectorAlpha:
                 # Handle idle cycles
                 if not work_done_this_cycle:
                     consecutive_idle_cycles += 1
-                    print(f"\n[IDLE CYCLE {consecutive_idle_cycles}]")
+                    logger.debug(f"[IDLE CYCLE {consecutive_idle_cycles}]")
                     
                     # EVENT-DRIVEN: Don't force work when idle
                     # Let the Planner's _should_be_idle() gate handle this
                     if consecutive_idle_cycles >= 10:
-                        print(f"  [Orchestrator] Extended idle ({consecutive_idle_cycles} cycles) - system healthy")
+                        logger.debug(f"[Orchestrator] Extended idle ({consecutive_idle_cycles} cycles) - system healthy")
                         consecutive_idle_cycles = 0  # Reset to avoid log spam
                 else:
                     consecutive_idle_cycles = 0
@@ -3555,22 +3555,22 @@ class CatalystVectorAlpha:
                     try:
                         self._save_system_state()
                     except Exception as e:
-                        print(f"Warning: State save failed: {e}")
+                        logger.warning(f"Warning: State save failed: {e}")
 
                 # Sleep before next cycle
                 time.sleep(tick_sleep)
 
             except KeyboardInterrupt:
-                print("\n[SHUTDOWN] Keyboard interrupt received")
+                logger.info("[SHUTDOWN] Keyboard interrupt received")
                 self.is_running = False
                 break
             except Exception as e:
-                print(f"ERROR in cognitive loop: {e}")
+                logger.error(f"ERROR in cognitive loop: {e}")
                 import traceback
                 traceback.print_exc()
                 time.sleep(tick_sleep)
 
-        print("\nCognitive loop terminated.")
+        logger.info("Cognitive loop terminated.")
 # --- Main Execution --
 
 if __name__ == "__main__":
@@ -3749,8 +3749,8 @@ if __name__ == "__main__":
     """)
     with open(ISL_SCHEMA_PATH, 'w') as f:
         f.write(isl_schema_content)
-    print(f"Successfully loaded ISL Schema: {ISL_SCHEMA_PATH}")
-    print("[IP-Integration] The Eidos Protocol System is initiating, demonstrating the Gemini™ wordmark in its functionality.")
+    logger.info(f"Successfully loaded ISL Schema: {ISL_SCHEMA_PATH}")
+    logger.info("[IP-Integration] The Eidos Protocol System is initiating, demonstrating the Gemini™ wordmark in its functionality.")
 
     # Initialize MessageBus and EventMonitor instances
     # These should be created once at the top level and passed to CatalystVectorAlpha
@@ -3818,7 +3818,7 @@ if __name__ == "__main__":
         logger=catalyst_alpha.external_log_sink
     )
     supervisor.run_supervised(tick_sleep=10)
-    print("\nCatalyst Vector Alpha (Phase 11) Execution Finished.")
+    logger.info("Catalyst Vector Alpha (Phase 11) Execution Finished.")
 
 
 
