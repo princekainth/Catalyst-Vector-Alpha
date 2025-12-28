@@ -8398,7 +8398,7 @@ Respond with valid JSON:
             self.external_log_sink.info(f"Plan '{self.last_plan_id}' has been successfully completed.", extra={"agent": self.name})
             self.last_plan_id = None
 
-    def _select_mission_with_learning(self, available_missions, epsilon=0.2):
+    def _select_mission_with_learning(self, available_missions, epsilon=0.05):
         """
         Select mission using epsilon-greedy: exploit best performers, explore alternatives.
         
@@ -8599,13 +8599,9 @@ Respond with valid JSON:
         }
         
         try:
-            # REDUCED: Lower trigger rates to 5% so learning system runs more often
-            import random
-            if random.random() < 0.05:  # 5% chance (was 30%)
-                context["high_cpu_usage"] = True
-            elif random.random() < 0.05:  # 5% chance (was 20%)
-                context["security_concerns"] = True
-                
+            # REMOVED: No more fake context injection
+            # Real context comes from actual system checks
+            pass
         except Exception as e:
             self._log_agent_activity("CONTEXT_ANALYSIS_ERROR", self.name, f"Error gathering system context: {e}")
         
