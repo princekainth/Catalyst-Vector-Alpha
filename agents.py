@@ -4090,7 +4090,8 @@ class ProtoAgent_Planner(ProtoAgent):
             "Self-evaluate tool accuracy",
             "Explore environment and map endpoints",
             "Refactor memory compression policy",
-            "Generate evaluation dataset for tools"
+            "Generate evaluation dataset for tools",
+            "Research and learn from web"
         ])
         self._mission_cooldown = {}
         self._mission_backoff = {}
@@ -4157,6 +4158,7 @@ class ProtoAgent_Planner(ProtoAgent):
             "establish a system for tracking": self._handle_establish_tracking_system,
             "develop analysis reporting protocols": self._handle_develop_analysis_reporting_protocols,
             "correlate swarm activity for emergent patterns": self._handle_correlate_swarm_activity,
+            "research and learn from web": self._handle_research_and_learn,
         }
 
     def _check_system_alerts(self) -> tuple[str, str, float]:
@@ -5203,6 +5205,83 @@ Respond with valid JSON:
 
         # nothing available
         return None
+
+    def _curiosity_research(self) -> dict:
+        """
+        CURIOSITY LOOP: Research what CVA could do better.
+        Searches web for improvements, gaps, new tools.
+        Stores findings in SharedMemory for future use.
+        """
+        import random
+        
+        research_topics = [
+            "kubernetes automation best practices 2024",
+            "AI agent self-improvement techniques",
+            "infrastructure monitoring tools comparison",
+            "autonomous remediation systems",
+            "SRE automation frameworks",
+            "observability platform features",
+            "chaos engineering automation",
+            "incident response automation tools",
+        ]
+        
+        topic = random.choice(research_topics)
+        print(f"  [Curiosity] 🔍 Researching: {topic}")
+        
+        try:
+            # Search web
+            if hasattr(self, 'tool_registry') and self.tool_registry:
+                result = self.tool_registry.safe_call('web_search', query=topic, max_results=3)
+                
+                if result.get('status') == 'ok':
+                    # Correct nested data extraction
+                    outer_data = result.get('data', {})
+                    inner_data = outer_data.get('data', {}) if isinstance(outer_data, dict) else {}
+                    results_list = inner_data.get('results', [])
+                    
+                    if results_list:
+                        # Read first article - note: 'href' not 'url'
+                        first_url = results_list[0].get('href', results_list[0].get('url', ''))
+                        title = results_list[0].get('title', '')[:50]
+                        print(f"  [Curiosity] 📖 Reading: {title}...")
+                        
+                        if first_url:
+                            read_result = self.tool_registry.safe_call('read_webpage', url=first_url)
+                            
+                            if read_result.get('status') == 'ok':
+                                read_data = read_result.get('data', {})
+                                inner_read = read_data.get('data', {}) if isinstance(read_data, dict) else {}
+                                article_content = inner_read.get('content', str(read_data))[:2000]
+                                
+                                # Store in memetic kernel
+                                if hasattr(self, 'memetic_kernel') and self.memetic_kernel:
+                                    try:
+                                        self.memetic_kernel.add_memory(
+                                            f"CuriosityResearch_{topic[:20]}",
+                                            f"Researched: {title}. Key insight: {article_content[:200]}..."
+                                        )
+                                    except Exception:
+                                        pass
+                                
+                                print(f"  [Curiosity] ✅ Learned: {title}")
+                                print(f"  [Curiosity] 💾 Stored in memory for future use")
+                                
+                                # Check if we found a gap/need
+                                gap_keywords = ["missing", "need", "should have", "lacking", "improve", "automate", "tool"]
+                                if any(kw in article_content.lower() for kw in gap_keywords):
+                                    print(f"  [Curiosity] 💡 Identified potential improvement area!")
+                                    if hasattr(self, '_log_agent_activity'):
+                                        self._log_agent_activity("CURIOSITY_GAP_FOUND", self.name,
+                                            f"Research found improvement area: {title}",
+                                            {"topic": topic, "url": first_url})
+                                
+                                return {"success": True, "topic": topic, "learned": title}
+            
+            return {"success": False, "reason": "no_results"}
+            
+        except Exception as e:
+            print(f"  [Curiosity] ❌ Research failed: {e}")
+            return {"success": False, "error": str(e)}
 
     def _mark_mission_success(self, mission: str) -> None:
         """
@@ -8606,6 +8685,29 @@ Respond in JSON:
                         "task_description": new_intent
                     }
                     self.orchestrator.inject_directives([new_directive])
+
+    def _handle_research_and_learn(self, **kwargs):
+        """
+        Handle the 'Research and learn from web' mission.
+        Triggers curiosity loop to search web and learn.
+        """
+        print(f"  [{self.name}] 🧠 Starting curiosity research cycle...")
+        result = self._curiosity_research()
+        
+        if result.get("success"):
+            return (
+                "completed",
+                None,
+                {"summary": f"Researched: {result.get('topic')}, Learned: {result.get('learned')}"},
+                1.0
+            )
+        else:
+            return (
+                "completed",
+                None,
+                {"summary": f"Research attempted: {result.get('reason', result.get('error', 'unknown'))}"},
+                0.5
+            )
 
     # In your agents.py file, inside the ProtoAgent_Planner class...
 
