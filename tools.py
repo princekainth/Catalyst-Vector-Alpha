@@ -1047,9 +1047,9 @@ def microsoft_autonomous_remediation(pod_name, namespace="default", recommended_
 
         # Early ImagePullBackOff/ErrImagePull handling before log capture
         try:
-            print(f"DEBUG: Checking for ImagePullBackOff - pod_json exists: {pod_json is not None}")
+            # print(f"DEBUG: Checking for ImagePullBackOff - pod_json exists: {pod_json is not None}")
             container_statuses = (pod_json.get("status", {}) or {}).get("containerStatuses", []) or []
-            print(f"DEBUG: container_statuses count: {len(container_statuses)}")
+            # print(f"DEBUG: container_statuses count: {len(container_statuses)}")
             waiting_status = None
             for cs in container_statuses:
                 waiting = (cs.get("state", {}) or {}).get("waiting") or {}
@@ -1162,8 +1162,8 @@ def microsoft_autonomous_remediation(pod_name, namespace="default", recommended_
                     }
 
                 try:
-                    print(f"DEBUG: ImagePullBackOff early handler - parsed: {parsed}")
-                    print(f"DEBUG: recommended_actions: {parsed.get('recommended_actions', [])}")
+                    # print(f"DEBUG: ImagePullBackOff early handler - parsed: {parsed}")
+                    # print(f"DEBUG: recommended_actions: {parsed.get('recommended_actions', [])}")
                     for action in parsed.get("recommended_actions", []) or []:
                         if action.get("action") in ["update_image", "update_image_url", "update_reference"]:
                             new_image = action.get("image") or action.get("new_url") or action.get("target")
@@ -1567,8 +1567,8 @@ def microsoft_autonomous_remediation(pod_name, namespace="default", recommended_
 
                 # Derive expected keys from pod/deployment spec references (env, envFrom, volumes)
                 dep_name = locals().get("dep_name")
-                print(f"DEBUG: missing_name={missing_name}, missing_type={missing_type}")
-                print(f"DEBUG: dep_name={dep_name}, owner_name={owner_name}, owner_kind={owner_kind}")
+                # print(f"DEBUG: missing_name={missing_name}, missing_type={missing_type}")
+                # print(f"DEBUG: dep_name={dep_name}, owner_name={owner_name}, owner_kind={owner_kind}")
                 expected_keys = set()
                 try:
                     def _collect_keys_from_spec(spec_obj):
@@ -1604,7 +1604,7 @@ def microsoft_autonomous_remediation(pod_name, namespace="default", recommended_
 
                     spec = (pod_status_json.get("spec", {}) or {})
                     _collect_keys_from_spec(spec)
-                    print(f"DEBUG: expected_keys after pod spec: {expected_keys}")
+                    # print(f"DEBUG: expected_keys after pod spec: {expected_keys}")
 
                     # If still empty, try deployment template spec
                     if not expected_keys and dep_name:
@@ -1616,7 +1616,7 @@ def microsoft_autonomous_remediation(pod_name, namespace="default", recommended_
                         dep_obj = _safe_json(["kubectl", "get", "deploy", owner_name, "-n", namespace, "-o", "json"])
                         tpl_spec = (((dep_obj or {}).get("spec") or {}).get("template") or {}).get("spec") or {}
                         _collect_keys_from_spec(tpl_spec)
-                    print(f"DEBUG: expected_keys after deployment spec: {expected_keys}")
+                    # print(f"DEBUG: expected_keys after deployment spec: {expected_keys}")
 
                     # Fallback: parse error message for missing key hints
                     if not expected_keys and err_msg:
@@ -1637,7 +1637,7 @@ def microsoft_autonomous_remediation(pod_name, namespace="default", recommended_
                         expected_keys.add("data")
                 except Exception as e:
                     import traceback
-                    print(f"DEBUG: Exception in key extraction: {e}\\n{traceback.format_exc()}")
+                    # print(f"DEBUG: Exception in key extraction: {e}\\n{traceback.format_exc()}")
                     expected_keys = {"data"}
 
                 def _default_value_for_key(key_name: str) -> str:
