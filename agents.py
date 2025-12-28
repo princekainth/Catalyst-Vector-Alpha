@@ -1701,7 +1701,7 @@ class ProtoAgent(ABC):
                 f"Task '{final_task_description}' {outcome} in {execution_time:.2f}s.",
                 {"task_id": task_id, "outcome": outcome, "execution_time": execution_time,
                 "task_type": kwargs.get("task_type", "GenericTask")},
-                level="info" if outcome == "completed" else "error"
+                level="info" if outcome in ("completed", "idle") else "error"
             )
 
             # notify reporters
