@@ -567,6 +567,14 @@ async def _dispatch_plan_steps_async(self, plan: dict, goal_str: str) -> int:
         agent_field = s.get("agent") or s.get("agent_name")
         tool_field  = s.get("tool")  or s.get("tool_name")
         args_field  = s.get("args")  or s.get("tool_args")
+        # === VALIDATE ARGS AGAINST TOOL SCHEMA ===
+        if tool_field and hasattr(self, 'tool_registry') and self.tool_registry:
+            if not self.tool_registry.validate_args(tool_field, args_field or {}):
+                print(f"  [DISPATCH] ⚠️ Skipping step {i}: invalid args for tool '{tool_field}' - {args_field}")
+                self._log_agent_activity("PLAN_STEP_SKIPPED", self.name,
+                    {"step": i, "tool": tool_field, "reason": "invalid_args", "args": args_field})
+                continue
+        # === END VALIDATION ===
 
         directive = {
             "id": f"dir-{uuid.uuid4()}",

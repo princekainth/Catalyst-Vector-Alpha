@@ -1464,11 +1464,12 @@ class ProtoAgent(ABC):
                     avg_success_time = sum(t['execution_time_seconds'] for t in successful_tasks) / len(successful_tasks)
                     memory_context += f"\n✓ SUCCESS PATTERN: You've completed {len(successful_tasks)} similar tasks successfully (avg {avg_success_time:.1f}s)\n"
                 
-                # Inject memory context into task description for LLM awareness
-                final_task_description = memory_context + "\n" + final_task_description
+                # Store memory context for LLM reasoning (don't pollute task description)
+                self._current_memory_context = memory_context
                 print(f"[{self.name}] Consulted memory: {len(similar_tasks)} similar tasks found")
         except Exception as e:
             print(f"[DEBUG] Memory consultation failed for {self.name}: {e}")
+            self._current_memory_context = ""
 
         # K8S MONITORING - Run for Observer before task execution
         if self.name and "Observer" in self.name:
