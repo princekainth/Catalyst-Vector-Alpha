@@ -1385,7 +1385,7 @@ def microsoft_autonomous_remediation(pod_name, namespace="default", recommended_
                             break
                 except Exception:
                     pass
-                print(f"DEBUG CrashLoop: dep_name={dep_name}, pod={pod_name}")
+                # print(f"DEBUG CrashLoop: dep_name={dep_name}, pod={pod_name}")
                 logs_excerpt = ""
                 try:
                     logs_excerpt = subprocess.check_output(
