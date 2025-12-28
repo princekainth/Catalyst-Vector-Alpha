@@ -3814,7 +3814,7 @@ if __name__ == "__main__":
     # Start the continuous cognitive loop with supervisor protection
     supervisor = CognitiveSupervisor(
         cva_instance=catalyst_alpha,
-        database=catalyst_alpha.cva_db,
+        database=catalyst_alpha.db,
         logger=catalyst_alpha.external_log_sink
     )
     supervisor.run_supervised(tick_sleep=10)

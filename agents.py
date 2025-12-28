@@ -3756,7 +3756,7 @@ class ProtoAgent_Collector(ProtoAgent):
             report_content_dict["error"] = failure_reason
 
         if hasattr(self.message_bus, 'catalyst_vector_ref') and self.message_bus.catalyst_vector_ref:
-            log_level = 'info' if outcome == 'completed' else 'error'
+            log_level = 'info' if outcome in ('completed', 'idle') else 'error'
             self.message_bus.catalyst_vector_ref._log_swarm_activity("AGENT_TASK_PERFORMED", self.name,
                 f"Task '{task_description}' completed with outcome: {outcome}.",
                 {"agent": self.name, "task": task_description, "outcome": outcome, "details": report_content_dict}, level=log_level)
@@ -3971,7 +3971,7 @@ class ProtoAgent_Optimizer(ProtoAgent):
         if failure_reason:
             report_content_dict["error"] = failure_reason
         
-        log_level = 'info' if outcome == 'completed' else 'error'
+        log_level = 'info' if outcome in ('completed', 'idle') else 'error'
         if hasattr(self, 'external_log_sink'):
             log_method = getattr(self.external_log_sink, log_level)
             log_method(
