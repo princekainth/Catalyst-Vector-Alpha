@@ -570,7 +570,7 @@ class ProtoAgent(ABC):
         self.stagnation_adaptation_attempts += 1
         
         if self.stagnation_adaptation_attempts >= 3:
-            print(f"  [{self.name}] Stagnation at {self.stagnation_adaptation_attempts} attempts. Requesting new task from Planner.")
+            self.external_log_sink.info(f"[{self.name}] Stagnation at {self.stagnation_adaptation_attempts} attempts. Requesting new task from Planner.")
             
             self.message_bus.send_message(
                 self.name,                                                      
@@ -639,7 +639,7 @@ class ProtoAgent(ABC):
         This is the agent's last resort before escalating to human intervention.
         It involves a more drastic internal reset and a final attempt at a new strategy.
         """
-        print(f"\n!!! {self.name} INITIATING CRITICAL AUTONOMOUS OVERRIDE PROTOCOL !!!")
+        self.external_log_sink.critical(f"!!! {self.name} INITIATING CRITICAL AUTONOMOUS OVERRIDE PROTOCOL !!!")
         self._log_agent_activity("CRITICAL_AUTONOMOUS_OVERRIDE_INITIATED", self.name,
             "Agent initiating critical autonomous override protocol (last resort before human escalation).",
             {"current_intent": self.current_intent, "stagnation_attempts": self.stagnation_adaptation_attempts},
@@ -649,7 +649,7 @@ class ProtoAgent(ABC):
         # 1. Drastically clear most of the working memory to force a completely fresh perspective
         self.memetic_kernel.memories.clear()
         self.memetic_kernel.compressed_memories.clear()
-        print(f"  [Critical Override] Cleared ALL recent and compressed memories.")
+        self.external_log_sink.warning(f"[Critical Override] Cleared ALL recent and compressed memories.")
         self.memetic_kernel.add_memory("FullMemoryPurge", "Cleared all memories during critical autonomous override.")
 
         # 2. Reset all critical internal counters
@@ -693,7 +693,7 @@ class ProtoAgent(ABC):
                  "new_intent": new_intent_from_llm,
                  "protocol": "Critical-Autonomous-Override-LLM-Driven"}
             )
-            print(f"[Critical Override] {self.name} adopted LLM-brainstormed critical override intent: {new_intent_from_llm}")
+            self.external_log_sink.warning(f"[Critical Override] {self.name} adopted LLM-brainstormed critical override intent: {new_intent_from_llm}")
             # This counts as a successful adaptation for this cycle
             self._log_agent_activity("CRITICAL_OVERRIDE_COMPLETED", self.name,
                 f"Agent completed critical autonomous override protocol.",
@@ -702,7 +702,7 @@ class ProtoAgent(ABC):
             )
             return True # Indicate that a critical override was performed
         else:
-            print(f"  [Critical Override Warning] LLM brainstorm for critical override failed for {self.name}. Proceeding to human escalation.")
+            self.external_log_sink.warning(f"[Critical Override Warning] LLM brainstorm for critical override failed for {self.name}. Proceeding to human escalation.")
             self.memetic_kernel.add_memory("IntentAdaptation_CriticalOverrideFailed", "LLM critical override brainstorm failed.", related_event_id=None)
             # This does NOT count as a successful override, so it will fall through to human escalation
             self._log_agent_activity("CRITICAL_OVERRIDE_FAILED", self.name,
@@ -726,7 +726,7 @@ class ProtoAgent(ABC):
                 return True
             return False
         except Exception as e:
-            print(f"  [Agent Error] Could not check system resources: {e}")
+            self.external_log_sink.error(f"[Agent Error] Could not check system resources: {e}")
             return False # Default to false if the check fails for any reason
 
     def _generate_reasoning_log(self, action_description: str, context_memories: list):
@@ -753,9 +753,9 @@ class ProtoAgent(ABC):
                 "action": action_description,
                 "justification": reasoning
             })
-            print(f"  [Agent Reasoning] {self.name}: {reasoning}")
+            self.external_log_sink.debug(f"[Agent Reasoning] {self.name}: {reasoning}")
         except Exception as e:
-            print(f"  [Agent Reasoning] Error generating reasoning log: {e}")
+            self.external_log_sink.debug(f"[Agent Reasoning] Error generating reasoning log: {e}")
 
     def _generate_reflection_narrative(self, raw_memories_for_cycle: collections.deque) -> str:
         """
@@ -825,7 +825,7 @@ class ProtoAgent(ABC):
         potential_peers = [agent for agent in all_agents.values() if agent.name != self.name]
 
         if not potential_peers:
-            print(f"  [Stagnation Tier 2] No peers available for assistance.")
+            self.external_log_sink.warning(f"[Stagnation Tier 2] No peers available for assistance.")
             return
 
         # Prioritize asking the Planner if it's not me
@@ -846,7 +846,7 @@ class ProtoAgent(ABC):
     # --- NEW: Helper method for Tier 3 Stagnation ---
     def _request_intent_override(self):
         """Tier 3 Stagnation: Uses the LLM to brainstorm a new intent and requests the Planner to assign it."""
-        print(f"  [Stagnation Tier 3] {self.name} is requesting a full intent override from the Planner.")
+        self.external_log_sink.warning(f"[Stagnation Tier 3] {self.name} is requesting a full intent override from the Planner.")
         self._log_agent_activity("STAGNATION_TIER_3_INTENT_OVERRIDE", self.name,
                                 "Requesting an intent override from the Planner as a last resort.",
                                 {"stagnation_attempts": self.stagnation_adaptation_attempts})
@@ -867,7 +867,7 @@ class ProtoAgent(ABC):
                 }
             )
         else:
-            print(f"  [Stagnation Tier 3] LLM failed to brainstorm a new intent. Escalation will continue.")
+            self.external_log_sink.warning(f"[Stagnation Tier 3] LLM failed to brainstorm a new intent. Escalation will continue.")
 
     def _initialize_sovereign_gradient(self, sovereign_gradient_input):
         """Initializes the Sovereign Gradient for the agent."""
@@ -961,7 +961,7 @@ class ProtoAgent(ABC):
         tasks_list = self._parse_llm_task_list(self_repair_tasks_str)
         
         if tasks_list:
-            print(f"  [{self.name}] LLM generated {len(tasks_list)} self-repair tasks. Injecting directives...")
+            self.external_log_sink.info(f"[{self.name}] LLM generated {len(tasks_list)} self-repair tasks. Injecting directives...")
             directives_to_inject = []
             new_plan_id = f"self_repair_plan_{datetime.now().strftime('%Y-%m-%d-%H%M%S')}"
             self.last_plan_id = new_plan_id
@@ -997,7 +997,7 @@ class ProtoAgent(ABC):
                         "old_intent": self.current_intent,
                         "new_intent": new_intent}
              )
-            print(f"  [{self.name}] Self-repair initiated. New intent: '{new_intent}'")
+            self.external_log_sink.info(f"[{self.name}] Self-repair initiated. New intent: '{new_intent}'")
         else:
             self._log_agent_activity("SELF_REPAIR_FAILED", self.name, "LLM failed to generate any parseable self-repair tasks.", level='error')
             reset_intent = self.eidos_spec.get('initial_intent', 'Monitor primary operational parameters.')
@@ -1064,7 +1064,7 @@ class ProtoAgent(ABC):
             if plan_id_in_report == self.last_plan_id and task_desc in self.active_plan_directives and self.active_plan_directives[task_desc] == "pending":
                 if task_status == "completed":
                     self.active_plan_directives[task_desc] = "completed"
-                    print(f"  [{self.name}] Task '{task_desc}' from plan '{self.last_plan_id}' marked as completed.")
+                    self.external_log_sink.info(f"[{self.name}] Task '{task_desc}' from plan '{self.last_plan_id}' marked as completed.")
                     try:
                         from database import cva_db
                         from datetime import datetime, timezone
@@ -1078,10 +1078,10 @@ class ProtoAgent(ABC):
                             execution_time=0
                         )
                     except Exception as e:
-                        print(f"[DEBUG] Failed to record task: {e}")
+                        self.external_log_sink.debug(f"[DEBUG] Failed to record task: {e}")
                 else:
                     # If any task fails, the plan is considered failed.
-                    print(f"  [{self.name}] Task '{task_desc}' from plan '{self.last_plan_id}' FAILED. Aborting plan.")
+                    self.external_log_sink.info(f"[{self.name}] Task '{task_desc}' from plan '{self.last_plan_id}' FAILED. Aborting plan.")
                     try:
                         from database import cva_db
                         from datetime import datetime, timezone
@@ -1095,7 +1095,7 @@ class ProtoAgent(ABC):
                             execution_time=0
                         )
                     except Exception as e:
-                        print(f"[DEBUG] Failed to record task: {e}")
+                        self.external_log_sink.debug(f"[DEBUG] Failed to record task: {e}")
                     self.reset_after_plan_failure()
 
     def reset_after_plan_success(self):
@@ -1195,7 +1195,7 @@ class ProtoAgent(ABC):
                         relevant_memories_for_eval.append(m)
                 except ValueError:
                     # Handle cases where timestamp might be malformed if any exist
-                    print(f"  [Memory Parse Error] Could not parse timestamp: {mem_timestamp_str}")
+                    self.external_log_sink.warning(f"[Memory Parse Error] Could not parse timestamp: {mem_timestamp_str}")
                     continue
         
         # Sort by timestamp to process chronologically if needed (optional, but good practice)
@@ -1213,26 +1213,26 @@ class ProtoAgent(ABC):
                 if "investigate" not in task_description_lower and \
                    "diagnostic" not in task_description_lower and \
                    "self-assessment" not in task_description_lower: # Added self-assessment
-                    print(f"  [Cycle Success] Detected successful *productive* task outcome: '{mem_content.get('task')}'")
+                    self.external_log_sink.debug(f"[Cycle Success] Detected successful *productive* task outcome: '{mem_content.get('task')}'")
                     self._log_agent_activity("CYCLE_SUCCESS_TASK", self.name, "Successful productive task outcome detected.", {"task": mem_content.get('task')}, level='debug')
                     return True
 
             # Criteria 2: Successful Intent Adaptation (specifically from LLM brainstorming)
             # This should also cover the new Self-Repair LLM adaptation.
             if mem_type == 'IntentAdaptation' and "LLM-brainstormed" in mem_content.get('summary', ''):
-                print(f"  [Cycle Success] Detected successful LLM-driven intent adaptation: '{mem_content.get('new_intent')}'")
+                self.external_log_sink.debug(f"[Cycle Success] Detected successful LLM-driven intent adaptation: '{mem_content.get('new_intent')}'")
                 self._log_agent_activity("CYCLE_SUCCESS_ADAPTATION", self.name, "Successful LLM-driven adaptation detected.", {"new_intent": mem_content.get('new_intent')}, level='debug')
                 return True
             
             # Criteria for LLM-driven Self-Repair Adaptation
             if mem_type == 'IntentAdaptation_SelfRepair' and "LLM-brainstormed" in mem_content.get('summary', ''):
-                print(f"  [Cycle Success] Detected successful LLM-driven Self-Repair adaptation: '{mem_content.get('new_intent')}'")
+                self.external_log_sink.debug(f"[Cycle Success] Detected successful LLM-driven Self-Repair adaptation: '{mem_content.get('new_intent')}'")
                 self._log_agent_activity("CYCLE_SUCCESS_SELF_REPAIR_ADAPTATION", self.name, "Successful LLM-driven Self-Repair adaptation detected.", {"new_intent": mem_content.get('new_intent')}, level='debug')
                 return True
 
             # Criteria 3: Successful Tool Use (tool proposed and executed without failure)
             if mem_type == 'AdaptiveToolUse' and "Successfully used tool" in mem_content.get('summary', ''):
-                print(f"  [Cycle Success] Detected successful tool use: '{mem_content.get('tool_name')}'")
+                self.external_log_sink.debug(f"[Cycle Success] Detected successful tool use: '{mem_content.get('tool_name')}'")
                 self._log_agent_activity("CYCLE_SUCCESS_TOOL_USE", self.name, "Successful tool use detected.", {"tool": mem_content.get('tool_name')}, level='debug')
                 return True
 
@@ -1245,11 +1245,11 @@ class ProtoAgent(ABC):
                        "successful" in pattern.lower() or \
                        "breakthrough" in pattern.lower() or \
                        "resolved" in pattern.lower()): # Added 'resolved'
-                        print(f"  [Cycle Success] Detected positive pattern insight: '{pattern[:50]}...'")
+                        self.external_log_sink.debug(f"[Cycle Success] Detected positive pattern insight: '{pattern[:50]}...'")
                         self._log_agent_activity("CYCLE_SUCCESS_PATTERN", self.name, "Positive pattern insight detected.", {"pattern_preview": pattern[:50]}, level='debug')
                         return True
         
-        print(f"  [Cycle Success] No significant progress detected in last {lookback_cycles} cycles.")
+        self.external_log_sink.debug(f"[Cycle Success] No significant progress detected in last {lookback_cycles} cycles.")
         return False # No success criteria met in recent memories
 
 
@@ -1304,8 +1304,8 @@ class ProtoAgent(ABC):
 
             # MemeticKernel.add_memory is okay for new agent.
             self.memetic_kernel.add_memory("Activation", f"Activated in {self.location}.")
-            print(f"[Agent] '{self.name}' declared. Initial Current Intent: '{self.current_intent}'")
-            print(f"[Agent] '{self.name}' is now Active in {self.location}.")
+            self.external_log_sink.info(f"[Agent] '{self.name}' declared. Initial Current Intent: '{self.current_intent}'")
+            self.external_log_sink.info(f"[Agent] '{self.name}' is now Active in {self.location}.")
             self._log_agent_activity(
                 "AGENT_ACTIVATED", self.name,
                 f"Agent '{self.name}' activated.",
@@ -1470,9 +1470,9 @@ class ProtoAgent(ABC):
 
                     # Store memory context for LLM reasoning (don't pollute task description)
                     self._current_memory_context = memory_context
-                    print(f"[{self.name}] Consulted memory: {len(similar_tasks)} similar tasks found")
+                    self.external_log_sink.info(f"[{self.name}] Consulted memory: {len(similar_tasks)} similar tasks found")
             except Exception as e:
-                print(f"[DEBUG] Memory consultation failed for {self.name}: {e}")
+                self.external_log_sink.debug(f"[DEBUG] Memory consultation failed for {self.name}: {e}")
                 self._current_memory_context = ""
 
         # K8S MONITORING - Run for Observer before task execution
@@ -1491,7 +1491,7 @@ class ProtoAgent(ABC):
                     payload = _k8s_result.get("data", _k8s_result) if isinstance(_k8s_result, dict) else {}
                     _crit = payload.get("critical_count", 0)
                     if _crit > 0:
-                        print(f"[Observer] 🚨 K8S ALERT: {_crit} critical events detected!")
+                        self.external_log_sink.info(f"[Observer] 🚨 K8S ALERT: {_crit} critical events detected!")
                         self._prune_remediation_cache()
                         
                         # === SCALABLE REMEDIATION - Dedupe by pod, prioritize by severity ===
@@ -1520,21 +1520,21 @@ class ProtoAgent(ABC):
                         
                         for key, (event, severity) in sorted_pods:
                             if processed >= max_per_cycle:
-                                print(f"[Observer] Rate limit: {len(sorted_pods) - processed} pods deferred to next cycle")
+                                self.external_log_sink.info(f"[Observer] Rate limit: {len(sorted_pods) - processed} pods deferred to next cycle")
                                 break
                             namespace = event.get("namespace")
                             pod_name = event.get("name")
                             
                             if any(pat in pod_name for pat in self._ignore_patterns):
-                                print(f"[Observer] Skipping remediation (ignore pattern) for {namespace}/{pod_name}")
+                                self.external_log_sink.info(f"[Observer] Skipping remediation (ignore pattern) for {namespace}/{pod_name}")
                                 self._increment_remediation_metric("ignore_skips")
                                 continue
                             if self._recently_remediated(namespace, pod_name):
-                                print(f"[Observer] Skipping remediation (recent) for {namespace}/{pod_name}")
+                                self.external_log_sink.info(f"[Observer] Skipping remediation (recent) for {namespace}/{pod_name}")
                                 self._increment_remediation_metric("dedupe_skips")
                                 continue
                             if self._remediation_already_queued(namespace, pod_name):
-                                print(f"[Observer] Skipping remediation (already queued) for {namespace}/{pod_name}")
+                                self.external_log_sink.info(f"[Observer] Skipping remediation (already queued) for {namespace}/{pod_name}")
                                 self._increment_remediation_metric("queue_skips")
                                 continue
                                 
@@ -1543,16 +1543,16 @@ class ProtoAgent(ABC):
                                 import subprocess
                                 result = subprocess.run(["kubectl", "get", "pod", pod_name, "-n", namespace], capture_output=True, text=True)
                                 if result.returncode != 0:
-                                    print(f"[Observer] Skipping remediation (pod gone) for {namespace}/{pod_name}")
+                                    self.external_log_sink.info(f"[Observer] Skipping remediation (pod gone) for {namespace}/{pod_name}")
                                     self._increment_remediation_metric("not_found_skips")
                                     continue
                             except Exception:
                                 pass
                             # K8sStudent handles this now - skip Observer remediation
                             if getattr(self, "_k8s_student_active", True):
-                                print(f"[Observer] K8s delegated to K8sStudent - skipping {namespace}/{pod_name}")
+                                self.external_log_sink.info(f"[Observer] K8s delegated to K8sStudent - skipping {namespace}/{pod_name}")
                                 continue
-                            print(f"[Observer] AUTO-REMEDIATING [{severity}]: {namespace}/{pod_name} (reason: {event.get('reason')})")
+                            self.external_log_sink.info(f"[Observer] AUTO-REMEDIATING [{severity}]: {namespace}/{pod_name} (reason: {event.get('reason')})")
                             try:
                                 planner_name = "ProtoAgent_Planner_instance_1"
                                 goal = (
@@ -1573,12 +1573,12 @@ class ProtoAgent(ABC):
                                     self.message_bus.catalyst_vector_ref.inject_directives([directive])
                                 else:
                                     raise RuntimeError("No orchestrator/message_bus to inject directive")
-                                print(f"[Observer] Remediation mission injected for {namespace}/{pod_name}")
+                                self.external_log_sink.info(f"[Observer] Remediation mission injected for {namespace}/{pod_name}")
                                 self._mark_remediated(namespace, pod_name)
                                 self._increment_remediation_metric("remediation_success")
                                 processed += 1
                             except Exception as e:
-                                print(f"[Observer] Remediation mission injection failed for {namespace}/{pod_name}: {e}")
+                                self.external_log_sink.info(f"[Observer] Remediation mission injection failed for {namespace}/{pod_name}: {e}")
                                 self._increment_remediation_metric("remediation_failure")
                     # Fallback: inspect pod status for failures/crashloops (rate-limited)
                     if _registry.has_tool("get_pod_status") and self._can_run_pod_fallback():
@@ -1599,25 +1599,25 @@ class ProtoAgent(ABC):
                                 bad_phase = phase in {"failed", "error", "crashloopbackoff"}
                                 bad_issue = any(x in bad_issue_set for x in issues)
                                 if restarts > 10:
-                                    print(f"[Observer] Skipping {ns}/{name} due to high restarts ({restarts})")
+                                    self.external_log_sink.info(f"[Observer] Skipping {ns}/{name} due to high restarts ({restarts})")
                                     continue
                                 if ns and name and (bad_phase or bad_issue):
                                     if self._recently_remediated(ns, name):
-                                        print(f"[Observer] Skipping remediation (recent) for {ns}/{name}")
+                                        self.external_log_sink.info(f"[Observer] Skipping remediation (recent) for {ns}/{name}")
                                         self._increment_remediation_metric("dedupe_skips")
                                         continue
                                     # K8sStudent handles this
                                     if getattr(self, "_k8s_student_active", True):
-                                        print(f"[Observer] K8s delegated to K8sStudent - skipping {ns}/{name}")
+                                        self.external_log_sink.info(f"[Observer] K8s delegated to K8sStudent - skipping {ns}/{name}")
                                         continue
-                                    print(f"[Observer] AUTO-REMEDIATING pod failure: {ns}/{name} phase={phase} issues={issues}")
+                                    self.external_log_sink.info(f"[Observer] AUTO-REMEDIATING pod failure: {ns}/{name} phase={phase} issues={issues}")
                                     try:
                                         res = _registry.safe_call(
                                             "microsoft_autonomous_remediation",
                                             namespace=ns,
                                             pod_name=name
                                         )
-                                        print(f"[Observer] Remediation result: {res}")
+                                        self.external_log_sink.info(f"[Observer] Remediation result: {res}")
                                         self._mark_remediated(ns, name)
                                         self._increment_remediation_metric("remediation_success")
                                         if _registry.has_tool("send_desktop_notification"):
@@ -1630,13 +1630,13 @@ class ProtoAgent(ABC):
                                             except Exception:
                                                 pass
                                     except Exception as e:
-                                        print(f"[Observer] Remediation failed for {ns}/{name}: {e}")
+                                        self.external_log_sink.info(f"[Observer] Remediation failed for {ns}/{name}: {e}")
                                         self._increment_remediation_metric("remediation_failure")
             # Predictive guard: detect rising memory usage and preemptively request resources
             try:
                 self._predictive_memory_guard(_registry)
             except Exception as e:
-                print(f"[Observer] Predictive guard error: {e}")
+                self.external_log_sink.info(f"[Observer] Predictive guard error: {e}")
 
         # execute
         try:
@@ -1736,7 +1736,7 @@ class ProtoAgent(ABC):
                     metadata={"progress": progress, "cycle_id": cycle_id}
                 )
             except Exception as e:
-                print(f"[DEBUG] Failed to record task {task_id}: {e}")
+                self.external_log_sink.debug(f"[DEBUG] Failed to record task {task_id}: {e}")
 
             # Save agent state
             try:
@@ -1748,7 +1748,7 @@ class ProtoAgent(ABC):
                 }
                 cva_db.save_agent_state(self.name, agent_state)
             except Exception as e:
-                print(f"[DEBUG] Failed to save agent state for {self.name}: {e}")
+                self.external_log_sink.debug(f"[DEBUG] Failed to save agent state for {self.name}: {e}")
 
             # Record metrics (right before final return)
             try:
@@ -1805,7 +1805,7 @@ class ProtoAgent(ABC):
         return "completed", None, report_content, 1.0 # outcome, failure_reason, report, progress
 
     def receive_event(self, event: dict):
-        print(f"  [{self.name}] Perceived event: {event.get('type')}, Urgency: {event.get('payload', {}).get('urgency')}, Change: {event.get('payload', {}).get('change_factor')}, Direction: {event.get('payload', {}).get('direction')}")
+        self.external_log_sink.info(f"[{self.name}] Perceived event: {event.get('type')}, Urgency: {event.get('payload', {}).get('urgency')}, Change: {event.get('payload', {}).get('change_factor')}, Direction: {event.get('payload', {}).get('direction')}")
 
         if self.event_monitor:
             self.event_monitor.log_agent_response(
@@ -1883,7 +1883,7 @@ class ProtoAgent(ABC):
             if self.current_intent != new_intent:
                 self.update_intent(new_intent)
                 self.memetic_kernel.add_memory("ResourceWarning", f"High resource usage: CPU {cpu_usage}%, Memory {memory_usage}%")
-                print(f"[Warning] {self.name} detected high resource usage, changed intent to: {new_intent}")
+                self.external_log_sink.warning(f"[Warning] {self.name} detected high resource usage, changed intent to: {new_intent}")
                 return True
         return False
 
@@ -1893,7 +1893,7 @@ class ProtoAgent(ABC):
         and potentially pausing the system if human intervention is critical.
         This method is called when an agent has exhausted its autonomous adaptation attempts.
         """
-        print(f"\n!!! {self.name} TRIGGERING ESCALATION PROTOCOL (Stagnation Break) !!!")
+        self.external_log_sink.critical(f"!!! {self.name} TRIGGERING ESCALATION PROTOCOL (Stagnation Break) !!!")
         
         # Log the escalation
         self._log_agent_activity("ESCALATION_PROTOCOL_TRIGGERED", self.name,
@@ -1911,7 +1911,7 @@ class ProtoAgent(ABC):
                 source_agent=self.name
             )
         else:
-            print(f"  [{self.name}] ERROR: Cannot trigger escalation. Orchestrator reference not available.")
+            self.external_log_sink.info(f"[{self.name}] ERROR: Cannot trigger escalation. Orchestrator reference not available.")
             self.memetic_kernel.add_memory("SystemError", "Orchestrator not available for escalation.", {"agent": self.name})
 
     def _check_for_system_patterns(self):
@@ -1919,7 +1919,7 @@ class ProtoAgent(ABC):
                     if m.get('type') == 'PatternInsight']
 
         if patterns:
-            print(f"  [Pattern Detection] Reviewing {len(patterns)} recent patterns.")
+            self.external_log_sink.debug(f"[Pattern Detection] Reviewing {len(patterns)} recent patterns.")
             return patterns
         return []
 
@@ -1967,11 +1967,11 @@ class ProtoAgent(ABC):
             tool_instance = self.tool_registry.get_tool(tool_name)
             if not tool_instance:
                 error_msg = f"Attempted to execute unknown tool: '{tool_name}'."
-                print(f"  [Tool EXEC ERROR] {self.name}: {error_msg}")
+                self.external_log_sink.debug(f"[Tool EXEC ERROR] {self.name}: {error_msg}")
                 self.memetic_kernel.add_memory("ToolExecutionError", error_msg, {"tool_name": tool_name, "tool_args": tool_args})
                 return error_msg
 
-            print(f"  [Tool EXEC] {self.name} executing tool '{tool_name}' with args: {tool_args}")
+            self.external_log_sink.debug(f"[Tool EXEC] {self.name} executing tool '{tool_name}' with args: {tool_args}")
             self.memetic_kernel.add_memory("ToolExecutionAttempt", f"Attempting tool '{tool_name}'", {"tool_name": tool_name, "tool_args": tool_args})
 
             try:
@@ -1983,16 +1983,16 @@ class ProtoAgent(ABC):
                     tool_output = await loop.run_in_executor(pool, lambda: tool_instance.func(**tool_args))
 
                 self.memetic_kernel.add_memory("ToolExecutionSuccess", f"Tool '{tool_name}' executed successfully.", {"tool_name": tool_name, "tool_output": tool_output})
-                print(f"  [Tool EXEC SUCCESS] {self.name}: Tool '{tool_name}' output: {str(tool_output)[:200]}...")
+                self.external_log_sink.debug(f"[Tool EXEC SUCCESS] {self.name}: Tool '{tool_name}' output: {str(tool_output)[:200]}...")
                 return tool_output
             except TypeError as e:
                 error_msg = f"Tool '{tool_name}' execution failed due to invalid arguments: {e}. Args provided: {tool_args}"
-                print(f"  [Tool EXEC ERROR] {self.name}: {error_msg}")
+                self.external_log_sink.debug(f"[Tool EXEC ERROR] {self.name}: {error_msg}")
                 self.memetic_kernel.add_memory("ToolExecutionError", error_msg, {"tool_name": tool_name, "tool_args": tool_args, "error": str(e)})
                 return error_msg
             except Exception as e:
                 error_msg = f"Tool '{tool_name}' execution failed: {e}. Args provided: {tool_args}"
-                print(f"  [Tool EXEC ERROR] {self.name}: {error_msg}")
+                self.external_log_sink.debug(f"[Tool EXEC ERROR] {self.name}: {error_msg}")
                 self.memetic_kernel.add_memory("ToolExecutionError", error_msg, {"tool_name": tool_name, "tool_args": tool_args, "error": str(e)})
                 return error_msg
 
@@ -2019,7 +2019,7 @@ class ProtoAgent(ABC):
 
     def increment_intent_loop_counter(self):
         self.intent_loop_count += 1
-        print(f"[Agent] {self.name} incremented intent loop counter to {self.intent_loop_count}.")
+        self.external_log_sink.info(f"[Agent] {self.name} incremented intent loop counter to {self.intent_loop_count}.")
         # FIXED: Ensure _log_agent_activity call matches its signature
         self._log_agent_activity("INTENT_COUNTER_INCREMENTED", self.name,
             f"Intent loop counter incremented to {self.intent_loop_count}.",
@@ -2029,7 +2029,7 @@ class ProtoAgent(ABC):
 
     def reset_intent_loop_counter(self):
         self.intent_loop_count = 0
-        print(f"[Agent] {self.name} reset intent loop counter to 0.")
+        self.external_log_sink.info(f"[Agent] {self.name} reset intent loop counter to 0.")
         # FIXED: Ensure _log_agent_activity call matches its signature
         self._log_agent_activity("INTENT_COUNTER_RESET", self.name,
             "Intent loop counter reset to 0.",
@@ -2038,7 +2038,7 @@ class ProtoAgent(ABC):
 
     def force_fallback_intent(self):
         self.current_intent = "Enter diagnostic standby mode and await supervisor input."
-        print(f"[Agent] {self.name} switched to fallback intent: '{self.current_intent}'.")
+        self.external_log_sink.info(f"[Agent] {self.name} switched to fallback intent: '{self.current_intent}'.")
         self.memetic_kernel.add_memory("FallbackIntent", "Forced fallback intent due to recursion limit.")
         # FIXED: Ensure _log_agent_activity call matches its signature
         self._log_agent_activity("FORCE_FALLBACK_INTENT", self.name,
@@ -2080,14 +2080,14 @@ class ProtoAgent(ABC):
         )
 
         # Print to console for live monitoring
-        print(f"[Agent] {self.name} intent updated to: {self.current_intent}")
+        self.external_log_sink.info(f"[Agent] {self.name} intent updated to: {self.current_intent}")
 
     def send_message(self, recipient_name: str, message_type: str, content: any,
                  task_description: str = None, status: str = "pending", cycle_id: str = None):
         """
         Sends a structured message to another agent via the central message bus.
         """
-        print(f"  [{self.name}] Sending message to {recipient_name} (Type: {message_type})")
+        self.external_log_sink.info(f"[{self.name}] Sending message to {recipient_name} (Type: {message_type})")
         
         # --- FIX: Call the message bus with individual arguments, not a single payload ---
         self.message_bus.send_message(
@@ -2170,18 +2170,18 @@ class ProtoAgent(ABC):
             old_intent = self.current_intent
             self.update_intent(new_initial_intent)
             transformation_summary.append(f"Intent changed from '{old_intent}' to '{new_initial_intent}'")
-            print(f"  [Agent] {self.name} self-transformed: Intent updated to '{new_initial_intent}'.")
+            self.external_log_sink.info(f"[Agent] {self.name} self-transformed: Intent updated to '{new_initial_intent}'.")
         if new_description:
             old_description = self.eidos_spec.get('description', 'N/A')
             self.eidos_spec['description'] = new_description
             transformation_summary.append(f"Description changed from '{old_description}' to '{new_description}'")
-            print(f"  [Agent] {self.name} self-transformed: Description updated to '{new_description}'.")
+            self.external_log_sink.info(f"[Agent] {self.name} self-transformed: Description updated to '{new_description}'.")
         if new_memetic_kernel_config_updates:
-            print(f"  [Agent] {self.name} self-transformed: Updating Memetic Kernel configuration...")
+            self.external_log_sink.info(f"[Agent] {self.name} self-transformed: Updating Memetic Kernel configuration...")
             for key, value in new_memetic_kernel_config_updates.items():
                 self.memetic_kernel.config[key] = value
                 transformation_summary.append(f"Memetic Kernel config updated: {key} set to {value}")
-            print(f"  [MemeticKernel] {self.name}'s config updated: {new_memetic_kernel_config_updates}.")
+            self.external_log_sink.debug(f"[MemeticKernel] {self.name}'s config updated: {new_memetic_kernel_config_updates}.")
 
         if transformation_summary:
             memory_content = f"Catalyzed self-transformation: {'; '.join(transformation_summary)}."
@@ -2193,10 +2193,10 @@ class ProtoAgent(ABC):
                 level='info'
             )
         else:
-            print(f"  [Agent] {self.name} received CATALYZE_TRANSFORMATION but no valid updates were provided.")
+            self.external_log_sink.info(f"[Agent] {self.name} received CATALYZE_TRANSFORMATION but no valid updates were provided.")
 
     def process_broadcast_intent(self, broadcast_intent_content, alignment_threshold=0.7):
-        print(f"  [Agent] {self.name} processing broadcast intent: '{broadcast_intent_content}'")
+        self.external_log_sink.info(f"[Agent] {self.name} processing broadcast intent: '{broadcast_intent_content}'")
 
         agent_keywords = set(self.current_intent.lower().split())
         broadcast_keywords = set(broadcast_intent_content.lower().split())
@@ -2207,9 +2207,9 @@ class ProtoAgent(ABC):
         else:
             alignment_score = len(common_keywords) / len(broadcast_keywords)
 
-        print(f"    [Agent] {self.name} current intent keywords: {agent_keywords}")
-        print(f"    [Agent] Broadcast intent keywords: {broadcast_keywords}")
-        print(f"    [Agent] Alignment score: {alignment_score:.2f} (Threshold: {alignment_threshold})")
+        self.external_log_sink.debug(f"[Agent] {self.name} current intent keywords: {agent_keywords}")
+        self.external_log_sink.debug(f"[Agent] Broadcast intent keywords: {broadcast_keywords}")
+        self.external_log_sink.debug(f"[Agent] Alignment score: {alignment_score:.2f} (Threshold: {alignment_threshold})")
 
         if alignment_score >= alignment_threshold:
             new_intent_parts = list(agent_keywords.union(broadcast_keywords))
@@ -2227,7 +2227,7 @@ class ProtoAgent(ABC):
                 level='info'
             )
         else:
-            print(f"    [Agent] {self.name} intent not aligned (score below threshold).")
+            self.external_log_sink.debug(f"[Agent] {self.name} intent not aligned (score below threshold).")
             self.memetic_kernel.add_memory("IntentNonAlignment",
                                             f"Did not align initial intent to broadcast: '{broadcast_intent_content}'. Current intent: '{self.current_intent}' (Score: {alignment_score:.2f})")
             # FIXED: Ensure _log_agent_activity call matches its signature
@@ -2285,12 +2285,12 @@ class ProtoAgent(ABC):
         """
         # --- NEW: Resource-Bounded Reasoning Check ---
         if self._is_resource_constrained():
-            print(f"  [Agent] {self.name} is deferring memory compression due to high system load.")
+            self.external_log_sink.info(f"[Agent] {self.name} is deferring memory compression due to high system load.")
             self.memetic_kernel.add_memory("TaskDeferral", "Deferred memory compression due to high resource load.")
             return False # Skip the rest of the function
         # --- END NEW LOGIC ---
 
-        print(f"[Agent] {self.name} is initiating memory compression.")
+        self.external_log_sink.info(f"[Agent] {self.name} is initiating memory compression.")
 
         # Your original debugging and slicing logic remains unchanged
         # print(f"DEBUG: Type of self.memetic_kernel.memories BEFORE slicing: {type(self.memetic_kernel.memories)}")
@@ -2306,20 +2306,20 @@ class ProtoAgent(ABC):
 
 
         if not memories_to_compress:
-            print(f"  [MemeticKernel] {self.name} has no memories to compress. ")
+            self.external_log_sink.debug(f"[MemeticKernel] {self.name} has no memories to compress. ")
             return False
 
         success = self.memetic_kernel.summarize_and_compress_memories(memories_to_compress)
 
         if success:
-            print(f"  [MemeticKernel] {self.name} completed memory compression. ")
+            self.external_log_sink.debug(f"[MemeticKernel] {self.name} completed memory compression. ")
             self._log_agent_activity("MEMORY_COMPRESSION_COMPLETE", self.name,
                 f"Completed memory compression. ",
                 {"compressed_count": len(memories_to_compress)},
                 level='info'
             )
         else:
-            print(f"  [MemeticKernel] {self.name} failed to compress memories. ")
+            self.external_log_sink.debug(f"[MemeticKernel] {self.name} failed to compress memories. ")
             self._log_agent_activity("MEMORY_COMPRESSION_FAILED", self.name,
                 f"Failed to compress memories. ",
                 level='error'
@@ -2330,8 +2330,8 @@ class ProtoAgent(ABC):
         if swarm_name not in self.swarm_membership:
             self.swarm_membership.append(swarm_name)
             self.memetic_kernel.add_memory("SwarmMembership", f"Joined swarm: '{swarm_name}'.")
-            print(f"[Agent] {self.name} has joined swarm: '{swarm_name}'.")
-            print(f"[IP-Integration] Agent {self.name} joined Swarm Protocol™ cluster for collective decision-making.")
+            self.external_log_sink.info(f"[Agent] {self.name} has joined swarm: '{swarm_name}'.")
+            self.external_log_sink.info(f"[IP-Integration] Agent {self.name} joined Swarm Protocol™ cluster for collective decision-making.")
             # FIXED: Ensure _log_agent_activity call matches its signature
             self._log_agent_activity("SWARM_JOINED", self.name,
                 f"Joined swarm '{swarm_name}'.",
@@ -2344,7 +2344,7 @@ class ProtoAgent(ABC):
         Processes a generic command broadcasted to this agent.
         This method will be extended in future phases.
         """
-        print(f"[Agent] {self.name} received command: {command_type} with params: {command_params}")
+        self.external_log_sink.info(f"[Agent] {self.name} received command: {command_type} with params: {command_params}")
         self.memetic_kernel.add_memory("CommandReceived", f"Received command: '{command_type}' with params: {command_params}.")
         # FIXED: Ensure _log_agent_activity call matches its signature
         self._log_agent_activity("AGENT_COMMAND_RECEIVED", self.name,
@@ -2355,13 +2355,13 @@ class ProtoAgent(ABC):
 
         # --- Command handling ---
         if command_type == "REBOOT_SELF":
-            print(f"[Agent] {self.name} is initiating self-reboot protocol.")
+            self.external_log_sink.info(f"[Agent] {self.name} is initiating self-reboot protocol.")
             self.memetic_kernel.add_memory("SelfReboot", "Initiated self-reboot sequence.")
             if hasattr(self, '_skip_initial_recursion_check'):
                 self._skip_initial_recursion_check = True
         elif command_type == "REPORT_STATUS":
             status_report = self.get_state()
-            print(f"[Agent] {self.name} generating status report: {status_report.get('current_intent', 'N/A')}")
+            self.external_log_sink.info(f"[Agent] {self.name} generating status report: {status_report.get('current_intent', 'N/A')}")
             if hasattr(self.message_bus, 'catalyst_vector_ref') and self.message_bus.catalyst_vector_ref and 'ProtoAgent_Observer_instance_1' in self.message_bus.catalyst_vector_ref.agent_instances:
                 self.send_message('ProtoAgent_Observer_instance_1', 'AgentStatusReport',
                                   f"Status of {self.name}: Intent='{self.current_intent}', Location='{self.location}'",
@@ -2397,13 +2397,13 @@ class ProtoAgent(ABC):
             {"outcome": "completed" if success else "failed", "directive_success_rate": directive_success_rate, "goal": goal},
             level='info' if success else 'warning' # Dynamically set level
         )
-        print(f"[Planner] Generated directive: {goal}, Success Rate: {directive_success_rate:.2%}")
+        self.external_log_sink.info(f"[Planner] Generated directive: {goal}, Success Rate: {directive_success_rate:.2%}")
 
     def reflect_and_find_patterns(self):
         """
         Generates agent reflection and identifies patterns using LLMs.
         """
-        print(f"[{self.name}] Initiating reflection and pattern finding.")
+        self.external_log_sink.info(f"[{self.name}] Initiating reflection and pattern finding.")
         
         # --- PART 1: Generate Agent Reflection (using new AGENT_REFLECTION_PROMPT) ---
         recent_memories_for_reflection = self.memetic_kernel.retrieve_recent_memories(lookback_period=20)
@@ -2415,7 +2415,7 @@ class ProtoAgent(ABC):
 
         # --- PART 2: Find Patterns (using new FIND_PATTERNS_PROMPT) ---
         if not hasattr(self, 'ollama_inference_model') or self.ollama_inference_model is None:
-            print(f"  [{self.name}] Skipping pattern finding; LLM not available.")
+            self.external_log_sink.info(f"[{self.name}] Skipping pattern finding; LLM not available.")
             self._log_agent_activity("PATTERN_FINDING_SKIPPED", self.name, "Pattern finding skipped; LLM not available.", level='info')
             return
 
@@ -2442,11 +2442,11 @@ class ProtoAgent(ABC):
                     {"insight_details": llm_pattern_output}, # Continue logging raw output for now
                     level='info'
                 )
-                print(f"  [Patt.Insight] Detected: {llm_pattern_output[:100]}...")
+                self.external_log_sink.debug(f"[Patt.Insight] Detected: {llm_pattern_output[:100]}...")
             else:
                 self.memetic_kernel.add_memory("PatternInsight", pattern_insight_content, source_agent=self.name) # Store the dictionary
                 self._log_agent_activity("NO_PATTERNS_DETECTED", self.name, "No significant patterns detected in recent data.", level='info')
-                print(f"  [Patt.Insight] No significant patterns detected.")
+                self.external_log_sink.debug(f"[Patt.Insight] No significant patterns detected.")
             # --- MODIFICATION END ---
 
         except Exception as e:
@@ -2454,7 +2454,7 @@ class ProtoAgent(ABC):
                 f"Failed to find patterns using LLM. Error: {e}",
                 level='error'
             )
-            print(f"  [Patt.Insight Error] Failed to find patterns: {e}")
+            self.external_log_sink.warning(f"[Patt.Insight Error] Failed to find patterns: {e}")
 
     def distill_self_narrative(self) -> str:
         """
@@ -2494,10 +2494,10 @@ class ProtoAgent(ABC):
                 narrative_parts.append("No significant recent activities or patterns observed.")
 
         final_narrative = f"My journey includes: {' '.join(narrative_parts)}"
-        print(f"  [Narrative] {self.name} distilled self-narrative: {final_narrative}")
+        self.external_log_sink.info(f"[Narrative] {self.name} distilled self-narrative: {final_narrative}")
         max_narrative_print_len = 500
         truncated_print_narrative = (final_narrative[:max_narrative_print_len] + "...") if len(final_narrative) > max_narrative_print_len else final_narrative
-        print(f"  [Narrative] {self.name} distilled self-narrative: {truncated_print_narrative}")
+        self.external_log_sink.info(f"[Narrative] {self.name} distilled self-narrative: {truncated_print_narrative}")
         return final_narrative        
 
     def find_patterns(self, memories: list) -> list:
@@ -2624,7 +2624,7 @@ class ProtoAgent(ABC):
                 if "No significant patterns detected for this role" not in llm_analysis.lower() and llm_analysis.strip() != "":
                     found_patterns.append(f"LLM Insight (Role: {role}): {llm_analysis.strip()}")
             except Exception as e:
-                print(f"  Error during LLM pattern analysis for {self.name}: {e}")
+                self.external_log_sink.error(f"Error during LLM pattern analysis for {self.name}: {e}")
 
         return found_patterns if found_patterns else ["No explicit patterns detected."]
 
@@ -2710,7 +2710,7 @@ class ProtoAgent(ABC):
                     except ValueError:
                         continue
             except Exception as e:
-                print(f"[Pattern Detection] Error processing event: {str(e)}")
+                self.external_log_sink.warning(f"[Pattern Detection] Error processing event: {str(e)}")
                 continue
         return event_patterns
 
@@ -2724,7 +2724,7 @@ class ProtoAgent(ABC):
         payload = event.get('payload', {}) # Ensure payload is retrieved from event
         event_id = event.get('event_id', 'N/A')
         
-        print(f"  [{self.name}] Perceived event: {event_type}, Urgency: {payload.get('urgency')}, Change: {payload.get('change_factor')}, Direction: {payload.get('direction')}")
+        self.external_log_sink.info(f"[{self.name}] Perceived event: {event_type}, Urgency: {payload.get('urgency')}, Change: {payload.get('change_factor')}, Direction: {payload.get('direction')}")
 
         if self.event_monitor:
             self.event_monitor.log_agent_response(
@@ -2778,7 +2778,7 @@ class ProtoAgent(ABC):
                         'ProtoAgent_Observer_instance_1', 'CriticalEventBroadcast', broadcast_message_content,
                         "Process critical event system-wide", "pending", cycle_id=self.message_bus.current_cycle_id
                     )
-            print(f"  [Agent] {self.name} broadcast critical event to Planner/Observer for system-wide awareness.")
+            self.external_log_sink.info(f"[Agent] {self.name} broadcast critical event to Planner/Observer for system-wide awareness.")
 
         if urgency == 'high' or urgency == 'critical': # Check against actual urgency variable
             self.update_intent(f"Analyze the critical impact of '{event_type}' event and re-evaluate current strategies.")
@@ -2787,7 +2787,7 @@ class ProtoAgent(ABC):
             self.analyze_and_adapt()
 
     def _brainstorm_new_intent_with_llm(self, current_narrative: str) -> str:
-        print(f"  [Agent] {self.name} initiating LLM brainstorm for new intent to break stagnation.")
+        self.external_log_sink.info(f"[Agent] {self.name} initiating LLM brainstorm for new intent to break stagnation.")
 
         # Use the externalized prompt and format it
         prompt = prompts.BRAINSTORM_NEW_INTENT_PROMPT.format(
@@ -2810,13 +2810,13 @@ class ProtoAgent(ABC):
                "llm client error" not in llm_brainstorm_output.lower() and \
                "no specific pattern" not in llm_brainstorm_output.lower() and \
                "mOCK LLM Response" not in llm_brainstorm_output.lower():
-                print(f"  [Agent] LLM brainstormed successful new intent: '{llm_brainstorm_output}'")
+                self.external_log_sink.info(f"[Agent] LLM brainstormed successful new intent: '{llm_brainstorm_output}'")
                 return llm_brainstorm_output
             else:
-                print(f"  [Agent] LLM brainstormed empty, too short, identical, or invalid intent. Indicating failure.")
+                self.external_log_sink.info(f"[Agent] LLM brainstormed empty, too short, identical, or invalid intent. Indicating failure.")
                 return "LLM_BRAINSTORM_FAILED_TO_GENERATE_NEW_INTENT"
         except Exception as e:
-            print(f"  [Agent Error] LLM brainstorming failed: {e}")
+            self.external_log_sink.error(f"[Agent Error] LLM brainstorming failed: {e}")
             self.memetic_kernel.add_memory("LLM_Error", f"Brainstorming failed: {e}")
             self._log_agent_activity("LLM_BRAINSTORM_FAILED_EXCEPTION", self.name, f"LLM brainstorm failed for intent: {self.current_intent}. Error: {e}")
             return "LLM_BRAINSTORM_FAILED_EXCEPTION"
@@ -2828,7 +2828,7 @@ class ProtoAgent(ABC):
         or None if no tool is deemed appropriate.
         """
         if self.tool_registry is None:
-            print(f"  [Tool Use] {self.name} is not a Worker agent. Tool use prohibited.")
+            self.external_log_sink.debug(f"[Tool Use] {self.name} is not a Worker agent. Tool use prohibited.")
         if hasattr(self, '_log_agent_activity'):
             self._log_agent_activity("TOOL_USE_PROHIBITED", self.name, 
                                    "Non-Worker agent attempted tool access.", level='warning')
@@ -2836,7 +2836,7 @@ class ProtoAgent(ABC):
         
         available_tools_specs = self.tool_registry.get_all_tool_specs()
         if not available_tools_specs:
-            print(f"  [Tool Use] No tools registered for {self.name}. Skipping tool proposal.")
+            self.external_log_sink.debug(f"[Tool Use] No tools registered for {self.name}. Skipping tool proposal.")
             if hasattr(self, '_log_agent_activity'):
                 self._log_agent_activity("TOOL_PROPOSAL_SKIPPED", self.name, "No tools registered.", level='info')
             return None
@@ -2858,7 +2858,7 @@ class ProtoAgent(ABC):
         # Append the user's question to the structured prompt
         prompt_for_llm += f"\n\nUser: Considering my current intent and observed patterns, should I use any of the available tools? Please respond in JSON format, strictly adhering to the ToolProposalSchema."
 
-        print(f"  [LLM Tool Proposer] {self.name} prompting LLM for tool use consideration...")
+        self.external_log_sink.debug(f"[LLM Tool Proposer] {self.name} prompting LLM for tool use consideration...")
         try:
             # Use generate_text method of OllamaLLMIntegration, requesting JSON format
             # The OllamaLLMIntegration.generate_text method internally calls ollama.Client.chat
@@ -2874,7 +2874,7 @@ class ProtoAgent(ABC):
             json_end = full_llm_response.rfind('}')
 
             if json_start == -1 or json_end == -1 or json_end < json_start:
-                print(f"  [LLM Tool Proposer ERROR] {self.name}: No valid JSON object found in LLM response. Raw response: {full_llm_response}")
+                self.external_log_sink.debug(f"[LLM Tool Proposer ERROR] {self.name}: No valid JSON object found in LLM response. Raw response: {full_llm_response}")
                 self.memetic_kernel.add_memory("ToolProposalError", {"message": "No valid JSON found in LLM response.", "raw_response": full_llm_response})
                 if hasattr(self, '_log_agent_activity'):
                     self._log_agent_activity("TOOL_PROPOSAL_NO_JSON_FOUND", self.name, "No valid JSON object found in LLM response.", {"raw_response": full_llm_response}, level='error')
@@ -2890,36 +2890,36 @@ class ProtoAgent(ABC):
             tool_proposal_validated = llm_schemas.ToolProposalSchema.from_dict(tool_proposal_dict)
 
             if tool_proposal_validated.tool_name is None:
-                print(f"  [LLM Tool Proposer] {self.name}: LLM decided no tool is appropriate.")
+                self.external_log_sink.debug(f"[LLM Tool Proposer] {self.name}: LLM decided no tool is appropriate.")
                 if hasattr(self, '_log_agent_activity'):
                     self._log_agent_activity("TOOL_PROPOSAL_NONE", self.name, "LLM decided no tool is appropriate.", level='info')
                 return None
             elif self.tool_registry.get_tool(tool_proposal_validated.tool_name):
-                print(f"  [LLM Tool Proposer] {self.name}: LLM proposed tool '{tool_proposal_validated.tool_name}' with args: {tool_proposal_validated.tool_args}")
+                self.external_log_sink.debug(f"[LLM Tool Proposer] {self.name}: LLM proposed tool '{tool_proposal_validated.tool_name}' with args: {tool_proposal_validated.tool_args}")
                 if hasattr(self, '_log_agent_activity'):
                     self._log_agent_activity("TOOL_PROPOSAL_SUCCESS", self.name, f"LLM proposed tool '{tool_proposal_validated.tool_name}'.", {"tool_name": tool_proposal_validated.tool_name, "tool_args": tool_proposal_validated.tool_args}, level='info')
                 return {"tool_name": tool_proposal_validated.tool_name, "tool_args": tool_proposal_validated.tool_args}
             else:
-                print(f"  [LLM Tool Proposer ERROR] {self.name}: LLM proposed unknown tool: {tool_proposal_validated.tool_name}. Raw response: {raw_response}")
+                self.external_log_sink.debug(f"[LLM Tool Proposer ERROR] {self.name}: LLM proposed unknown tool: {tool_proposal_validated.tool_name}. Raw response: {raw_response}")
                 self.memetic_kernel.add_memory("ToolProposalError", {"message": f"LLM proposed unknown tool: {tool_proposal_validated.tool_name}", "raw_response": raw_response})
                 if hasattr(self, '_log_agent_activity'):
                     self._log_agent_activity("TOOL_PROPOSAL_UNKNOWN_TOOL", self.name, f"LLM proposed unknown tool: {tool_proposal_validated.tool_name}.", {"tool_name": tool_proposal_validated.tool_name, "raw_response": raw_response}, level='error')
                 return None
 
         except json.JSONDecodeError as e:
-            print(f"  [LLM Tool Proposer ERROR] {self.name}: Failed to parse extracted LLM tool proposal JSON: {e}. Extracted content: {raw_response}")
+            self.external_log_sink.debug(f"[LLM Tool Proposer ERROR] {self.name}: Failed to parse extracted LLM tool proposal JSON: {e}. Extracted content: {raw_response}")
             self.memetic_kernel.add_memory("ToolProposalError", {"message": f"LLM output invalid JSON for tool proposal.", "error": str(e), "raw_response": raw_response})
             if hasattr(self, '_log_agent_activity'):
                 self._log_agent_activity("TOOL_PROPOSAL_JSON_ERROR", self.name, f"Failed to parse LLM tool proposal JSON: {e}.", {"error": str(e), "raw_response": raw_response}, level='error')
             return None
         except ValueError as e:
-            print(f"  [LLM Tool Proposer ERROR] {self.name}: LLM output did not conform to schema: {e}. Extracted content: {raw_response}")
+            self.external_log_sink.debug(f"[LLM Tool Proposer ERROR] {self.name}: LLM output did not conform to schema: {e}. Extracted content: {raw_response}")
             self.memetic_kernel.add_memory("ToolProposalError", {"message": f"LLM output did not conform to schema.", "error": str(e), "raw_response": raw_response})
             if hasattr(self, '_log_agent_activity'):
                 self._log_agent_activity("TOOL_PROPOSAL_SCHEMA_ERROR", self.name, f"LLM output did not conform to schema: {e}.", {"error": str(e), "raw_response": raw_response}, level='error')
             return None
         except Exception as e:
-            print(f"  [LLM Tool Proposer ERROR] {self.name}: Unexpected error during tool proposal: {e}. Full LLM response: {full_llm_response}")
+            self.external_log_sink.debug(f"[LLM Tool Proposer ERROR] {self.name}: Unexpected error during tool proposal: {e}. Full LLM response: {full_llm_response}")
             self.memetic_kernel.add_memory("ToolProposalError", {"message": f"Unexpected error during tool proposal.", "error": str(e), "full_llm_response": full_llm_response})
             if hasattr(self, '_log_agent_activity'):
                 self._log_agent_activity("TOOL_PROPOSAL_UNEXPECTED_ERROR", self.name, f"Unexpected error during tool proposal: {e}.", {"error": str(e)}, level='error')
@@ -3128,11 +3128,11 @@ class ProtoAgent_Observer(ProtoAgent):
                         self.message_bus.catalyst_vector_ref.inject_directives([directive])
                     else:
                         raise RuntimeError("No orchestrator/message_bus to inject directive")
-                    print(f"[Observer] Predictive remediation mission injected for {ns}/{name} (mem ratio {ratio:.2f})")
+                    self.external_log_sink.info(f"[Observer] Predictive remediation mission injected for {ns}/{name} (mem ratio {ratio:.2f})")
                     self._preemptive_targets[key] = now
                     self._increment_remediation_metric("predictive_injections")
                 except Exception as e:
-                    print(f"[Observer] Predictive remediation injection failed for {ns}/{name}: {e}")
+                    self.external_log_sink.info(f"[Observer] Predictive remediation injection failed for {ns}/{name}: {e}")
                     self._increment_remediation_metric("remediation_failure")
 
     def _can_run_pod_fallback(self, min_interval_s: int = 60) -> bool:
@@ -3155,8 +3155,8 @@ class ProtoAgent_Observer(ProtoAgent):
         context_info = kwargs.get("context_info")
         # print(f"[CRITICAL DEBUG] Observer._execute_agent_specific_task ENTERED for task: {task_description[:50]}")
         # print(f"[DEBUG Observer] kwargs received: {kwargs}")
-        # print(f"[DEBUG] context_info parameter: {context_info}")
-        print(f"[{self.name}] Performing specific observation task: {task_description}")
+        # self.external_log_sink.debug(f"[DEBUG] context_info parameter: {context_info}")
+        self.external_log_sink.info(f"[{self.name}] Performing specific observation task: {task_description}")
 
         # Extract plan_id from context
         context = context_info or {}
@@ -3165,8 +3165,8 @@ class ProtoAgent_Observer(ProtoAgent):
         if not task_id:
             task_id = kwargs.get("task_id")
         
-        # print(f"[DEBUG] context from kwargs: {context}")
-        # print(f"[DEBUG] plan_id extracted: {plan_id}")
+        # self.external_log_sink.debug(f"[DEBUG] context from kwargs: {context}")
+        # self.external_log_sink.debug(f"[DEBUG] plan_id extracted: {plan_id}")
         outcome = "completed"
         failure_reason = None
         progress_score = 0.0
@@ -3196,7 +3196,7 @@ class ProtoAgent_Observer(ProtoAgent):
 
         try:
             # AUTO K8S MONITORING - Check every Observer cycle
-            print("[DEBUG] Observer: Checking for watch_k8s_events tool...")
+            # print("[DEBUG] Observer: Checking for watch_k8s_events tool...")
             _registry = getattr(self, "tool_registry", None)
             if not getattr(self, "_k8s_student_active", True) and _registry and _registry.has_tool("watch_k8s_events"):
                 now_ts = time.time()
@@ -3211,9 +3211,9 @@ class ProtoAgent_Observer(ProtoAgent):
                     payload = _k8s_result.get("data", _k8s_result) if isinstance(_k8s_result, dict) else {}
                     _crit = payload.get("critical_count", 0)
                     active_failed = payload.get("active_failed_scheduling_count", 0) or 0
-                    print(f"[Observer] Debug: watch_k8s_events critical_count={_crit} active_failed_scheduling={active_failed}")
+                    self.external_log_sink.info(f"[Observer] Debug: watch_k8s_events critical_count={_crit} active_failed_scheduling={active_failed}")
                     if _crit > 0:
-                        print(f"[Observer] 🚨 K8S ALERT: {_crit} critical events detected!")
+                        self.external_log_sink.info(f"[Observer] 🚨 K8S ALERT: {_crit} critical events detected!")
                         self.memetic_kernel.add_memory("K8sAlert", {
                             "critical_count": _crit,
                             "events": payload.get("critical_events", [])[:5],
@@ -3236,7 +3236,7 @@ class ProtoAgent_Observer(ProtoAgent):
                                 pods[p] = pods.get(p, 0) + 1
                             top_reasons = sorted(reasons.items(), key=lambda x: x[1], reverse=True)[:3]
                             top_pods = sorted(pods.items(), key=lambda x: x[1], reverse=True)[:3]
-                            print(f"[Observer] K8s critical histogram top reasons={top_reasons} top pods={top_pods}")
+                            self.external_log_sink.info(f"[Observer] K8s critical histogram top reasons={top_reasons} top pods={top_pods}")
                         except Exception:
                             pass
 
@@ -3249,27 +3249,27 @@ class ProtoAgent_Observer(ProtoAgent):
                             controller = event.get("kind") or None
                             if namespace and pod_name:
                                 if not _pod_exists(namespace, pod_name):
-                                    print(f"[Observer] Skipping remediation (pod not found) for {namespace}/{pod_name}")
+                                    self.external_log_sink.info(f"[Observer] Skipping remediation (pod not found) for {namespace}/{pod_name}")
                                     self._increment_remediation_metric("not_found_skips")
                                     self._mark_remediated(namespace, pod_name, reason=reason, controller=controller, message=message)
                                     continue
                                 if any(pat in pod_name for pat in self._ignore_patterns):
-                                    print(f"[Observer] Skipping remediation (ignore pattern) for {namespace}/{pod_name}")
+                                    self.external_log_sink.info(f"[Observer] Skipping remediation (ignore pattern) for {namespace}/{pod_name}")
                                     self._increment_remediation_metric("ignore_skips")
                                     continue
                                 if self._recently_remediated(namespace, pod_name, reason=reason, controller=controller, message=message):
-                                    print(f"[Observer] Skipping remediation (recent) for {namespace}/{pod_name}")
+                                    self.external_log_sink.info(f"[Observer] Skipping remediation (recent) for {namespace}/{pod_name}")
                                     self._increment_remediation_metric("dedupe_skips")
                                     key = self._remediation_key(namespace, pod_name, reason, controller, message)
                                     last_ts = self._remediated_pods.get(key, 0)
                                     remaining = max(0, 600 - (time.time() - last_ts))
-                                    print(f"[Observer] skip_reason=dedupe_recent resource={namespace}/{pod_name} last_ts={last_ts} cooldown_remaining_s={remaining:.1f}")
+                                    self.external_log_sink.info(f"[Observer] skip_reason=dedupe_recent resource={namespace}/{pod_name} last_ts={last_ts} cooldown_remaining_s={remaining:.1f}")
                                     continue
                                 if self._remediation_already_queued(namespace, pod_name):
-                                    print(f"[Observer] Skipping remediation (already queued) for {namespace}/{pod_name}")
+                                    self.external_log_sink.info(f"[Observer] Skipping remediation (already queued) for {namespace}/{pod_name}")
                                     self._increment_remediation_metric("queue_skips")
                                     continue
-                                print(f"[Observer] AUTO-REMEDIATING: {namespace}/{pod_name}")
+                                self.external_log_sink.info(f"[Observer] AUTO-REMEDIATING: {namespace}/{pod_name}")
                                 try:
                                     planner_name = "ProtoAgent_Planner_instance_1"
                                     goal = (
@@ -3291,11 +3291,11 @@ class ProtoAgent_Observer(ProtoAgent):
                                         self.message_bus.catalyst_vector_ref.inject_directives([directive])
                                     else:
                                         raise RuntimeError("No orchestrator/message_bus to inject directive")
-                                    print(f"[Observer] Remediation mission injected for {namespace}/{pod_name}")
+                                    self.external_log_sink.info(f"[Observer] Remediation mission injected for {namespace}/{pod_name}")
                                     self._mark_remediated(namespace, pod_name, reason=reason, controller=controller, message=message)
                                     self._increment_remediation_metric("remediation_success")
                                 except Exception as e:
-                                    print(f"[Observer] Remediation mission injection failed for {namespace}/{pod_name}: {e}")
+                                    self.external_log_sink.info(f"[Observer] Remediation mission injection failed for {namespace}/{pod_name}: {e}")
                                     self._increment_remediation_metric("remediation_failure")
                     # Fallback: inspect pod status for failures/crashloops (rate-limited)
                     if _registry.has_tool("get_pod_status") and self._can_run_pod_fallback():
@@ -3314,30 +3314,30 @@ class ProtoAgent_Observer(ProtoAgent):
                                 bad_phase = phase in {"failed", "error", "crashloopbackoff"}
                                 bad_issue = any(x in bad_issue_set for x in issues)
                                 if restarts > 10:
-                                    print(f"[Observer] Skipping {ns}/{name} due to high restarts ({restarts})")
+                                    self.external_log_sink.info(f"[Observer] Skipping {ns}/{name} due to high restarts ({restarts})")
                                     continue
                                 if ns and name and (bad_phase or bad_issue):
                                     if not _pod_exists(ns, name):
-                                        print(f"[Observer] Skipping remediation (pod not found) for {ns}/{name}")
+                                        self.external_log_sink.info(f"[Observer] Skipping remediation (pod not found) for {ns}/{name}")
                                         self._increment_remediation_metric("not_found_skips")
                                         self._mark_remediated(ns, name)
                                         continue
                                     if self._recently_remediated(ns, name):
-                                        print(f"[Observer] Skipping remediation (recent) for {ns}/{name}")
+                                        self.external_log_sink.info(f"[Observer] Skipping remediation (recent) for {ns}/{name}")
                                         self._increment_remediation_metric("dedupe_skips")
                                         continue
                                     # K8sStudent handles this
                                     if getattr(self, "_k8s_student_active", True):
-                                        print(f"[Observer] K8s delegated to K8sStudent - skipping {ns}/{name}")
+                                        self.external_log_sink.info(f"[Observer] K8s delegated to K8sStudent - skipping {ns}/{name}")
                                         continue
-                                    print(f"[Observer] AUTO-REMEDIATING pod failure: {ns}/{name} phase={phase} issues={issues}")
+                                    self.external_log_sink.info(f"[Observer] AUTO-REMEDIATING pod failure: {ns}/{name} phase={phase} issues={issues}")
                                     try:
                                         res = _registry.safe_call(
                                             "microsoft_autonomous_remediation",
                                             namespace=ns,
                                             pod_name=name
                                         )
-                                        print(f"[Observer] Remediation result: {res}")
+                                        self.external_log_sink.info(f"[Observer] Remediation result: {res}")
                                         self._mark_remediated(ns, name)
                                         self._increment_remediation_metric("remediation_success")
                                         if _registry.has_tool("send_desktop_notification"):
@@ -3350,7 +3350,7 @@ class ProtoAgent_Observer(ProtoAgent):
                                             except Exception:
                                                 pass
                                     except Exception as e:
-                                        print(f"[Observer] Remediation failed for {ns}/{name}: {e}")
+                                        self.external_log_sink.info(f"[Observer] Remediation failed for {ns}/{name}: {e}")
                                         self._increment_remediation_metric("remediation_failure")
             # Also check for RBAC violations and secret access
             if _registry and _registry.has_tool("watch_k8s_audit_events"):
@@ -3359,7 +3359,7 @@ class ProtoAgent_Observer(ProtoAgent):
                     audit_payload = _audit_result.get("data", _audit_result) if isinstance(_audit_result, dict) else {}
                     _violations = audit_payload.get("violation_count", 0)
                     if _violations > 0:
-                        print(f"[Observer] 🔐 SECURITY ALERT: {_violations} RBAC violations detected!")
+                        self.external_log_sink.info(f"[Observer] 🔐 SECURITY ALERT: {_violations} RBAC violations detected!")
                         self.memetic_kernel.add_memory("SecurityAlert", {
                             "violation_count": _violations,
                             "violations": audit_payload.get("violations", [])[:5],
@@ -3394,7 +3394,7 @@ class ProtoAgent_Observer(ProtoAgent):
 
                     # Debug: check if responsiveness tool exists
                     has_resp_tool = registry.has_tool("measure_responsiveness")
-                    print(f"[DEBUG] Has measure_responsiveness: {has_resp_tool}")
+                    self.external_log_sink.debug(f"[DEBUG] Has measure_responsiveness: {has_resp_tool}")
                     
                     # Measure responsiveness after tool execution
                     if has_resp_tool and tool_name != "measure_responsiveness":
@@ -3410,7 +3410,7 @@ class ProtoAgent_Observer(ProtoAgent):
                         else:
                             resp_result = registry.safe_call("measure_responsiveness")
                             self._tool_result_cache[resp_cache_key] = {"ts": now_ts, "result": resp_result}
-                        print(f"[DEBUG] Responsiveness result: {resp_result}")
+                        self.external_log_sink.debug(f"[DEBUG] Responsiveness result: {resp_result}")
                         
                         # --- FIX ---
                         # Check if the result is a dictionary before calling .get()
@@ -3425,7 +3425,7 @@ class ProtoAgent_Observer(ProtoAgent):
                         
                         elif isinstance(resp_result, str):
                             # Optional: Log the error string if it's not a dict
-                            print(f"[DEBUG] measure_responsiveness returned a string: {resp_result}")
+                            self.external_log_sink.debug(f"[DEBUG] measure_responsiveness returned a string: {resp_result}")
                     
                     report_content_dict["summary"] = f"Tool '{tool_name}' executed successfully"
                     progress_score = 0.5
@@ -3484,7 +3484,7 @@ class ProtoAgent_Observer(ProtoAgent):
                                 f"to {self._last_alert['replicas_set']} succeeded: "
                                 f"CPU {self._last_alert['cpu_before']:.0f}% → {avg_cpu:.0f}%")
                             self.memetic_kernel.add_memory("ScalingValidation", {"success": True, "message": msg})
-                            print(f"[Observer] {msg}")
+                            self.external_log_sink.info(f"[Observer] {msg}")
                             self._last_alert = None
 
                 # choose target - DYNAMIC DISCOVERY
@@ -3658,11 +3658,11 @@ class ProtoAgent_Observer(ProtoAgent):
                     except Exception:
                         pass
 
-                    print(f"[{self.name}] Stored TaskResult for plan_id={plan_id} task_id={task_id}")
+                    self.external_log_sink.info(f"[{self.name}] Stored TaskResult for plan_id={plan_id} task_id={task_id}")
                 else:
                     print(f"[DEBUG TaskResult Write] writer=observer_final SKIP (no task_id) plan_id={plan_id}")
             except Exception as e:
-                print(f"[{self.name}] Warning: Could not store TaskResult via MemeticKernel: {e}")
+                self.external_log_sink.info(f"[{self.name}] Warning: Could not store TaskResult via MemeticKernel: {e}")
 
         return outcome, failure_reason, report_content_dict, progress_score
     
@@ -3683,7 +3683,7 @@ class ProtoAgent_Observer(ProtoAgent):
         # This function is fine as it is. No changes needed.
         received_messages = self.receive_messages()
         if not received_messages:
-            print(f"[Agent] {self.name} received no new messages to summarize for cycle '{cycle_id if cycle_id else 'all'}' (or they were already processed).")
+            self.external_log_sink.info(f"[Agent] {self.name} received no new messages to summarize for cycle '{cycle_id if cycle_id else 'all'}' (or they were already processed).")
             return
 
         summary_reports = [
@@ -3693,7 +3693,7 @@ class ProtoAgent_Observer(ProtoAgent):
         ]
 
         if not summary_reports:
-            print(f"[Agent] {self.name} found no relevant reports to summarize for cycle '{cycle_id if cycle_id else 'all'}'.")
+            self.external_log_sink.info(f"[Agent] {self.name} found no relevant reports to summarize for cycle '{cycle_id if cycle_id else 'all'}'.")
             return
 
         total_reports = len(summary_reports)
@@ -3709,7 +3709,7 @@ class ProtoAgent_Observer(ProtoAgent):
             f"Successes: {successful_reports}, Failures: {failed_reports}."
         )
         self.memetic_kernel.add_memory("SwarmReportSummary", summary_text)
-        print(f"[Agent] {self.name} summarized reports: {summary_text}")       
+        self.external_log_sink.info(f"[Agent] {self.name} summarized reports: {summary_text}")       
 
 class ProtoAgent_Collector(ProtoAgent):
     def _execute_agent_specific_task(self, task_description: str, cycle_id: Optional[str],
@@ -3718,7 +3718,7 @@ class ProtoAgent_Collector(ProtoAgent):
         """
         Collector-specific task execution with progress scoring and robust error handling.
         """
-        print(f"[{self.name}] Performing specific collection task: {task_description}")
+        self.external_log_sink.info(f"[{self.name}] Performing specific collection task: {task_description}")
         
         outcome = "completed"
         failure_reason = None
@@ -3750,7 +3750,7 @@ class ProtoAgent_Collector(ProtoAgent):
             failure_reason = f"Unhandled exception during collection: {str(e)}"
             progress_score = 0.0 # No progress if the task fails
             report_content_dict["summary"] = f"Task failed: {failure_reason}"
-            print(f"  [Collector] Task failed with real error: {task_description}")
+            self.external_log_sink.info(f"[Collector] Task failed with real error: {task_description}")
 
         report_content_dict["task_description"] = task_description
         report_content_dict["progress_score"] = progress_score # Add score to the report
@@ -3766,7 +3766,7 @@ class ProtoAgent_Collector(ProtoAgent):
         if outcome == "completed" and clean_task == "prepare data collection modules":
             long_term_intent = self.eidos_spec.get('initial_intent', 'Efficiently collect and process environmental data.')
             self.update_intent(long_term_intent)
-            print(f"  [Collector] Initial setup complete. Switched intent to: '{long_term_intent}'")
+            self.external_log_sink.info(f"[Collector] Initial setup complete. Switched intent to: '{long_term_intent}'")
                 
         # Return the new progress_score value
         return outcome, failure_reason, report_content_dict, progress_score
@@ -3815,11 +3815,11 @@ class ProtoAgent_Optimizer(ProtoAgent):
 
         # Check for negative impact or specific event types
         if direction == 'negative_impact' or event_type in ['ComponentDegradation', 'ResourceDepletion']:
-            print(f"  [{self.name}] (Optimizer): Detected negative impact event: {event_type}! Condition met. Calling store_anomaly and request_swarm_analysis.")
+            self.external_log_sink.info(f"[{self.name}] (Optimizer): Detected negative impact event: {event_type}! Condition met. Calling store_anomaly and request_swarm_analysis.")
             self.store_anomaly(event)
             self.request_swarm_analysis(event)
         else:
-            print(f"  [{self.name}] (Optimizer): Event {event_type} is not a negative impact event or explicitly handled for negative change. Condition NOT met. Skipping request.")
+            self.external_log_sink.info(f"[{self.name}] (Optimizer): Event {event_type} is not a negative impact event or explicitly handled for negative change. Condition NOT met. Skipping request.")
             self._log_agent_activity("EVENT_SKIPPED", self.name,
                                      f"Skipping event '{event_type}' as it has no negative impact.",
                                      {"event_id": event.get('event_id')}, level='info')
@@ -3871,16 +3871,16 @@ class ProtoAgent_Optimizer(ProtoAgent):
 
             if self.orchestrator:
                 self.orchestrator.inject_directives([directive_payload_for_orchestrator])
-                print(f"  [{self.name}] (Optimizer): Requested CRITICAL human input for event: {event_id} with ID: {new_request_id} via Orchestrator.")
+                self.external_log_sink.info(f"[{self.name}] (Optimizer): Requested CRITICAL human input for event: {event_id} with ID: {new_request_id} via Orchestrator.")
                 self.external_log_sink.info(
                     f"Optimizer requested CRITICAL human input for {event_id}.",
                     extra={"event_type": "OPTIMIZER_HUMAN_REQUEST", "request_id": new_request_id, "event_id": event_id, "urgency": "critical"}
                 )
             else:
-                print(f"  [{self.name}] (Optimizer): ERROR: Orchestrator reference not available to request human input.")
+                self.external_log_sink.info(f"[{self.name}] (Optimizer): ERROR: Orchestrator reference not available to request human input.")
                 self.memetic_kernel.add_memory("SystemError", "Orchestrator not available for human input request.", {"event_type": "HumanInputRequestFailed"})
         else:
-            print(f"  [{self.name}] (Optimizer): Detected {event_urgency.upper()} event ({event_type}). Attempting autonomous mitigation before human request.")
+            self.external_log_sink.info(f"[{self.name}] (Optimizer): Detected {event_urgency.upper()} event ({event_type}). Attempting autonomous mitigation before human request.")
             self.memetic_kernel.add_memory("AutonomousMitigationAttempt", {
                 "reason": f"Attempting autonomous mitigation for {event_type} event (ID: {event_id}).",
                 "urgency": event_urgency,
@@ -3911,7 +3911,7 @@ class ProtoAgent_Optimizer(ProtoAgent):
             {"event_type": event.get('type'), "event_id": event.get('event_id', 'N/A'), "details": anomaly_record},
             related_event_id=event.get('event_id')
         )
-        print(f"  [{self.name}] (Optimizer): Stored anomaly: {anomaly_record['type']} (ID: {anomaly_record['event_id'][:8]})")
+        self.external_log_sink.info(f"[{self.name}] (Optimizer): Stored anomaly: {anomaly_record['type']} (ID: {anomaly_record['event_id'][:8]})")
         self._log_agent_activity("ANOMALY_STORED", self.name,
                                  f"Optimizer stored anomaly: {event.get('type')}.",
                                  {"event_id": event.get('event_id'), "payload_preview": str(event.get('payload'))[:100]}, level='info')
@@ -3923,7 +3923,7 @@ class ProtoAgent_Optimizer(ProtoAgent):
         Optimizer-specific task execution with progress scoring, robust error handling,
         and now with reasoning logs for significant actions.
         """
-        print(f"[{self.name}] Performing specific optimization task: {task_description}")
+        self.external_log_sink.info(f"[{self.name}] Performing specific optimization task: {task_description}")
 
         outcome = "completed"
         failure_reason = None
@@ -3967,7 +3967,7 @@ class ProtoAgent_Optimizer(ProtoAgent):
             failure_reason = f"Unhandled exception during optimization simulation: {str(e)}"
             progress_score = 0.0
             report_content_dict["summary"] = f"Task failed: {failure_reason}"
-            print(f"  [Optimizer] Task failed with real error: {task_description}")
+            self.external_log_sink.info(f"[Optimizer] Task failed with real error: {task_description}")
 
         report_content_dict["progress_score"] = progress_score
         if failure_reason:
@@ -3984,7 +3984,7 @@ class ProtoAgent_Optimizer(ProtoAgent):
         if outcome == "completed" and clean_task == "monitor incoming reports":
             long_term_intent = self.eidos_spec.get('initial_intent', 'Optimize simulated resource allocation efficiency based on inputs.')
             self.update_intent(long_term_intent)
-            print(f"  [Optimizer] Initial setup complete. Switched intent to: '{long_term_intent}'")
+            self.external_log_sink.info(f"[Optimizer] Initial setup complete. Switched intent to: '{long_term_intent}'")
 
         return outcome, failure_reason, report_content_dict, progress_score
 
@@ -4225,7 +4225,7 @@ class ProtoAgent_Planner(ProtoAgent):
                 is_urgent = any(keyword in subject.lower() for keyword in urgent_keywords)
                 
                 if is_spam and not is_urgent:
-                    print(f"  [Filter] Ignoring spam: {subject[:60]}...")
+                    self.external_log_sink.info(f"[Filter] Ignoring spam: {subject[:60]}...")
                     self._processed_alert_ids.add(alert_id)
                     continue
                 
@@ -4819,7 +4819,7 @@ Respond with valid JSON:
         # === EVENT-DRIVEN GATE ===
         if self._should_be_idle():
             self._consecutive_idle = getattr(self, "_consecutive_idle", 0) + 1
-            print(f"  [Planner] 😴 System healthy - skipping idle synthesis (cycle #{self._consecutive_idle})")
+            self.external_log_sink.info(f"[Planner] 😴 System healthy - skipping idle synthesis (cycle #{self._consecutive_idle})")
             return "idle", None, {"reason": "system_healthy"}, 0.0
         self._consecutive_idle = 0
         # === END EVENT-DRIVEN GATE ===
@@ -4872,7 +4872,7 @@ Respond with valid JSON:
                                 f"Mission '{mission_type}' - Failures: {failure_patterns.get(mission_type, 0)}, Successes: {success_patterns.get(mission_type, 0)}",
                                 {"mission": mission_type, "failures": failure_patterns, "successes": success_patterns}, 
                                 level='info')
-                            print(f"  [Memory] Mission '{mission_type}' - Failures: {failure_patterns.get(mission_type, 0)}, Successes: {success_patterns.get(mission_type, 0)}")
+                            self.external_log_sink.debug(f"[Memory] Mission '{mission_type}' - Failures: {failure_patterns.get(mission_type, 0)}, Successes: {success_patterns.get(mission_type, 0)}")
                         
                         # Mission avoidance based on failure patterns
                         if mission_type in failure_patterns:
@@ -4898,7 +4898,7 @@ Respond with valid JSON:
                                     return "skipped", "Mission avoided due to failure pattern", {"summary": f"Avoided failing mission '{original_mission}'"}, 0.0
                     
                     except Exception as e:
-                        print(f"  [Memory] Consultation failed: {e}")
+                        self.external_log_sink.debug(f"[Memory] Consultation failed: {e}")
                     # === END MEMORY INTEGRATION ===
                     
                     if mission_type == "scale_on_cpu_threshold":
@@ -5178,7 +5178,7 @@ Respond with valid JSON:
                     problem_pods = data.get('problem_pods', [])
                     
                     if unhealthy > 0 or problem_pods:
-                        print(f"  [EventGate] ⚠️  {unhealthy} unhealthy pods detected - ACTIVE MODE")
+                        self.external_log_sink.info(f"[EventGate] ⚠️  {unhealthy} unhealthy pods detected - ACTIVE MODE")
                         self._log_agent_activity("EVENT_GATE_ACTIVE", self.name,
                             f"Unhealthy pods detected: {unhealthy}",
                             {"unhealthy_count": unhealthy, "problem_pods": problem_pods[:5]})
@@ -5189,7 +5189,7 @@ Respond with valid JSON:
                 if hasattr(self.message_bus, 'pending_count'):
                     pending = self.message_bus.pending_count()
                     if pending > 0:
-                        print(f"  [EventGate] 📬 {pending} pending messages - ACTIVE MODE")
+                        self.external_log_sink.info(f"[EventGate] 📬 {pending} pending messages - ACTIVE MODE")
                         return False
             
             # 3. Check event monitor for recent critical events
@@ -5198,16 +5198,16 @@ Respond with valid JSON:
                     recent = self.event_monitor.get_recent_events(minutes=5)
                     critical = [e for e in recent if e.get('severity') in ('critical', 'high')]
                     if critical:
-                        print(f"  [EventGate] 🚨 {len(critical)} critical events - ACTIVE MODE")
+                        self.external_log_sink.info(f"[EventGate] 🚨 {len(critical)} critical events - ACTIVE MODE")
                         return False
             
             # All clear - stay idle
-            print(f"  [EventGate] ✅ System healthy - IDLE MODE")
+            self.external_log_sink.info(f"[EventGate] ✅ System healthy - IDLE MODE")
             return True
             
         except Exception as e:
             # On error, default to active (safe fallback)
-            print(f"  [EventGate] Error checking health: {e} - defaulting to ACTIVE")
+            self.external_log_sink.info(f"[EventGate] Error checking health: {e} - defaulting to ACTIVE")
             return False
 
     def _get_idle_sleep_duration(self) -> int:
@@ -5241,15 +5241,15 @@ Respond with valid JSON:
         if self._should_be_idle():
             self._consecutive_idle += 1
             sleep_duration = self._get_idle_sleep_duration()
-            print(f"  [Planner] 😴 Idle cycle #{self._consecutive_idle} - sleeping {sleep_duration}s")
+            self.external_log_sink.info(f"[Planner] 😴 Idle cycle #{self._consecutive_idle} - sleeping {sleep_duration}s")
 
             # Only do curiosity research occasionally when idle (every 5th idle cycle)
             if self._consecutive_idle % 5 == 0:
-                print(f"  [Planner] 🔍 Idle curiosity research...")
+                self.external_log_sink.info(f"[Planner] 🔍 Idle curiosity research...")
                 try:
                     self._curiosity_research()
                 except Exception as e:
-                    print(f"  [Planner] Curiosity failed: {e}")
+                    self.external_log_sink.info(f"[Planner] Curiosity failed: {e}")
 
             return None  # Stay idle
 
@@ -5278,10 +5278,10 @@ Respond with valid JSON:
                 self._log_agent_activity("MEMORY_CONSULTATION", self.name,
                     f"Memory analysis - Failures: {failure_patterns}, Successes: {success_patterns}",
                     {"failures": failure_patterns, "successes": success_patterns}, level='info')
-                print(f"  [Memory] Recent failures: {failure_patterns}")
-                print(f"  [Memory] Recent successes: {success_patterns}")
+                self.external_log_sink.debug(f"[Memory] Recent failures: {failure_patterns}")
+                self.external_log_sink.debug(f"[Memory] Recent successes: {success_patterns}")
         except Exception as e:
-            print(f"  [Memory] Query failed: {e}")
+            self.external_log_sink.debug(f"[Memory] Query failed: {e}")
         # === END MEMORY INTEGRATION ===
 
         # Iterate once over the queue looking for a ready mission
@@ -5319,7 +5319,7 @@ Respond with valid JSON:
         ]
         
         topic = random.choice(research_topics)
-        print(f"  [Curiosity] 🔍 Researching: {topic}")
+        self.external_log_sink.info(f"[Curiosity] 🔍 Researching: {topic}")
         
         try:
             # Search web
@@ -5336,7 +5336,7 @@ Respond with valid JSON:
                         # Read first article - note: 'href' not 'url'
                         first_url = results_list[0].get('href', results_list[0].get('url', ''))
                         title = results_list[0].get('title', '')[:50]
-                        print(f"  [Curiosity] 📖 Reading: {title}...")
+                        self.external_log_sink.info(f"[Curiosity] 📖 Reading: {title}...")
                         
                         if first_url:
                             read_result = self.tool_registry.safe_call('read_webpage', url=first_url)
@@ -5356,13 +5356,13 @@ Respond with valid JSON:
                                     except Exception:
                                         pass
                                 
-                                print(f"  [Curiosity] ✅ Learned: {title}")
-                                print(f"  [Curiosity] 💾 Stored in memory for future use")
+                                self.external_log_sink.info(f"[Curiosity] ✅ Learned: {title}")
+                                self.external_log_sink.info(f"[Curiosity] 💾 Stored in memory for future use")
                                 
                                 # Check if we found a gap/need
                                 gap_keywords = ["missing", "need", "should have", "lacking", "improve", "automate", "tool"]
                                 if any(kw in article_content.lower() for kw in gap_keywords):
-                                    print(f"  [Curiosity] 💡 Identified potential improvement area!")
+                                    self.external_log_sink.info(f"[Curiosity] 💡 Identified potential improvement area!")
                                     if hasattr(self, '_log_agent_activity'):
                                         self._log_agent_activity("CURIOSITY_GAP_FOUND", self.name,
                                             f"Research found improvement area: {title}",
@@ -5373,7 +5373,7 @@ Respond with valid JSON:
             return {"success": False, "reason": "no_results"}
             
         except Exception as e:
-            print(f"  [Curiosity] ❌ Research failed: {e}")
+            self.external_log_sink.info(f"[Curiosity] ❌ Research failed: {e}")
             return {"success": False, "error": str(e)}
 
     def _mark_mission_success(self, mission: str) -> None:
@@ -8780,7 +8780,7 @@ Respond in JSON:
         Handle the 'Research and learn from web' mission.
         Triggers curiosity loop to search web and learn.
         """
-        print(f"  [{self.name}] 🧠 Starting curiosity research cycle...")
+        self.external_log_sink.info(f"[{self.name}] 🧠 Starting curiosity research cycle...")
         result = self._curiosity_research()
         
         if result.get("success"):
@@ -9142,7 +9142,7 @@ Respond in JSON:
     def _handle_gather_perturbation_ideas(self, task_description: str, **kwargs) -> tuple:
         self.external_log_sink.info(f"{self.name} executing handler for: '{task_description}'",
                                      extra={"agent": self.name, "event_type": "TASK_EXECUTION", "task_name": task_description})
-        print(f"  [{self.name}] Executing mock handler for: '{task_description}'")
+        self.external_log_sink.info(f"[{self.name}] Executing mock handler for: '{task_description}'")
         mock_perturbation_ideas = [
             {"idea_id": "P-001", "concept": "Algorithmic Noise Injection", "description": "Introduce random variables..."},
             {"idea_id": "P-002", "concept": "Data Stream Reordering", "description": "Process data streams out of order..."},
@@ -9160,7 +9160,7 @@ Respond in JSON:
     def _handle_evaluate_perturbation_options(self, task_description: str, **kwargs) -> tuple:
         self.external_log_sink.info(f"{self.name} executing handler for: '{task_description}'",
                                      extra={"agent": self.name, "event_type": "TASK_EXECUTION", "task_name": task_description})
-        print(f"  [{self.name}] Executing mock handler for: '{task_description}'")
+        self.external_log_sink.info(f"[{self.name}] Executing mock handler for: '{task_description}'")
         mock_evaluated_options = [
             {"idea_id": "P-001", "concept": "Algorithmic Noise Injection", "evaluation": {"feasibility_score": 0.9}},
             {"idea_id": "P-002", "concept": "Data Stream Reordering", "evaluation": {"feasibility_score": 0.6}},
@@ -9178,7 +9178,7 @@ Respond in JSON:
     def _handle_select_novel_perturbation(self, task_description: str, **kwargs) -> tuple:
         self.external_log_sink.info(f"{self.name} executing handler for: '{task_description}'",
                                      extra={"agent": self.name, "event_type": "TASK_EXECUTION", "task_name": task_description})
-        print(f"  [{self.name}] Executing mock handler for: '{task_description}'")
+        self.external_log_sink.info(f"[{self.name}] Executing mock handler for: '{task_description}'")
         selected_perturbation = {"idea_id": "P-001", "concept": "Algorithmic Noise Injection"}
         report_content = {
             "summary": f"Selected perturbation idea '{selected_perturbation['concept']}' for implementation.",
@@ -9382,7 +9382,7 @@ Respond in JSON:
             f"{self.name} executing handler for: '{task_description}'",
             extra={"agent": self.name, "event_type": "TASK_EXECUTION", "task_name": task_description}
         )
-        print(f"  [{self.name}] Executing mock handler for: '{task_description}'")
+        self.external_log_sink.info(f"[{self.name}] Executing mock handler for: '{task_description}'")
 
         mock_analysis_results = {
             "analysis_summary": "Analysis of existing planning frameworks completed. Identified modularity and extensibility as strengths, but noted lack of dynamic tool integration as a weakness.",
@@ -9499,7 +9499,7 @@ Respond in JSON:
             f"{self.name} executing handler for: '{task_description}'",
             extra={"agent": self.name, "event_type": "TASK_EXECUTION", "task_name": task_description}
         )
-        print(f"  [{self.name}] Executing mock handler for: '{task_description}'")
+        self.external_log_sink.info(f"[{self.name}] Executing mock handler for: '{task_description}'")
 
         mock_perturbation_ideas = [
             {
@@ -9553,7 +9553,7 @@ Respond in JSON:
             f"{self.name} executing handler for: '{task_description}'",
             extra={"agent": self.name, "event_type": "TASK_EXECUTION", "task_name": task_description}
         )
-        print(f"  [{self.name}] Executing mock handler for: '{task_description}'")
+        self.external_log_sink.info(f"[{self.name}] Executing mock handler for: '{task_description}'")
 
         mock_evaluated_options = [
             {
@@ -9621,7 +9621,7 @@ Respond in JSON:
             f"{self.name} executing handler for: '{task_description}'",
             extra={"agent": self.name, "event_type": "TASK_EXECUTION", "task_name": task_description}
         )
-        print(f"  [{self.name}] Executing mock handler for: '{task_description}'")
+        self.external_log_sink.info(f"[{self.name}] Executing mock handler for: '{task_description}'")
         
         # In a real system, this would involve a complex decision based on data from a previous step.
         # For our mock, we'll just pre-select an option.
@@ -9647,7 +9647,7 @@ Respond in JSON:
         return outcome
         
     def _generate_fallback_directives(self, cycle_id=None) -> list:
-        print(f"  [Planner] {self.name} is generating fallback directives for recovery.")
+        self.external_log_sink.info(f"[Planner] {self.name} is generating fallback directives for recovery.")
         fallback_directives = []
         
         problem_id = f"PLANNER_STUCK_GOAL_{hash(self._last_goal)}_{self._last_goal[:20].replace(' ', '_')}"
@@ -9716,7 +9716,7 @@ Respond in JSON:
         self.llm_assisted_planning = enable
 
     def _generate_diagnostic_report(self, cycle_id=None) -> str:
-        print(f"  [Planner] {self.name} is generating a diagnostic report.")
+        self.external_log_sink.info(f"[Planner] {self.name} is generating a diagnostic report.")
         report_content = f"Planner '{self.name}' is in diagnostic standby mode. " \
                          f"Current intent: '{self.current_intent}'. " \
                          f"Last loop count before fallback: {self.intent_loop_count}. " \
@@ -9755,7 +9755,7 @@ Respond in JSON:
                 "task": f"Planned for goal '{high_level_goal}'", "generated_directives_count": len(processed_directives), "outcome": "completed",
                 "goal": high_level_goal, "failures_in_cycle": self.planning_failure_count, "source_method": "LLMDecomposition"
             })
-            print(f"  [Planner] Generated {len(processed_directives)} directives for goal: '{high_level_goal}' (Failures: {self.planning_failure_count}). Injected with tracking ID: {current_planning_cycle_id}")
+            self.external_log_sink.info(f"[Planner] Generated {len(processed_directives)} directives for goal: '{high_level_goal}' (Failures: {self.planning_failure_count}). Injected with tracking ID: {current_planning_cycle_id}")
         else:
             self.external_log_sink.error("CatalystVectorAlpha reference not available in MessageBus for directive injection.", extra={"agent": self.name})
 
@@ -10172,13 +10172,13 @@ TOOLSMITH MODE (Self-Evolution):
                 # Prefer waste-test over nginx
                 if "waste-test" in targets:
                     target_deployment = "waste-test"
-                    print(f"[Planner] Using target from Observer: {target_deployment} (prioritized)")
+                    self.external_log_sink.info(f"[Planner] Using target from Observer: {target_deployment} (prioritized)")
                 elif targets:
                     target_deployment = targets[0]
-                    print(f"[Planner] Using target from Observer: {target_deployment}")
+                    self.external_log_sink.info(f"[Planner] Using target from Observer: {target_deployment}")
                         
             except Exception as e:
-                print(f"[Planner] Could not read target_deployment: {e}")
+                self.external_log_sink.info(f"[Planner] Could not read target_deployment: {e}")
                 import traceback
                 traceback.print_exc()
             
@@ -10490,11 +10490,11 @@ TOOLSMITH MODE (Self-Evolution):
 
     def plan_and_spawn_directives(self, high_level_goal: str, cycle_id=None) -> list:
         """Enhanced planning with failure recovery, generating directives based on goal keywords."""
-        print(f"  [Planner] Analyzing goal: '{high_level_goal}'")
+        self.external_log_sink.info(f"[Planner] Analyzing goal: '{high_level_goal}'")
 
         if high_level_goal != self._last_goal:
             self.planning_failure_count = 0
-            print(f"  [Planner] Reset planning failure count for new goal: '{high_level_goal}'.")
+            self.external_log_sink.info(f"[Planner] Reset planning failure count for new goal: '{high_level_goal}'.")
         self._last_goal = high_level_goal
 
         self.diag_history.append(high_level_goal)
@@ -10522,7 +10522,7 @@ TOOLSMITH MODE (Self-Evolution):
                 plan_source = "RuleBased"
             
             if not generated_directives:
-                print(f"  [Planner] Standard planning rules failed. Attempting Case-Based Reasoning.")
+                self.external_log_sink.info(f"[Planner] Standard planning rules failed. Attempting Case-Based Reasoning.")
                 cbr_directives = self._retrieve_similar_plan(high_level_goal)
                 if cbr_directives:
                     generated_directives.extend(cbr_directives)
@@ -10532,7 +10532,7 @@ TOOLSMITH MODE (Self-Evolution):
                     })
 
             if not generated_directives:
-                print(f"  [Planner] Case-Based Reasoning failed. Attempting LLM-assisted decomposition.")
+                self.external_log_sink.info(f"[Planner] Case-Based Reasoning failed. Attempting LLM-assisted decomposition.")
                 # --- MODIFICATION START ---
                 # Remove 'model_name="llama3"' from the call.
                 status, _, result_data = self._llm_plan_decomposition(high_level_goal, cycle_id, context_info=self.distill_self_narrative()) # Pass context here
@@ -10548,7 +10548,7 @@ TOOLSMITH MODE (Self-Evolution):
                         "type": "LLMDecomposition", "goal": high_level_goal, "directives_count": len(llm_directives)
                     })
                 else:
-                    print(f"  [Planner] LLM-assisted decomposition also failed for '{high_level_goal}'.")
+                    self.external_log_sink.info(f"[Planner] LLM-assisted decomposition also failed for '{high_level_goal}'.")
 
             # --- After all planning attempts ---
             if generated_directives:
@@ -10557,7 +10557,7 @@ TOOLSMITH MODE (Self-Evolution):
 
                 # --- NEW CRITICAL STEP: Sanitize and validate directives here ---
                 processed_directives = self._sanitize_and_validate_directives(generated_directives)
-                print(f"  [Planner] Sanitized {len(processed_directives)} of {len(generated_directives)} directives before injection.")
+                self.external_log_sink.info(f"[Planner] Sanitized {len(processed_directives)} of {len(generated_directives)} directives before injection.")
 
                 current_planning_cycle_id = f"planner_plan_{timestamp_now().replace(':', '-').replace('Z', '')}_{random.randint(0,999)}"
                 
@@ -10584,12 +10584,12 @@ TOOLSMITH MODE (Self-Evolution):
                     "task": f"Planned for goal '{high_level_goal}'", "generated_directives_count": len(processed_directives), "outcome": "completed",
                     "goal": high_level_goal, "failures_in_cycle": self.planning_failure_count, "source_method": plan_source
                 })
-                print(f"  [Planner] Generated {len(processed_directives)} directives for goal: '{high_level_goal}' (Failures: {self.planning_failure_count}). Injected with tracking ID: {current_planning_cycle_id}")
+                self.external_log_sink.info(f"[Planner] Generated {len(processed_directives)} directives for goal: '{high_level_goal}' (Failures: {self.planning_failure_count}). Injected with tracking ID: {current_planning_cycle_id}")
                 return processed_directives
 
             else:
                 self.planning_failure_count += 1
-                print(f"  [Planner] Goal '{high_level_goal}' not decomposed. Failure count: {self.planning_failure_count}.")
+                self.external_log_sink.info(f"[Planner] Goal '{high_level_goal}' not decomposed. Failure count: {self.planning_failure_count}.")
                 self.memetic_kernel.add_memory("PlanningOutcome", {
                     "task": f"Planned for goal '{high_level_goal}'", "generated_directives_count": 0, "outcome": "failed",
                     "goal": high_level_goal, "failures_in_cycle": self.planning_failure_count, "source_method": "AllFailed"
@@ -10613,7 +10613,7 @@ TOOLSMITH MODE (Self-Evolution):
         sanitized_directives = []
         for directive in directives_list:
             if not isinstance(directive, dict) or 'type' not in directive:
-                print(f"  [Planner] Warning: Skipping malformed directive (missing 'type' or not a dict): {directive}")
+                self.external_log_sink.info(f"[Planner] Warning: Skipping malformed directive (missing 'type' or not a dict): {directive}")
                 self.memetic_kernel.add_memory('DirectiveSanitizationWarning', {"reason": "Malformed directive format", "directive": str(directive)[:200]})
                 continue
 
@@ -10622,29 +10622,29 @@ TOOLSMITH MODE (Self-Evolution):
             if directive_type == 'INJECT_EVENT':
                 payload = directive.get('payload')
                 if not isinstance(payload, dict):
-                    print(f"  [Planner] Warning: INJECT_EVENT payload missing or invalid. Sanitizing with defaults for directive: {directive_type}.")
+                    self.external_log_sink.info(f"[Planner] Warning: INJECT_EVENT payload missing or invalid. Sanitizing with defaults for directive: {directive_type}.")
                     self.memetic_kernel.add_memory('DirectiveSanitizationWarning', {"reason": "INJECT_EVENT payload invalid", "directive": str(directive)[:200]})
                     payload = {}
                 if 'change_factor' not in payload:
                     payload['change_factor'] = 0.1
-                    print(f"  [Planner] Sanitized INJECT_EVENT: Added default 'change_factor'.")
+                    self.external_log_sink.info(f"[Planner] Sanitized INJECT_EVENT: Added default 'change_factor'.")
                 if 'urgency' not in payload:
                     payload['urgency'] = 'medium'
-                    print(f"  [Planner] Sanitized INJECT_EVENT: Added default 'urgency'.")
+                    self.external_log_sink.info(f"[Planner] Sanitized INJECT_EVENT: Added default 'urgency'.")
                 if 'direction' not in payload:
                     payload['direction'] = 'neutral_impact'
-                    print(f"  [Planner] Sanitized INJECT_EVENT: Added default 'direction'.")
+                    self.external_log_sink.info(f"[Planner] Sanitized INJECT_EVENT: Added default 'direction'.")
                 
                 directive['payload'] = payload
                 
                 if 'event_id' not in directive:
                     import uuid
                     directive['event_id'] = f"PLN-EVT-{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
-                    print(f"  [Planner] Sanitized INJECT_EVENT: Added missing 'event_id'.")
+                    self.external_log_sink.info(f"[Planner] Sanitized INJECT_EVENT: Added missing 'event_id'.")
             
             if directive_type == 'AGENT_PERFORM_TASK':
                 if 'agent_name' not in directive or not isinstance(directive['agent_name'], str):
-                    print(f"  [Planner] Warning: AGENT_PERFORM_TASK missing or invalid 'agent_name'. Skipping: {directive}")
+                    self.external_log_sink.info(f"[Planner] Warning: AGENT_PERFORM_TASK missing or invalid 'agent_name'. Skipping: {directive}")
                     self.memetic_kernel.add_memory('DirectiveSanitizationWarning', {"reason": "AGENT_PERFORM_TASK missing agent_name", "directive": str(directive)[:200]})
                     continue
             
@@ -10790,7 +10790,7 @@ TOOLSMITH MODE (Self-Evolution):
             "directives_count": len(structured_directives_for_storage), # Use the count of structured directives
             "source": source
         })
-        print(f"  [Planner] Stored successful plan for goal: '{goal}'. Source: {source}.")
+        self.external_log_sink.info(f"[Planner] Stored successful plan for goal: '{goal}'. Source: {source}.")
         # Log to central activity log
         if hasattr(self.message_bus, 'catalyst_vector_ref') and self.message_bus.catalyst_vector_ref:
             self.message_bus.catalyst_vector_ref._log_swarm_activity("PLANNING_KNOWLEDGE_STORED", self.name,
@@ -10803,10 +10803,10 @@ TOOLSMITH MODE (Self-Evolution):
         """
         goal_hash = hash(goal)
         if goal_hash in self.planning_knowledge_base:
-            print(f"  [Planner] Retrieved plan from knowledge base for similar goal: '{goal}'.")
+            self.external_log_sink.info(f"[Planner] Retrieved plan from knowledge base for similar goal: '{goal}'.")
             self.memetic_kernel.add_memory("PlanningKnowledgeRetrieved", f"Retrieved plan for goal: '{goal[:50]}...'.")
             return self.planning_knowledge_base[goal_hash]['directives']
-        print(f"  [Planner] No similar plan found in knowledge base for goal: '{goal}'.")
+        self.external_log_sink.info(f"[Planner] No similar plan found in knowledge base for goal: '{goal}'.")
         return []
 
         
@@ -10838,7 +10838,7 @@ TOOLSMITH MODE (Self-Evolution):
         Called by the Orchestrator when human input for this Planner's request
         has been successfully received and processed.
         """
-        print(f"  [{self.name}] (Planner): Acknowledging human input received for a previous request.")
+        self.external_log_sink.info(f"[{self.name}] (Planner): Acknowledging human input received for a previous request.")
         self.memetic_kernel.add_memory("HumanInputAcknowledged", {
             "response": response_details.get('response', 'No specific response.'),
             "context": "Human input received for previous planning stagnation."
@@ -10851,13 +10851,13 @@ TOOLSMITH MODE (Self-Evolution):
 
         if problem_id_to_clear and problem_id_to_clear in self.human_request_tracking:
             del self.human_request_tracking[problem_id_to_clear]
-            print(f"  [{self.name}] (Planner): Cleared human request tracking for problem ID: {problem_id_to_clear}.")
+            self.external_log_sink.info(f"[{self.name}] (Planner): Cleared human request tracking for problem ID: {problem_id_to_clear}.")
         else:
             # This case means either:
             # 1. The human response didn't contain the problem_id (orchestrator side issue or scenario-driven request)
             # 2. The problem_id was already cleared (e.g., by a different response)
             # 3. It was a scenario-driven request that the Planner didn't initiate tracking for.
-            print(f"  [{self.name}] (Planner): Warning: No specific human request tracking found for response_details.request_id: {response_details.get('request_id', 'N/A')}. Problem ID: {problem_id_to_clear}.")
+            self.external_log_sink.info(f"[{self.name}] (Planner): Warning: No specific human request tracking found for response_details.request_id: {response_details.get('request_id', 'N/A')}. Problem ID: {problem_id_to_clear}.")
 
         # Reset Planner's general state related to planning failures
         self.planning_failure_count = 0
@@ -10865,7 +10865,7 @@ TOOLSMITH MODE (Self-Evolution):
         self.diag_history.clear()
         self.current_intent = self.eidos_spec.get('initial_intent', self.current_intent) # Reset to initial intent from eidos_spec
 
-        print(f"  [{self.name}] (Planner): Internal state reset due to human intervention.")
+        self.external_log_sink.info(f"[{self.name}] (Planner): Internal state reset due to human intervention.")
 
         # --- CORRECTED BROADCAST COMMAND / LOGGING ---
         # Instead of broadcasting to a non-existent "System" agent,
@@ -10878,9 +10878,9 @@ TOOLSMITH MODE (Self-Evolution):
                 {"planner_name": self.name, "response_summary": response_details.get('response', 'N/A')[:100], "request_id": response_details.get('request_id', 'N/A')},
                 level='info'
             )
-            print(f"  [{self.name}] (Planner): Acknowledgment logged to Orchestrator activity.")
+            self.external_log_sink.info(f"[{self.name}] (Planner): Acknowledgment logged to Orchestrator activity.")
         else:
-            print(f"  [{self.name}] (Planner): ERROR: Orchestrator reference not available for logging acknowledgment.")
+            self.external_log_sink.info(f"[{self.name}] (Planner): ERROR: Orchestrator reference not available for logging acknowledgment.")
         # --- END CORRECTED BROADCAST COMMAND / LOGGING --
 
     def evaluate_injected_directives_outcomes(self):
@@ -10892,7 +10892,7 @@ TOOLSMITH MODE (Self-Evolution):
         if not messages:
             return
 
-        print(f"  [Planner] {self.name} processing {len(messages)} incoming messages to evaluate directives.")
+        self.external_log_sink.info(f"[Planner] {self.name} processing {len(messages)} incoming messages to evaluate directives.")
 
         for msg_payload in messages:
             msg_type = msg_payload['payload']['type']
@@ -10957,7 +10957,7 @@ TOOLSMITH MODE (Self-Evolution):
                         "total_directives": total_directives_in_plan,
                         "successful_directives": successful_directives_in_plan
                     })
-                    print(f"  [Planner] Goal '{current_tracking_entry['goal']}' completed successfully (Ratio: {actual_success_ratio:.2f}).")
+                    self.external_log_sink.info(f"[Planner] Goal '{current_tracking_entry['goal']}' completed successfully (Ratio: {actual_success_ratio:.2f}).")
 
                     # --- NEW: Trigger transition to a new goal or standby state ---
                     # This is the key part to stop redundant planning of the same goal
@@ -10975,7 +10975,7 @@ TOOLSMITH MODE (Self-Evolution):
                         "total_directives": total_directives_in_plan,
                         "successful_directives": successful_directives_in_plan
                     })
-                    print(f"  [Planner] Goal '{current_tracking_entry['goal']}' completed with failures (Ratio: {actual_success_ratio:.2f}).")
+                    self.external_log_sink.info(f"[Planner] Goal '{current_tracking_entry['goal']}' completed with failures (Ratio: {actual_success_ratio:.2f}).")
                     # If partial success, Planner adapts its intent to investigate failures
                     self.update_intent(f"Investigate root cause of '{current_tracking_entry['goal']}' planning execution failures and suggest alternative approaches.")
                     self.last_planning_cycle_id = None # Clear this
@@ -10999,7 +10999,7 @@ class ProtoAgent_Security(ProtoAgent):
         # 1. Check if the planner provided a specific tool
         if specific_tool and hasattr(self, 'tool_registry') and self.tool_registry.has_tool(specific_tool):
             
-            print(f"[{self.name}] Executing specific tool from planner: {specific_tool}")
+            self.external_log_sink.info(f"[{self.name}] Executing specific tool from planner: {specific_tool}")
             
             # 2. Execute the actual tool using its arguments
             result_payload = self.tool_registry.safe_call(specific_tool, **tool_args)
@@ -11020,7 +11020,7 @@ class ProtoAgent_Security(ProtoAgent):
 
         # 4. If no specific tool was given, perform the generic default action
         else:
-            print(f"[{self.name}] Performing generic security monitoring for task: {task_description}")
+            self.external_log_sink.info(f"[{self.name}] Performing generic security monitoring for task: {task_description}")
             summary = "Monitoring complete. No new security anomalies detected."
             report = {"summary": summary, "task_outcome_type": "SecurityOperation"}
             
@@ -11054,11 +11054,11 @@ class ProtoAgent_Security(ProtoAgent):
                         self.memetic_kernel.add_memory("TaskResult", payload)
                     except Exception:
                         pass
-                    print(f"[{self.name}] Stored TaskResult for plan_id={plan_id} task_id={task_id}")
+                    self.external_log_sink.info(f"[{self.name}] Stored TaskResult for plan_id={plan_id} task_id={task_id}")
                 else:
                     print(f"[DEBUG TaskResult Write] writer=security_final SKIP (no task_id) plan_id={plan_id}")
             except Exception as e:
-                print(f"[{self.name}] Warning: Could not store TaskResult: {e}")
+                self.external_log_sink.info(f"[{self.name}] Warning: Could not store TaskResult: {e}")
 
         return outcome, failure_reason, final_report, progress
     
@@ -11674,11 +11674,11 @@ class ProtoAgent_Worker(ProtoAgent):
                         self.memetic_kernel.add_memory("TaskResult", payload)
                     except Exception:
                         pass
-                    print(f"[{self.name}] Stored TaskResult for plan_id={plan_id} task_id={task_id}")
+                    self.external_log_sink.info(f"[{self.name}] Stored TaskResult for plan_id={plan_id} task_id={task_id}")
                 else:
                     print(f"[DEBUG TaskResult Write] writer=worker_final SKIP (no task_id) plan_id={plan_id}")
             except Exception as e:
-                print(f"[{self.name}] Warning: Could not store TaskResult: {e}")
+                self.external_log_sink.info(f"[{self.name}] Warning: Could not store TaskResult: {e}")
 
         return status, failure_reason, report, progress
 
