@@ -8978,7 +8978,7 @@ Respond in JSON:
             elif source_type == 'external_apis':
                 return hasattr(self, 'message_bus')
             return False
-        except:
+        except Exception:
             return False
 
     def _handle_establish_reporting_protocols(self, **kwargs) -> tuple:

@@ -37,7 +37,7 @@ class ProtoAgent_Notifier(ProtoAgent):
         if "No specific intent" in str(message_content):
             return ("completed", None, {"summary": "Skipped generic notification"}, 0.0)
         
-        print(f"[NotifierAgent] Received task: {task_description}")
+        self.external_log_sink.info(f"[NotifierAgent] Received task: {task_description}")
         
         # This agent only has one job.
         # We'll default to 'send_desktop_notification' if not specified
@@ -106,4 +106,4 @@ class ProtoAgent_Notifier(ProtoAgent):
                     metadata={"tool": tool_name}
                 )
             except Exception as e:
-                print(f"[DEBUG] Failed to record Notifier task: {e}")
+                self.external_log_sink.debug(f"[DEBUG] Failed to record Notifier task: {e}")
