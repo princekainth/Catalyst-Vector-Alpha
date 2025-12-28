@@ -4809,6 +4809,13 @@ Respond with valid JSON:
         attempt planning with explicit breadcrumbs and dispatch.
         Returns a planner-style tuple: (status, err, metrics, confidence).
         """
+        # === EVENT-DRIVEN GATE ===
+        if self._should_be_idle():
+            self._consecutive_idle = getattr(self, "_consecutive_idle", 0) + 1
+            print(f"  [Planner] 😴 System healthy - skipping idle synthesis (cycle #{self._consecutive_idle})")
+            return "idle", None, {"reason": "system_healthy"}, 0.0
+        self._consecutive_idle = 0
+        # === END EVENT-DRIVEN GATE ===
 
         self._check_completed_missions()
         
