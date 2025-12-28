@@ -3544,20 +3544,11 @@ class CatalystVectorAlpha:
                     consecutive_idle_cycles += 1
                     print(f"\n[IDLE CYCLE {consecutive_idle_cycles}]")
                     
-                    # Inject planning directive after 2 idle cycles
-                    if consecutive_idle_cycles >= 2:
-                        planner_name = _resolve_planner_name()
-                        if planner_name:
-                            print(f"Injecting autonomous planning directive to {planner_name}...")
-                            try:
-                                self.inject_directives([{
-                                    "type": "INITIATE_PLANNING_CYCLE",
-                                    "planner_agent_name": planner_name,
-                                    "high_level_goal": "System idle. Generate autonomous goal and execute plan."
-                                }])
-                                consecutive_idle_cycles = 0
-                            except Exception as e:
-                                print(f"Failed to inject planning directive: {e}")
+                    # EVENT-DRIVEN: Don't force work when idle
+                    # Let the Planner's _should_be_idle() gate handle this
+                    if consecutive_idle_cycles >= 10:
+                        print(f"  [Orchestrator] Extended idle ({consecutive_idle_cycles} cycles) - system healthy")
+                        consecutive_idle_cycles = 0  # Reset to avoid log spam
                 else:
                     consecutive_idle_cycles = 0
 

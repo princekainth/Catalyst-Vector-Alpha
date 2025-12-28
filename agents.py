@@ -5147,6 +5147,64 @@ Respond with valid JSON:
             seconds = self._default_cooldown
         self._mission_cooldown[mission] = self._now_epoch() + float(seconds)
 
+    def _should_be_idle(self) -> bool:
+        """
+        EVENT-DRIVEN GATE: Check if system is healthy and no work needed.
+        Returns True if CVA should stay idle (no problems detected).
+        Returns False if there's work to do (problems found).
+        """
+        try:
+            # 1. Check K8s pod health
+            if hasattr(self, 'tool_registry') and self.tool_registry:
+                result = self.tool_registry.safe_call('get_pod_status', namespace='all')
+                
+                if result.get('status') == 'ok':
+                    data = result.get('data', {})
+                    unhealthy = data.get('unhealthy_count', 0)
+                    problem_pods = data.get('problem_pods', [])
+                    
+                    if unhealthy > 0 or problem_pods:
+                        print(f"  [EventGate] ⚠️  {unhealthy} unhealthy pods detected - ACTIVE MODE")
+                        self._log_agent_activity("EVENT_GATE_ACTIVE", self.name,
+                            f"Unhealthy pods detected: {unhealthy}",
+                            {"unhealthy_count": unhealthy, "problem_pods": problem_pods[:5]})
+                        return False  # Work to do!
+            
+            # 2. Check for pending directives/alerts
+            if hasattr(self, 'message_bus') and self.message_bus:
+                if hasattr(self.message_bus, 'pending_count'):
+                    pending = self.message_bus.pending_count()
+                    if pending > 0:
+                        print(f"  [EventGate] 📬 {pending} pending messages - ACTIVE MODE")
+                        return False
+            
+            # 3. Check event monitor for recent critical events
+            if hasattr(self, 'event_monitor') and self.event_monitor:
+                if hasattr(self.event_monitor, 'get_recent_events'):
+                    recent = self.event_monitor.get_recent_events(minutes=5)
+                    critical = [e for e in recent if e.get('severity') in ('critical', 'high')]
+                    if critical:
+                        print(f"  [EventGate] 🚨 {len(critical)} critical events - ACTIVE MODE")
+                        return False
+            
+            # All clear - stay idle
+            print(f"  [EventGate] ✅ System healthy - IDLE MODE")
+            return True
+            
+        except Exception as e:
+            # On error, default to active (safe fallback)
+            print(f"  [EventGate] Error checking health: {e} - defaulting to ACTIVE")
+            return False
+
+    def _get_idle_sleep_duration(self) -> int:
+        """How long to sleep when idle. Increases with consecutive idle cycles."""
+        if not hasattr(self, '_consecutive_idle'):
+            self._consecutive_idle = 0
+        
+        # Exponential backoff: 30s, 60s, 120s, max 300s
+        base = 30
+        duration = min(base * (2 ** self._consecutive_idle), 300)
+        return duration
 
     def _pick_next_mission(self) -> str | None:
         """
@@ -5163,6 +5221,27 @@ Respond with valid JSON:
         if not hasattr(self, "_mission_backoff"):     self._mission_backoff = {}
         if not hasattr(self, "_default_cooldown"):    self._default_cooldown = 30
         if not hasattr(self, "_max_backoff"):         self._max_backoff = 600
+        if not hasattr(self, "_consecutive_idle"):    self._consecutive_idle = 0
+
+        # === EVENT-DRIVEN GATE ===
+        if self._should_be_idle():
+            self._consecutive_idle += 1
+            sleep_duration = self._get_idle_sleep_duration()
+            print(f"  [Planner] 😴 Idle cycle #{self._consecutive_idle} - sleeping {sleep_duration}s")
+
+            # Only do curiosity research occasionally when idle (every 5th idle cycle)
+            if self._consecutive_idle % 5 == 0:
+                print(f"  [Planner] 🔍 Idle curiosity research...")
+                try:
+                    self._curiosity_research()
+                except Exception as e:
+                    print(f"  [Planner] Curiosity failed: {e}")
+
+            return None  # Stay idle
+
+        # Reset idle counter - we have work
+        self._consecutive_idle = 0
+        # === END EVENT-DRIVEN GATE ===
 
         # === MEMORY-DRIVEN DECISION MAKING ===
         # Query past mission outcomes to inform selection
