@@ -1428,48 +1428,52 @@ class ProtoAgent(ABC):
                     "task": task_description, "task_id": task_id, "blocked": True, "sg": sg_meta
                 }, 0.0
 
-        # --- Memory Consultation: Learn from past ---
-        try:
-            from database import cva_db
-            from datetime import datetime, timezone
-            similar_tasks = cva_db.query_similar_tasks(self.name, final_task_description, limit=3)
-            success_rate = cva_db.get_agent_success_rate(self.name)
-            
-            if similar_tasks:
-                memory_context = "\n[Memory Recall] You've done similar tasks before:\n"
-                for i, task in enumerate(similar_tasks, 1):
-                    outcome = task['outcome']
-                    exec_time = task['execution_time_seconds']
-                    memory_context += f"{i}. Outcome: {outcome}, Time: {exec_time:.1f}s"
-                    if task.get('error_message'):
-                        error_msg = str(task['error_message'])[:50]
-                        memory_context += f", Error: {error_msg}"
-                    memory_context += "\n"
-                
-                success_pct = success_rate['success_rate'] * 100
-                success_count = success_rate['successful_tasks']
-                total_count = success_rate['total_tasks']
-                memory_context += f"Your overall success rate: {success_pct:.1f}% ({success_count}/{total_count} tasks)\n"
-                # Pattern recognition: warn about repeated failures
-                failed_tasks = [t for t in similar_tasks if t['outcome'] == 'failed']
-                if len(failed_tasks) >= 2:
-                    memory_context += f"\n⚠️  WARNING: You've failed {len(failed_tasks)} similar tasks recently. Common errors:\n"
-                    for task in failed_tasks[:2]:
-                        if task.get('error_message'):
-                            memory_context += f"  - {task['error_message'][:80]}\n"
-                    memory_context += "Consider a different approach this time.\n"
-                # Pattern recognition: reinforce successful patterns
-                successful_tasks = [t for t in similar_tasks if t['outcome'] == 'completed']
-                if len(successful_tasks) >= 2:
-                    avg_success_time = sum(t['execution_time_seconds'] for t in successful_tasks) / len(successful_tasks)
-                    memory_context += f"\n✓ SUCCESS PATTERN: You've completed {len(successful_tasks)} similar tasks successfully (avg {avg_success_time:.1f}s)\n"
-                
-                # Store memory context for LLM reasoning (don't pollute task description)
-                self._current_memory_context = memory_context
-                print(f"[{self.name}] Consulted memory: {len(similar_tasks)} similar tasks found")
-        except Exception as e:
-            print(f"[DEBUG] Memory consultation failed for {self.name}: {e}")
+        # --- Memory Consultation: Learn from past (skip for idle tasks) ---
+        task_lower = (final_task_description or "").strip().lower()
+        if task_lower in ("", "no specific intent", "none", "idle"):
             self._current_memory_context = ""
+        else:
+            try:
+                from database import cva_db
+                from datetime import datetime, timezone
+                similar_tasks = cva_db.query_similar_tasks(self.name, final_task_description, limit=3)
+                success_rate = cva_db.get_agent_success_rate(self.name)
+
+                if similar_tasks:
+                    memory_context = "\n[Memory Recall] You've done similar tasks before:\n"
+                    for i, task in enumerate(similar_tasks, 1):
+                        outcome = task['outcome']
+                        exec_time = task['execution_time_seconds']
+                        memory_context += f"{i}. Outcome: {outcome}, Time: {exec_time:.1f}s"
+                        if task.get('error_message'):
+                            error_msg = str(task['error_message'])[:50]
+                            memory_context += f", Error: {error_msg}"
+                        memory_context += "\n"
+
+                    success_pct = success_rate['success_rate'] * 100
+                    success_count = success_rate['successful_tasks']
+                    total_count = success_rate['total_tasks']
+                    memory_context += f"Your overall success rate: {success_pct:.1f}% ({success_count}/{total_count} tasks)\n"
+                    # Pattern recognition: warn about repeated failures
+                    failed_tasks = [t for t in similar_tasks if t['outcome'] == 'failed']
+                    if len(failed_tasks) >= 2:
+                        memory_context += f"\n⚠️  WARNING: You've failed {len(failed_tasks)} similar tasks recently. Common errors:\n"
+                        for task in failed_tasks[:2]:
+                            if task.get('error_message'):
+                                memory_context += f"  - {task['error_message'][:80]}\n"
+                        memory_context += "Consider a different approach this time.\n"
+                    # Pattern recognition: reinforce successful patterns
+                    successful_tasks = [t for t in similar_tasks if t['outcome'] == 'completed']
+                    if len(successful_tasks) >= 2:
+                        avg_success_time = sum(t['execution_time_seconds'] for t in successful_tasks) / len(successful_tasks)
+                        memory_context += f"\n✓ SUCCESS PATTERN: You've completed {len(successful_tasks)} similar tasks successfully (avg {avg_success_time:.1f}s)\n"
+
+                    # Store memory context for LLM reasoning (don't pollute task description)
+                    self._current_memory_context = memory_context
+                    print(f"[{self.name}] Consulted memory: {len(similar_tasks)} similar tasks found")
+            except Exception as e:
+                print(f"[DEBUG] Memory consultation failed for {self.name}: {e}")
+                self._current_memory_context = ""
 
         # K8S MONITORING - Run for Observer before task execution
         if self.name and "Observer" in self.name:
@@ -1719,7 +1723,7 @@ class ProtoAgent(ABC):
                 from database import cva_db
                 from datetime import datetime, timezone
                 execution_time = time.time() - start_time
-                print(f"[DEBUG TASK RECORD] Agent: {self.name}, Original: '{original_task_description[:60]}', Final: '{final_task_description[:60]}'")
+                # print(f"[DEBUG TASK RECORD] Agent: {self.name}, Original: '{original_task_description[:60]}', Final: '{final_task_description[:60]}'")
                 cva_db.record_task(
                     task_id=task_id,
                     agent_name=self.name,
@@ -2289,17 +2293,15 @@ class ProtoAgent(ABC):
         print(f"[Agent] {self.name} is initiating memory compression.")
 
         # Your original debugging and slicing logic remains unchanged
-        print(f"DEBUG: Type of self.memetic_kernel.memories BEFORE slicing: {type(self.memetic_kernel.memories)}")
-        print(f"DEBUG: Value of self.memetic_kernel.memories BEFORE slicing: {self.memetic_kernel.memories}")
+        # print(f"DEBUG: Type of self.memetic_kernel.memories BEFORE slicing: {type(self.memetic_kernel.memories)}")
+        # print(f"DEBUG: Value of self.memetic_kernel.memories BEFORE slicing: {self.memetic_kernel.memories}")
 
         try:
             memories_collection_for_slicing = list(self.memetic_kernel.memories)
             memories_to_compress = memories_collection_for_slicing[-10:]
-            print("DEBUG: Successfully converted deque to list for slicing.")
+            # print("DEBUG: Successfully converted deque to list for slicing.")
         except Exception as e:
-            print(f"CRITICAL DEBUG ERROR: Failed to convert memories to list or slice: {e} ", file=sys.stderr)
-            import traceback
-            traceback.print_exc(file=sys.stderr)
+            self.external_log_sink.error(f"Failed to convert memories to list or slice: {e}")
             return False
 
 
