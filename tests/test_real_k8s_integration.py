@@ -1,24 +1,26 @@
 import os
-import subprocess
 import sys
+import subprocess
+import pytest
 
-def _k8s_enabled_and_reachable() -> bool:
+
+def _real_k8s_enabled() -> bool:
+    # Only run if explicitly enabled
     if os.getenv("CVA_REAL_K8S", "0") != "1":
         return False
-    result = subprocess.run(["kubectl", "cluster-info"], capture_output=True)
-    return result.returncode == 0
 
-# If run directly (CI step uses `python3 file.py`), exit 0 to represent "skipped"
-if __name__ == "__main__":
-    if not _k8s_enabled_and_reachable():
-        print("SKIP: real K8s tests disabled or cluster unreachable")
-        sys.exit(0)
+    # And kubectl + cluster must be reachable
+    try:
+        result = subprocess.run(["kubectl", "cluster-info"], capture_output=True, text=True)
+        return result.returncode == 0
+    except FileNotFoundError:
+        return False
 
-# If imported by pytest, skip at collection time
-import pytest  # noqa: E402
 
-if not _k8s_enabled_and_reachable():
-    pytest.skip("real K8s tests disabled or cluster unreachable", allow_module_level=True)
+pytestmark = pytest.mark.skipif(
+    not _real_k8s_enabled(),
+    reason="Real K8s tests disabled (set CVA_REAL_K8S=1) or cluster not reachable",
+)
 
 """
 Test CVA K8s tools against real minikube cluster
