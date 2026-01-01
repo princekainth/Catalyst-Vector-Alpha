@@ -474,6 +474,9 @@ class ProtoAgent(ABC):
                 step["tool"] = mapped
                 tool_raw = mapped
 
+            if tool_raw == "microsoft_autonomous_remediation" and mission_type not in ("k8s_monitoring", "general_planning"):
+                continue
+
             # Policy gate (whitelist microsoft_autonomous_remediation for k8s_monitoring and general_planning)
             if not (tool_raw == "microsoft_autonomous_remediation" and mission_type in ("k8s_monitoring", "general_planning")):
                 if allowed_tools and tool_raw not in allowed_tools:
