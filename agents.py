@@ -6504,6 +6504,18 @@ Respond with valid JSON:
         self._log_agent_activity("PLANNER_ENTRY", self.name, "Entered _handle_strategically_plan()")
         self._log_agent_activity("STRATEGIC_PLANNING_START", self.name, "Initiating comprehensive strategic planning.")
 
+        # If system is healthy/idle, prefer scheduling disk-backed PatchProposals first
+        try:
+            if hasattr(self, "_should_be_idle") and self._should_be_idle():
+                proposal = self._schedule_patch_proposal()
+                if proposal:
+                    proposal_id = proposal.get("id")
+                    self.external_log_sink.info(f"[Planner] Scheduled PatchProposal {proposal_id} (via strategically_plan)")
+                    return "completed", None, {"summary": f"Scheduled PatchProposal {proposal_id}"}, 0.4
+        except Exception as e:
+            # Never let proposal scheduling break planning loop
+            self.external_log_sink.debug(f"[Planner] PatchProposal schedule check failed: {e}")
+
         try:
             # --- 1) Decide the goal (avoid 'No specific intent') ---
             goal = high_level_goal.strip() if isinstance(high_level_goal, str) and high_level_goal.strip() else self._pick_next_mission()
