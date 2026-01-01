@@ -1,11 +1,21 @@
+import os
+import subprocess
+import pytest
+
+# Skip unless explicitly enabled AND cluster reachable
+if os.getenv("CVA_REAL_K8S", "0") != "1":
+    pytest.skip("CVA_REAL_K8S not set - skipping real K8s tests", allow_module_level=True)
+
+result = subprocess.run(["kubectl", "cluster-info"], capture_output=True)
+if result.returncode != 0:
+    pytest.skip("K8s cluster not reachable - skipping real K8s tests", allow_module_level=True)
+
 """
 Test CVA K8s tools against real minikube cluster
 """
 import sys
-import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-import subprocess
 import json
 
 def test_k8s_cluster_accessible():
