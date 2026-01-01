@@ -3,6 +3,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 import os
 import time
+import os
 import logging
 from typing import Optional, Dict, List, Any, Tuple, Set
 from urllib.parse import urlparse
@@ -1007,6 +1008,26 @@ Do NOT include keys that are not in MissingKeys. Do NOT repeat provided args."""
         canonical = tool.name
         now = time.time()
         context = kwargs.pop("_context", None)
+        caller_agent = kwargs.pop("caller_agent", None)
+
+        # Planner guard: block direct tool execution unless allowlisted
+        allowlist = set()
+        env_allow = os.getenv("CVA_PLANNER_TOOL_ALLOWLIST", "").strip()
+        if env_allow:
+            allowlist.update([t.strip() for t in env_allow.split(",") if t.strip()])
+        if not allowlist:
+            allowlist.update({"query_long_term_memory", "system_diagnostics", "get_tool_usage_stats"})
+        if caller_agent and "planner" in str(caller_agent).lower():
+            if canonical not in allowlist:
+                logger.warning(
+                    f"[TOOL BLOCK] Planner direct call rejected: {canonical} caller={caller_agent}"
+                )
+                return {
+                    "status": "error",
+                    "data": None,
+                    "error": f"Planner direct tool call blocked: {canonical}",
+                    "summary": "Planner tool execution is restricted; route via Worker/Observer.",
+                }
 
         # Circuit breaker: short-circuit if tool is marked broken and still in backoff
         with self._failure_lock:

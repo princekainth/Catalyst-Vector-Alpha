@@ -16,6 +16,8 @@ from typing import Optional
 from datetime import datetime
 
 from .base_student import BaseStudent
+from reasoning_engine import get_reasoning_engine, ReasoningTrace
+from quarantine import is_quarantined, set_quarantine
 
 
 class K8sStudent(BaseStudent):
@@ -44,10 +46,15 @@ class K8sStudent(BaseStudent):
             cycle_time=cycle_time,
         )
         self.namespace = namespace
+        self.reasoning = get_reasoning_engine()
         
         # Track what we've already tried to fix
         self._remediated_pods: dict[str, float] = {}  # pod_key -> timestamp
         self._cooldown_seconds = 300  # Don't retry same pod for 5 min
+        self._failed_attempts: dict[str, int] = {}  # deployment_key -> fail count
+        self._max_attempts = 3  # Stop after 3 failures
+        self._permanently_skip: set[str] = set()  # Pods we gave up on
+        self._last_status: Optional[dict] = None
         
         # Severity order for prioritization
         self.SEVERITY = {
@@ -74,7 +81,21 @@ class K8sStudent(BaseStudent):
         4. Return summary
         """
         # 1. Get problem pods
-        problem_pods = self._get_problem_pods()
+        items = self._get_pods_snapshot()
+        problem_pods = self._parse_problem_pods(items)
+        all_pods = self._parse_all_pods(items)
+        healthy = sum(1 for p in all_pods if p.get("ready"))
+        unhealthy = len(all_pods) - healthy
+        self._last_status = {
+            "timestamp": time.time(),
+            "total_pods": len(all_pods),
+            "healthy": healthy,
+            "unhealthy": unhealthy,
+            "unhealthy_count": unhealthy,
+            "problem_pods": problem_pods,
+            "namespace": self.namespace,
+            "status": "ok",
+        }
         
         if not problem_pods:
             return {"success": True, "action": "patrol", "details": {"message": "All pods healthy"}}
@@ -127,120 +148,155 @@ class K8sStudent(BaseStudent):
     def get_status(self) -> dict:
         """Return current K8s cluster status."""
         try:
-            pods = self._get_all_pods()
+            cached = self.get_cached_status()
+            if cached:
+                return cached
+
+            items = self._get_pods_snapshot()
+            pods = self._parse_all_pods(items)
             healthy = sum(1 for p in pods if p.get("ready"))
             unhealthy = len(pods) - healthy
-            
-            return {
+            problem_pods = self._parse_problem_pods(items)
+            status = {
                 "total_pods": len(pods),
                 "healthy": healthy,
                 "unhealthy": unhealthy,
+                "unhealthy_count": unhealthy,
+                "problem_pods": problem_pods,
+                "namespace": self.namespace,
+                "status": "ok",
+                "timestamp": time.time(),
+            }
+            self._last_status = status
+            
+            status.update({
                 "remediated_this_session": self._success_count,
                 "in_cooldown": len(self._remediated_pods),
-            }
+            })
+            return status
         except Exception as e:
             return {"error": str(e)}
+
+    def get_cached_status(self, max_age: int = 120) -> dict:
+        """Return cached status if it's fresh."""
+        status = getattr(self, "_last_status", None)
+        if not status:
+            return {}
+        ts = status.get("timestamp")
+        if not ts or (time.time() - ts) > max_age:
+            return {}
+        return status
     
     # ─────────────────────────────────────────────────────────────
     # Pod Detection
     # ─────────────────────────────────────────────────────────────
     
-    def _get_problem_pods(self) -> list:
-        """Get list of pods with issues."""
+    def _get_pods_snapshot(self) -> list:
+        """Fetch raw pod items once per cycle."""
         try:
             cmd = ["kubectl", "get", "pods", "-A", "-o", "json"]
             if self.namespace != "all":
                 cmd = ["kubectl", "get", "pods", "-n", self.namespace, "-o", "json"]
-            
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
             if result.returncode != 0:
                 return []
-            
             data = json.loads(result.stdout)
-            problems = []
-            
-            for item in data.get("items", []):
-                metadata = item.get("metadata", {})
-                status = item.get("status", {})
-                phase = status.get("phase", "")
-                
-                # Check container statuses
-                container_statuses = status.get("containerStatuses", [])
-                
-                for cs in container_statuses:
-                    waiting = (cs.get("state", {}) or {}).get("waiting", {})
-                    reason = waiting.get("reason", "")
-                    
-                    # Also check terminated for OOMKilled
-                    terminated = (cs.get("state", {}) or {}).get("terminated", {})
-                    if terminated.get("reason") == "OOMKilled":
-                        reason = "OOMKilled"
-                    
-                    if reason in self.SEVERITY:  # Only check actual current issues, not old restart counts
-                        problems.append({
-                            "name": metadata.get("name"),
-                            "namespace": metadata.get("namespace", "default"),
-                            "reason": reason or "CrashLoopBackOff",
-                            "restarts": cs.get("restartCount", 0),
-                            "message": waiting.get("message", ""),
-                            "container": cs.get("name"),
-                        })
-                
-                # Check for pending
-                if phase == "Pending":
-                    problems.append({
-                        "name": metadata.get("name"),
-                        "namespace": metadata.get("namespace", "default"),
-                        "reason": "Pending",
-                        "restarts": 0,
-                        "message": "",
-                    })
-            
-            # Dedupe by pod name
-            seen = set()
-            unique = []
-            for p in problems:
-                key = f"{p['namespace']}/{p['name']}"
-                if key not in seen:
-                    seen.add(key)
-                    unique.append(p)
-            
-            return unique
-            
+            return data.get("items", []) or []
+        except Exception as e:
+            print(f"[{self.name}] Error getting pod snapshot: {e}")
+            return []
+
+    def _get_problem_pods(self, items: Optional[list] = None) -> list:
+        """Get list of pods with issues."""
+        try:
+            if items is None:
+                items = self._get_pods_snapshot()
+            return self._parse_problem_pods(items)
         except Exception as e:
             print(f"[{self.name}] Error getting problem pods: {e}")
             return []
+
+    def _parse_problem_pods(self, items: list) -> list:
+        problems = []
+
+        for item in items or []:
+            metadata = item.get("metadata", {})
+            status = item.get("status", {})
+            phase = status.get("phase", "")
+
+            # Check container statuses
+            container_statuses = status.get("containerStatuses", [])
+
+            for cs in container_statuses:
+                waiting = (cs.get("state", {}) or {}).get("waiting", {})
+                reason = waiting.get("reason", "")
+
+                # Also check terminated for OOMKilled
+                terminated = (cs.get("state", {}) or {}).get("terminated", {})
+                if terminated.get("reason") == "OOMKilled":
+                    reason = "OOMKilled"
+
+                if reason in self.SEVERITY:  # Only check actual current issues, not old restart counts
+                    problems.append({
+                        "name": metadata.get("name"),
+                        "namespace": metadata.get("namespace", "default"),
+                        "reason": reason or "CrashLoopBackOff",
+                        "restarts": cs.get("restartCount", 0),
+                        "message": waiting.get("message", ""),
+                        "container": cs.get("name"),
+                        "lastState": cs.get("lastState", {}) or {},
+                    })
+
+            # Check for pending
+            if phase == "Pending":
+                problems.append({
+                    "name": metadata.get("name"),
+                    "namespace": metadata.get("namespace", "default"),
+                    "reason": "Pending",
+                    "restarts": 0,
+                    "message": "",
+                })
+
+        # Dedupe by pod name
+        seen = set()
+        unique = []
+        for p in problems:
+            key = f"{p['namespace']}/{p['name']}"
+            if key not in seen:
+                seen.add(key)
+                unique.append(p)
+
+        return unique
     
-    def _get_all_pods(self) -> list:
+    def _get_all_pods(self, items: Optional[list] = None) -> list:
         """Get all pods with ready status."""
         try:
-            cmd = ["kubectl", "get", "pods", "-A", "-o", "json"]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-            if result.returncode != 0:
-                return []
-            
-            data = json.loads(result.stdout)
-            pods = []
-            
-            for item in data.get("items", []):
-                metadata = item.get("metadata", {})
-                status = item.get("status", {})
-                
-                ready = all(
-                    cs.get("ready", False)
-                    for cs in status.get("containerStatuses", [])
-                )
-                
-                pods.append({
-                    "name": metadata.get("name"),
-                    "namespace": metadata.get("namespace"),
-                    "ready": ready,
-                    "phase": status.get("phase"),
-                })
-            
-            return pods
-        except:
+            if items is None:
+                items = self._get_pods_snapshot()
+            return self._parse_all_pods(items)
+        except Exception:
             return []
+
+    def _parse_all_pods(self, items: list) -> list:
+        pods = []
+
+        for item in items or []:
+            metadata = item.get("metadata", {})
+            status = item.get("status", {})
+
+            ready = all(
+                cs.get("ready", False)
+                for cs in status.get("containerStatuses", [])
+            )
+
+            pods.append({
+                "name": metadata.get("name"),
+                "namespace": metadata.get("namespace"),
+                "ready": ready,
+                "phase": status.get("phase"),
+            })
+
+        return pods
     
     def _pod_exists(self, name: str, namespace: str) -> bool:
         """Check if pod still exists."""
@@ -258,74 +314,267 @@ class K8sStudent(BaseStudent):
     # ─────────────────────────────────────────────────────────────
     
     def _remediate_pod(self, pod: dict) -> dict:
-        """Fix a single pod using the proven microsoft_autonomous_remediation tool."""
+        """Fix a single pod with full reasoning trace."""
         name = pod["name"]
         namespace = pod["namespace"]
         reason = pod["reason"]
-        
-        print(f"[{self.name}] 🔧 Fixing {namespace}/{name} ({reason})")
-        
+        pod_key = f"{namespace}/{name}"
+        deployment_name = self._get_deployment_name(name, namespace)
+        track_key = f"{namespace}/{deployment_name}" if deployment_name else pod_key
+
+        # Skip if quarantined globally
+        if is_quarantined(pod_key):
+            print(f"[{self.name}] Skipping quarantined pod {pod_key}")
+            return {"success": False, "skipped": True, "reason": "quarantined"}
+
+        # Skip if we've permanently given up
+        if track_key in self._permanently_skip:
+            print(f"[{self.name}] ⏭️ Permanently skipping {track_key}")
+            return {"success": False, "skipped": True, "reason": "permanently_skipped"}
+
+        # Skip if too many failures
+        attempts = self._failed_attempts.get(track_key, 0)
+        if attempts >= self._max_attempts:
+            print(f"[{self.name}] ❌ Giving up on {track_key} after {attempts} failed attempts")
+            self._permanently_skip.add(track_key)
+            return {"success": False, "skipped": True, "reason": "max_attempts_exceeded"}
+
+        # Start reasoning trace
+        trace = self.reasoning.start_trace(
+            agent_name=self.name,
+            trigger=f"Pod {namespace}/{name} has {reason}",
+            goal=f"Restore pod {name} to healthy state"
+        )
+        result = {"success": False, "error": "Unknown failure", "trace_id": trace.trace_id}
+
         try:
-            # Use the battle-tested tool from main CVA
+            # Step 1: Observe
+            trace.observe(
+                f"Detected {reason} on pod {namespace}/{name}",
+                evidence=[f"Restarts: {pod.get('restarts', 0)}", f"Message: {pod.get('message', 'none')[:100]}"]
+            )
+
+            # Step 2: Get more context
+            logs = self._get_pod_logs(name, namespace, tail=50)
+            log_preview = logs[:200] if logs else "No logs available"
+            trace.observe(f"Retrieved pod logs", evidence=[log_preview])
+
+            # Check for unfixable scenarios
+            unfixable, unfixable_reason = self._is_unfixable(pod, logs)
+            if unfixable:
+                print(f"[{self.name}] 🚫 Pod {track_key} is unfixable: {unfixable_reason}")
+                self._permanently_skip.add(track_key)
+                set_quarantine(
+                    pod_key,
+                    status="UNFIXABLE",
+                    until_ts=time.time() + (6 * 60 * 60),
+                    reason=unfixable_reason,
+                    source=self.name,
+                )
+                trace.verify(f"Pod is unfixable: {unfixable_reason}", success=False)
+                self.reasoning.complete_trace(trace, "UNFIXABLE")
+                return {"success": False, "unfixable": True, "reason": unfixable_reason, "trace_id": trace.trace_id}
+
+            # Step 3: Analyze
+            trace.analyze(
+                f"Error type {reason} typically caused by: " + self._get_typical_causes(reason),
+                confidence=0.8
+            )
+
+            # Step 4: Check memory for similar issues
+            if hasattr(self, 'shared_memory') and self.shared_memory:
+                similar = self.shared_memory.query_memory(f"fix {reason} kubernetes", n_results=2)
+                if similar:
+                    trace.recall(
+                        f"Found {len(similar)} similar past incidents",
+                        evidence=[m.get('text', '')[:80] for m in similar[:2]]
+                    )
+
+            # Step 5: Decide on action
+            action_plan = self._decide_action(reason, logs, pod)
+            trace.decide(
+                f"Will attempt: {action_plan['action']}",
+                confidence=action_plan.get('confidence', 0.7),
+                evidence=[action_plan.get('rationale', 'Standard remediation')]
+            )
+
+            # Step 6: Execute
+            trace.act(f"Executing {action_plan['action']}")
+
             if self.tools and hasattr(self.tools, 'safe_call'):
-                result = self.tools.safe_call(
+                tool_result = self.tools.safe_call(
                     "microsoft_autonomous_remediation",
                     pod_name=name,
                     namespace=namespace,
                     recommended_actions=[]
                 )
-                
-                # Check result
-                if isinstance(result, dict):
-                    data = result.get("data", result)
-                    outcome = data.get("outcome", "UNKNOWN")
-                    actions = data.get("actions_taken", data.get("actions", []))
-                    
-                    # Check if actually fixed - not just waiting or manual fix
-                    actually_fixed = outcome in ("SUCCESS", "PARTIAL_SUCCESS") and not any(
-                        "manual" in str(a).lower() or 
-                        "no deployment" in str(a).lower() or
-                        "waiting" in str(a).lower() or
-                        "monitoring" in str(a).lower()
-                        for a in actions
-                    )
-                    
-                    if actually_fixed:
-                        print(f"[{self.name}] ✅ Remediation applied for {namespace}/{name}: {actions}")
-                        
-                        # Verify fix actually worked - wait and check pod status
-                        import time
-                        time.sleep(10)
-                        still_broken = self._pod_still_broken(name, namespace)
-                        
-                        if still_broken:
-                            print(f"[{self.name}] ❌ Pod still broken after fix - trying web search...")
-                            web_fix = self._search_web_for_fix(reason, namespace, name)
-                            if web_fix:
-                                print(f"[{self.name}] 🌐 Found: {web_fix.get('title', '')[:50]}")
-                                self._apply_web_fix(web_fix['url'], reason, name, namespace)
-                            return {"success": False, "action": "fix_failed_verification", "details": data}
-                        
-                        print(f"[{self.name}] ✅ Verified fixed: {namespace}/{name}")
-                        return {"success": True, "action": f"remediated_{reason}", "details": data}
-                    else:
-                        print(f"[{self.name}] ⚠️ Outcome {outcome} for {namespace}/{name}")
-                        
-                        # Try web search as fallback
-                        web_fix = self._search_web_for_fix(reason, namespace, name)
-                        if web_fix:
-                            print(f"[{self.name}] 🌐 Found: {web_fix.get('title', '')[:50]}")
-                            self._apply_web_fix(web_fix['url'], reason, name, namespace)
-                        
-                        return {"success": False, "error": f"Outcome: {outcome}"}
-                        
-                return {"success": False, "error": "Invalid result from tool"}
+
+                # Step 7: Verify
+                time.sleep(5)
+                still_broken = self._pod_still_broken(name, namespace)
+
+                if not still_broken:
+                    trace.verify("Pod recovered successfully", success=True)
+                    self.reasoning.complete_trace(trace, "SUCCESS")
+
+                    # Record to shared memory
+                    if hasattr(self, 'shared_memory') and self.shared_memory:
+                        self.shared_memory.add_memory(
+                            self.name,
+                            f"Fixed {reason} on {namespace}/{name} using {action_plan['action']}",
+                            category="outcome"
+                        )
+
+                    result = {"success": True, "action": action_plan['action'], "trace_id": trace.trace_id, "details": tool_result}
+                else:
+                    trace.verify("Pod still unhealthy after fix attempt", success=False)
+
+                    # Try web search fallback
+                    trace.analyze("Local fix failed, searching web for solutions", confidence=0.5)
+                    web_fix = self._search_web_for_fix(reason, namespace, name)
+
+                    if web_fix:
+                        trace.recall(f"Found web solution: {web_fix.get('title', '')[:50]}")
+                        web_result = self._apply_web_fix(web_fix['url'], reason, name, namespace)
+
+                        if web_result and web_result.get('status') == 'applied':
+                            trace.act(f"Applied web fix: {web_result.get('command', '')[:50]}")
+                            trace.verify("Checking if web fix worked")
+
+                            time.sleep(5)
+                            if not self._pod_still_broken(name, namespace):
+                                self.reasoning.complete_trace(trace, "SUCCESS_VIA_WEB")
+                                result = {"success": True, "action": "web_fix", "trace_id": trace.trace_id}
+
+                    if not result.get("success"):
+                        self.reasoning.complete_trace(trace, "FAILED")
+                        result = {"success": False, "error": "All remediation attempts failed", "trace_id": trace.trace_id}
             else:
-                return {"success": False, "error": "No tool registry available"}
-                
+                trace.verify("No tool registry available", success=False)
+                self.reasoning.complete_trace(trace, "FAILED_NO_TOOLS")
+                result = {"success": False, "error": "No tools available"}
+
         except Exception as e:
-            print(f"[{self.name}] ❌ Error fixing {namespace}/{name}: {e}")
-            return {"success": False, "error": str(e)}
+            trace.verify(f"Exception: {str(e)[:100]}", success=False)
+            self.reasoning.complete_trace(trace, f"ERROR: {str(e)[:50]}")
+            result = {"success": False, "error": str(e)}
+
+        # Track failure
+        if not result.get("success"):
+            self._failed_attempts[track_key] = self._failed_attempts.get(track_key, 0) + 1
+            print(f"[{self.name}] 📊 Failure #{self._failed_attempts[track_key]} for {track_key}")
+        else:
+            # Reset on success
+            self._failed_attempts.pop(track_key, None)
+
+        return result
+
+    def _get_typical_causes(self, reason: str) -> str:
+        """Return typical causes for error types."""
+        causes = {
+            "CrashLoopBackOff": "missing env vars, OOM, startup crash, missing deps",
+            "OOMKilled": "memory limit too low, memory leak, large payload",
+            "CreateContainerConfigError": "missing ConfigMap, missing Secret, bad mount",
+            "ImagePullBackOff": "wrong image tag, private registry, network issue",
+            "ErrImagePull": "wrong image tag, private registry, network issue",
+            "Pending": "insufficient resources, node selector, taints",
+        }
+        return causes.get(reason, "unknown cause")
+
+    def _decide_action(self, reason: str, logs: str, pod: dict) -> dict:
+        """Decide what action to take based on evidence."""
+
+        # Check logs for clues
+        logs_lower = logs.lower()
+
+        last_state = pod.get("lastState", {}) or {}
+        terminated_reason = (last_state.get("terminated") or {}).get("reason", "")
+
+        if reason == "OOMKilled" or terminated_reason == "OOMKilled" or "signal 9" in logs_lower:
+            return {
+                "action": "increase_memory_limits",
+                "confidence": 0.9,
+                "rationale": "OOM detected"
+            }
+
+        elif reason == "CrashLoopBackOff":
+            if "oomkilled" in logs_lower or "137" in logs_lower:
+                return {
+                    "action": "increase_memory_limits",
+                    "confidence": 0.85,
+                    "rationale": "CrashLoop caused by OOM"
+                }
+            elif "password" in logs_lower or "secret" in logs_lower or "env" in logs_lower:
+                return {
+                    "action": "add_missing_env_var",
+                    "confidence": 0.8,
+                    "rationale": "Missing environment variable"
+                }
+            elif "permission denied" in logs_lower:
+                return {
+                    "action": "check_security_context",
+                    "confidence": 0.7,
+                    "rationale": "Permission denied in logs"
+                }
+            elif "connection refused" in logs_lower or "cannot connect" in logs_lower:
+                return {
+                    "action": "check_dependencies",
+                    "confidence": 0.6,
+                    "rationale": "Dependency not ready"
+                }
+            else:
+                return {
+                    "action": "restart_deployment",
+                    "confidence": 0.3,
+                    "rationale": "No clear cause found - trying restart"
+                }
+
+        elif reason == "CreateContainerConfigError":
+            return {
+                "action": "create_missing_config",
+                "confidence": 0.9,
+                "rationale": "Config error means missing ConfigMap/Secret"
+            }
+
+        elif reason == "ImagePullBackOff":
+            return {
+                "action": "fix_image_tag",
+                "confidence": 0.6,
+                "rationale": "Usually typo in image name"
+            }
+
+        return {
+            "action": "generic_remediation",
+            "confidence": 0.4,
+            "rationale": "Unknown error type"
+        }
+
+    def _is_unfixable(self, pod: dict, logs: str) -> tuple[bool, str]:
+        """Check if this pod is fundamentally unfixable."""
+        logs_lower = logs.lower()
+        restarts = pod.get("restarts", 0)
+
+        # OOM signal should be treated as fixable
+        if "signal 9" in logs_lower:
+            return False, ""
+
+        # Container designed to exit
+        if "exit 0" in logs_lower and "fail" not in logs_lower:
+            return True, "Container completed successfully (Job?)"
+
+        # No logs + multiple restarts suggests instant crash
+        if (not logs or logs.strip() == "" or "no logs available" in logs_lower) and restarts >= 3:
+            return True, "Container crashes instantly with no logs - likely code bug"
+
+        # Explicit exit with error - likely code bug
+        if "exit 1" in logs_lower and "stress" not in logs_lower:
+            return True, "Container exits with error - likely code bug"
+
+        # Init container stuck
+        if pod.get("reason") == "Init:Error":
+            return True, "Init container failed - needs code fix"
+
+        return False, ""
     
     def _fix_crashloop(self, pod: dict) -> dict:
         """Fix CrashLoopBackOff - usually missing env vars."""
@@ -572,6 +821,10 @@ class K8sStudent(BaseStudent):
             return None
         except:
             return None
+
+    def _get_deployment_name(self, pod_name: str, namespace: str) -> Optional[str]:
+        """Get deployment name for tracking across pod restarts."""
+        return self._get_deployment_owner(pod_name, namespace)
     
     def _in_cooldown(self, pod_key: str) -> bool:
         """Check if pod is in cooldown period."""

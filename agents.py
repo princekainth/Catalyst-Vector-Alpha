@@ -393,7 +393,12 @@ class ProtoAgent(ABC):
             ("measure_responsiveness", {}, "observer"),
             ("send_desktop_notification", {"title": "Plan fallback", "message": f"{mission_type} fallback executed"}, "observer"),
         ]
+        k8s_student = getattr(getattr(self, "orchestrator", None), "k8s_student", None)
+        k8s_student_active = bool(k8s_student and getattr(k8s_student, "running", False))
+
         for tool, args, role in tool_order:
+            if k8s_student_active and tool in {"watch_k8s_events", "get_pod_status"}:
+                continue
             if allowed and tool not in allowed:
                 continue
             if not registry.has_tool(tool):
@@ -1478,7 +1483,7 @@ class ProtoAgent(ABC):
         # K8S MONITORING - Run for Observer before task execution
         if self.name and "Observer" in self.name:
             _registry = getattr(self, "tool_registry", None)
-            if not getattr(self, "_k8s_student_active", True) and _registry and _registry.has_tool("watch_k8s_events"):
+            if not self._is_k8s_student_active() and _registry and _registry.has_tool("watch_k8s_events"):
                 now_ts = time.time()
                 cached = self._k8s_cache.get("result")
                 cached_ts = self._k8s_cache.get("ts", 0)
@@ -1548,8 +1553,12 @@ class ProtoAgent(ABC):
                                     continue
                             except Exception:
                                 pass
+                            if self._is_quarantined(namespace, pod_name):
+                                self.external_log_sink.info(f"[Observer] Skipping remediation (quarantined) for {namespace}/{pod_name}")
+                                self._increment_remediation_metric("quarantine_skips")
+                                continue
                             # K8sStudent handles this now - skip Observer remediation
-                            if getattr(self, "_k8s_student_active", True):
+                            if self._is_k8s_student_active():
                                 self.external_log_sink.info(f"[Observer] K8s delegated to K8sStudent - skipping {namespace}/{pod_name}")
                                 continue
                             self.external_log_sink.info(f"[Observer] AUTO-REMEDIATING [{severity}]: {namespace}/{pod_name} (reason: {event.get('reason')})")
@@ -1581,7 +1590,9 @@ class ProtoAgent(ABC):
                                 self.external_log_sink.info(f"[Observer] Remediation mission injection failed for {namespace}/{pod_name}: {e}")
                                 self._increment_remediation_metric("remediation_failure")
                     # Fallback: inspect pod status for failures/crashloops (rate-limited)
-                    if _registry.has_tool("get_pod_status") and self._can_run_pod_fallback():
+                    if self._is_k8s_student_active():
+                        self.external_log_sink.info("[Observer] K8sStudent active - skipping pod status fallback")
+                    elif _registry.has_tool("get_pod_status") and self._can_run_pod_fallback():
                         pod_resp = _registry.safe_call("get_pod_status", namespace="all")
                         if isinstance(pod_resp, dict):
                             pod_payload = pod_resp.get("data", pod_resp) if isinstance(pod_resp, dict) else {}
@@ -1607,7 +1618,7 @@ class ProtoAgent(ABC):
                                         self._increment_remediation_metric("dedupe_skips")
                                         continue
                                     # K8sStudent handles this
-                                    if getattr(self, "_k8s_student_active", True):
+                                    if self._is_k8s_student_active():
                                         self.external_log_sink.info(f"[Observer] K8s delegated to K8sStudent - skipping {ns}/{name}")
                                         continue
                                     self.external_log_sink.info(f"[Observer] AUTO-REMEDIATING pod failure: {ns}/{name} phase={phase} issues={issues}")
@@ -2960,8 +2971,18 @@ class ProtoAgent_Observer(ProtoAgent):
         self._pod_mem_history: dict[str, list[tuple[float, float, float]]] = {}
         self._pod_resource_cache: dict[str, dict] = {}
         self._preemptive_targets: dict[str, float] = {}
-        self._k8s_student_active = True  # K8sStudent handles k8s remediation
+        self._k8s_student_active = None  # None=auto, True=force, False=disable
         self._last_predictive_check: float = 0.0
+
+    def _is_k8s_student_active(self) -> bool:
+        override = getattr(self, "_k8s_student_active", None)
+        if override is True:
+            return True
+        if override is False:
+            return False
+        orch = getattr(self, "orchestrator", None) or getattr(getattr(self, "message_bus", None), "catalyst_vector_ref", None)
+        k8s_student = getattr(orch, "k8s_student", None)
+        return bool(k8s_student and getattr(k8s_student, "running", False))
 
     def _prune_remediation_cache(self, ttl_seconds: int = 600):
         now = time.time()
@@ -2976,6 +2997,15 @@ class ProtoAgent_Observer(ProtoAgent):
         if pod_name:
             return f"{namespace}/{pod_name}"
         return f"{namespace}|{reason or 'unknown'}"
+
+    def _is_quarantined(self, namespace: str, pod_name: str) -> bool:
+        if not namespace or not pod_name:
+            return False
+        try:
+            from quarantine import is_quarantined
+            return is_quarantined(f"{namespace}/{pod_name}")
+        except Exception:
+            return False
 
     def _recently_remediated(self, namespace: str, pod_name: str | None = None, ttl_seconds: int = 60,
                              reason: str | None = None, controller: str | None = None,
@@ -3107,6 +3137,10 @@ class ProtoAgent_Observer(ProtoAgent):
                     continue
                 if key in self._preemptive_targets and (now - self._preemptive_targets.get(key, 0)) < 600:
                     continue
+                if self._is_quarantined(ns, name):
+                    self.external_log_sink.info(f"[Observer] Skipping preemptive remediation (quarantined) for {ns}/{name}")
+                    self._increment_remediation_metric("quarantine_skips")
+                    continue
                 planner_name = "ProtoAgent_Planner_instance_1"
                 goal = (
                     f"Preemptively increase resources for pod {ns}/{name} due to rising memory usage near limit. "
@@ -3164,6 +3198,14 @@ class ProtoAgent_Observer(ProtoAgent):
         task_id = context.get("task_id") if isinstance(context, dict) else None
         if not task_id:
             task_id = kwargs.get("task_id")
+        step_index = context.get("step") if isinstance(context, dict) else None
+        if step_index is None:
+            step_index = kwargs.get("step") or kwargs.get("step_id")
+        tool_name = kwargs.get("tool_name")
+        tool_args = kwargs.get("tool_args") or {}
+        step_index = context.get("step") if isinstance(context, dict) else None
+        if step_index is None:
+            step_index = kwargs.get("step") or kwargs.get("step_id")
         
         # self.external_log_sink.debug(f"[DEBUG] context from kwargs: {context}")
         # self.external_log_sink.debug(f"[DEBUG] plan_id extracted: {plan_id}")
@@ -3175,6 +3217,63 @@ class ProtoAgent_Observer(ProtoAgent):
         cpu_values: List[float] = []  # guard against UnboundLocal on downstream aggregation
         pod_cpu_data: List[dict] = []
         import subprocess
+
+        if tool_name == "check_calendar":
+            registry = getattr(self, "tool_registry", None)
+            if registry and registry.has_tool(tool_name):
+                result_payload = registry.safe_call(tool_name, **tool_args)
+                ok = isinstance(result_payload, dict) and result_payload.get("status") == "ok"
+                outcome = "completed" if ok else "failed"
+                failure_reason = None if ok else (result_payload.get("error") if isinstance(result_payload, dict) else "Tool failed")
+                summary = "Calendar check completed." if ok else f"Calendar check failed: {failure_reason or 'unknown error'}"
+                report_content_dict = {
+                    "summary": summary,
+                    "task_outcome_type": "CalendarCheck",
+                    "result": result_payload,
+                }
+                progress_score = 1.0 if ok else 0.0
+            else:
+                outcome = "failed"
+                failure_reason = f"Tool '{tool_name}' unavailable"
+                report_content_dict = {
+                    "summary": failure_reason,
+                    "task_outcome_type": "CalendarCheck",
+                }
+                progress_score = 0.0
+
+            report_content_dict["task_description"] = task_description
+            report_content_dict["progress_score"] = progress_score
+
+            if plan_id and hasattr(self, "memdb"):
+                try:
+                    ts = time.time()
+                    payload = {
+                        "plan_id": plan_id,
+                        "task_result": report_content_dict,
+                        "timestamp": ts,
+                        "agent": self.name,
+                        "task_id": task_id,
+                        "step": step_index,
+                    }
+                    if task_id:
+                        self.external_log_sink.debug(
+                            f"[DEBUG TaskResult Write] writer=observer_final agent={self.name} "
+                            f"plan_id={plan_id} task_id={task_id} memdb_id={id(self.memdb)} "
+                            f"type={type(self.memdb).__name__}"
+                        )
+                        self.memdb.add("TaskResult", payload)
+                        try:
+                            self.memetic_kernel.add_memory("TaskResult", payload)
+                        except Exception:
+                            pass
+
+                        self.external_log_sink.info(f"[{self.name}] Stored TaskResult for plan_id={plan_id} task_id={task_id}")
+                    else:
+                        self.external_log_sink.debug(f"[DEBUG TaskResult Write] writer=observer_final SKIP (no task_id) plan_id={plan_id}")
+                except Exception as e:
+                    self.external_log_sink.info(f"[{self.name}] Warning: Could not store TaskResult via MemeticKernel: {e}")
+
+            return outcome, failure_reason, report_content_dict, progress_score
 
         def _pod_exists(namespace: str, pod_name: str) -> bool:
             try:
@@ -3198,7 +3297,7 @@ class ProtoAgent_Observer(ProtoAgent):
             # AUTO K8S MONITORING - Check every Observer cycle
             # print("[DEBUG] Observer: Checking for watch_k8s_events tool...")
             _registry = getattr(self, "tool_registry", None)
-            if not getattr(self, "_k8s_student_active", True) and _registry and _registry.has_tool("watch_k8s_events"):
+            if not self._is_k8s_student_active() and _registry and _registry.has_tool("watch_k8s_events"):
                 now_ts = time.time()
                 cached = self._k8s_cache.get("result")
                 cached_ts = self._k8s_cache.get("ts", 0)
@@ -3253,6 +3352,10 @@ class ProtoAgent_Observer(ProtoAgent):
                                     self._increment_remediation_metric("not_found_skips")
                                     self._mark_remediated(namespace, pod_name, reason=reason, controller=controller, message=message)
                                     continue
+                                if self._is_quarantined(namespace, pod_name):
+                                    self.external_log_sink.info(f"[Observer] Skipping remediation (quarantined) for {namespace}/{pod_name}")
+                                    self._increment_remediation_metric("quarantine_skips")
+                                    continue
                                 if any(pat in pod_name for pat in self._ignore_patterns):
                                     self.external_log_sink.info(f"[Observer] Skipping remediation (ignore pattern) for {namespace}/{pod_name}")
                                     self._increment_remediation_metric("ignore_skips")
@@ -3298,7 +3401,9 @@ class ProtoAgent_Observer(ProtoAgent):
                                     self.external_log_sink.info(f"[Observer] Remediation mission injection failed for {namespace}/{pod_name}: {e}")
                                     self._increment_remediation_metric("remediation_failure")
                     # Fallback: inspect pod status for failures/crashloops (rate-limited)
-                    if _registry.has_tool("get_pod_status") and self._can_run_pod_fallback():
+                    if self._is_k8s_student_active():
+                        self.external_log_sink.info("[Observer] K8sStudent active - skipping pod status fallback")
+                    elif _registry.has_tool("get_pod_status") and self._can_run_pod_fallback():
                         pod_resp = _registry.safe_call("get_pod_status", namespace="all")
                         if isinstance(pod_resp, dict):
                             pod_payload = pod_resp.get("data", pod_resp) if isinstance(pod_resp, dict) else {}
@@ -3322,12 +3427,16 @@ class ProtoAgent_Observer(ProtoAgent):
                                         self._increment_remediation_metric("not_found_skips")
                                         self._mark_remediated(ns, name)
                                         continue
+                                    if self._is_quarantined(ns, name):
+                                        self.external_log_sink.info(f"[Observer] Skipping remediation (quarantined) for {ns}/{name}")
+                                        self._increment_remediation_metric("quarantine_skips")
+                                        continue
                                     if self._recently_remediated(ns, name):
                                         self.external_log_sink.info(f"[Observer] Skipping remediation (recent) for {ns}/{name}")
                                         self._increment_remediation_metric("dedupe_skips")
                                         continue
                                     # K8sStudent handles this
-                                    if getattr(self, "_k8s_student_active", True):
+                                    if self._is_k8s_student_active():
                                         self.external_log_sink.info(f"[Observer] K8s delegated to K8sStudent - skipping {ns}/{name}")
                                         continue
                                     self.external_log_sink.info(f"[Observer] AUTO-REMEDIATING pod failure: {ns}/{name} phase={phase} issues={issues}")
@@ -3645,6 +3754,7 @@ class ProtoAgent_Observer(ProtoAgent):
                     "timestamp": ts,
                     "agent": self.name,
                     "task_id": task_id,
+                    "step": step_index,
                 }
                 if task_id:
                     self.external_log_sink.debug(
@@ -4097,8 +4207,7 @@ class ProtoAgent_Planner(ProtoAgent):
             "Self-evaluate tool accuracy",
             "Explore environment and map endpoints",
             "Refactor memory compression policy",
-            "Generate evaluation dataset for tools",
-            "Research and learn from web"
+            "Generate evaluation dataset for tools"
         ])
         self._mission_cooldown = {}
         self._mission_backoff = {}
@@ -4106,6 +4215,12 @@ class ProtoAgent_Planner(ProtoAgent):
         self._max_backoff = 180            # FIXED: Reduced from 600 to 180 seconds (3 minutes)
         self._last_failed_mission = None
         self._pending_missions = {}
+        self._scheduled_patch_proposals = set()
+        try:
+            self._proposal_schedule_min_seconds = float(os.getenv("CVA_PROPOSAL_SCHEDULE_MIN_SECONDS", "300"))
+        except Exception:
+            self._proposal_schedule_min_seconds = 300.0
+        self._last_proposal_schedule_ts = 0.0
         # FIXED: Add missing router configuration
         self._router_similarity_threshold = 0.65  # CRITICAL: Was missing, defaulted to 0.85
         self._recent_goals = deque(maxlen=10)      # Track recent goals for similarity
@@ -4702,12 +4817,51 @@ Respond with valid JSON:
         return prompt
 
 
+    def _delegate_planner_tool_action(self, tool_name: str, args: dict, alert: dict) -> bool:
+        """Delegate tool execution to an Observer so Planner never executes tools directly."""
+        orch = getattr(self, "orchestrator", None)
+        injector = None
+        if orch and hasattr(orch, "inject_directives"):
+            injector = orch.inject_directives
+        elif getattr(self, "message_bus", None) and getattr(self.message_bus, "catalyst_vector_ref", None):
+            injector = self.message_bus.catalyst_vector_ref.inject_directives
+        if not injector:
+            return False
+
+        observer_name = None
+        if orch and hasattr(orch, "agent_instances"):
+            for name in orch.agent_instances.keys():
+                if "Observer" in name:
+                    observer_name = name
+                    break
+        if not observer_name:
+            observer_name = "ProtoAgent_Observer_instance_1"
+
+        plan_id = f"plan-{int(time.time() * 1000)}-delegated"
+        directive = {
+            "id": f"dir-{uuid.uuid4()}",
+            "type": "AGENT_PERFORM_TASK",
+            "agent_name": observer_name,
+            "task_description": f"[delegated] {tool_name} for alert {alert.get('type', 'alert')}",
+            "tool_name": tool_name,
+            "tool_args": args,
+            "context": {
+                "plan_id": plan_id,
+                "parent_goal": f"Delegated alert tool: {tool_name}",
+                "step": 1,
+                "total_steps": 1,
+            },
+        }
+        injector([directive])
+        return True
+
+
     def _execute_llm_decided_actions(self, actions: list, alert: dict) -> str:
         """
         Execute the actions that the LLM decided to take.
         
-        Investigation actions (like check_calendar) are executed immediately
-        so their results can be included in notifications.
+        Investigation actions (like check_calendar) are delegated to an Observer
+        so Planner does not execute tools directly.
         
         Args:
             actions: List of action dictionaries from LLM
@@ -4724,33 +4878,16 @@ Respond with valid JSON:
             
             try:
                 if tool_name == "check_calendar":
-                    # Execute calendar check immediately
-                    envelope = self.tool_registry.safe_call("check_calendar", **args)
-                    
-                    # Handle envelope
-                    if envelope.get("status") == "ok":
-                        result = envelope.get("data")
-                    else:
-                        result = f"[ERROR] {envelope.get('error', 'Unknown error')}"
-                    
-                    self._log_agent_activity("LLM_ACTION_EXECUTED", self.name, {
+                    delegated = self._delegate_planner_tool_action("check_calendar", args, alert)
+                    self._log_agent_activity("LLM_ACTION_DELEGATED", self.name, {
                         "action_index": idx,
                         "tool": tool_name,
-                        "result_status": result.get("status", "unknown")
+                        "delegated": delegated
                     })
-                    
-                    # Build context string based on calendar result
-                    if result.get("status") == "conflict":
-                        events = result.get("events", [])
-                        if events:
-                            event_summary = events[0].get("summary", "Unknown Event")
-                            event_time = events[0].get("start", "")
-                            context_additions.append(
-                                f"\n\n**⚠️ CONFLICT DETECTED:**\nYou have '{event_summary}' at that time."
-                            )
-                    
-                    elif result.get("status") == "clear":
-                        context_additions.append("\n\n✓ Your calendar is clear around that time.")
+                    if delegated:
+                        context_additions.append("\n\n(Calendar check delegated to Observer; results will be logged.)")
+                    else:
+                        context_additions.append("\n\n(Calendar check skipped - no observer available.)")
                     
                 elif tool_name == "send_desktop_notification":
                     # Don't execute yet - just store for later
@@ -4820,6 +4957,10 @@ Respond with valid JSON:
         if self._should_be_idle():
             self._consecutive_idle = getattr(self, "_consecutive_idle", 0) + 1
             self.external_log_sink.info(f"[Planner] 😴 System healthy - skipping idle synthesis (cycle #{self._consecutive_idle})")
+            proposal = self._schedule_patch_proposal()
+            if proposal:
+                summary = f"Scheduled PatchProposal {proposal.get('id')}"
+                return "completed", None, {"summary": summary}, 0.4
             return "idle", None, {"reason": "system_healthy"}, 0.0
         self._consecutive_idle = 0
         # === END EVENT-DRIVEN GATE ===
@@ -5168,21 +5309,39 @@ Respond with valid JSON:
         Returns False if there's work to do (problems found).
         """
         try:
-            # 1. Check K8s pod health
-            if hasattr(self, 'tool_registry') and self.tool_registry:
-                result = self.tool_registry.safe_call('get_pod_status', namespace='all')
-                
-                if result.get('status') == 'ok':
-                    data = result.get('data', {})
-                    unhealthy = data.get('unhealthy_count', 0)
-                    problem_pods = data.get('problem_pods', [])
-                    
-                    if unhealthy > 0 or problem_pods:
-                        self.external_log_sink.info(f"[EventGate] ⚠️  {unhealthy} unhealthy pods detected - ACTIVE MODE")
+            from quarantine import is_quarantined
+            # 1. Check K8s pod health (delegate to K8sStudent when active)
+            k8s_student = getattr(getattr(self, "orchestrator", None), "k8s_student", None)
+            if k8s_student and getattr(k8s_student, "running", False):
+                status = {}
+                if hasattr(k8s_student, "get_cached_status"):
+                    status = k8s_student.get_cached_status()
+                elif hasattr(k8s_student, "get_status"):
+                    status = k8s_student.get_status()
+                if status:
+                    unhealthy = status.get("unhealthy", status.get("unhealthy_count", 0))
+                    problem_pods = status.get("problem_pods", [])
+                    active_pods = []
+                    for pod in problem_pods or []:
+                        ns = pod.get("namespace", "default")
+                        name = pod.get("name")
+                        if not name:
+                            continue
+                        if is_quarantined(f"{ns}/{name}"):
+                            continue
+                        active_pods.append(pod)
+                    if active_pods:
+                        self.external_log_sink.info(f"[EventGate] ⚠️  {len(active_pods)} unhealthy pods detected - ACTIVE MODE")
                         self._log_agent_activity("EVENT_GATE_ACTIVE", self.name,
-                            f"Unhealthy pods detected: {unhealthy}",
-                            {"unhealthy_count": unhealthy, "problem_pods": problem_pods[:5]})
+                            f"Unhealthy pods detected: {len(active_pods)}",
+                            {"unhealthy_count": len(active_pods), "problem_pods": active_pods[:5]})
                         return False  # Work to do!
+                    if unhealthy > 0 and not problem_pods:
+                        self.external_log_sink.info(
+                            f"[EventGate] ⚠️  {unhealthy} unhealthy pods detected (no details) - skipping K8s gate"
+                        )
+                else:
+                    self.external_log_sink.info("[EventGate] K8sStudent active but no status yet - skipping K8s gate")
             
             # 2. Check for pending directives/alerts
             if hasattr(self, 'message_bus') and self.message_bus:
@@ -5220,6 +5379,105 @@ Respond with valid JSON:
         duration = min(base * (2 ** self._consecutive_idle), 300)
         return duration
 
+    def _resolve_worker_name(self) -> str:
+        orch = getattr(self, "orchestrator", None)
+        if orch and hasattr(orch, "agent_instances"):
+            for name in orch.agent_instances.keys():
+                if "Worker" in name:
+                    return name
+        return "ProtoAgent_Worker_instance_1"
+
+    def _load_patch_proposals(self) -> list[dict]:
+        proposals_dir = os.path.join(self.persistence_dir or "persistence_data", "proposals")
+        if not os.path.isdir(proposals_dir):
+            return []
+        proposals = []
+        for fname in sorted(os.listdir(proposals_dir)):
+            if not (fname.startswith("pp-") and fname.endswith(".json")):
+                continue
+            path = os.path.join(proposals_dir, fname)
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    proposal = json.load(f)
+                if (
+                    isinstance(proposal, dict)
+                    and proposal.get("id")
+                    and proposal.get("state") == "new"
+                ):
+                    proposal["_path"] = path
+                    proposals.append(proposal)
+            except Exception as e:
+                self.external_log_sink.info(f"[Planner] Failed to read proposal {path}: {e}")
+        return proposals
+
+    def _schedule_patch_proposal(self) -> dict | None:
+        now = time.time()
+        min_seconds = float(getattr(self, "_proposal_schedule_min_seconds", 300.0))
+        last_ts = float(getattr(self, "_last_proposal_schedule_ts", 0.0) or 0.0)
+        if (now - last_ts) < min_seconds:
+            self.external_log_sink.info("[Planner] Proposal scheduling rate-limited")
+            return None
+        proposals = self._load_patch_proposals()
+        if not proposals:
+            return None
+        scheduled = getattr(self, "_scheduled_patch_proposals", set())
+        for proposal in proposals:
+            proposal_id = proposal.get("id")
+            if not proposal_id or proposal_id in scheduled:
+                continue
+            files = proposal.get("files") or []
+            actionable = bool(proposal.get("actionable")) and bool(files)
+            payload_ok = bool(proposal.get("patch") or proposal.get("edits") or proposal.get("replacements"))
+            if not actionable or not payload_ok:
+                reason = "missing_payload" if actionable else "non_actionable"
+                proposal["state"] = "triage_required"
+                proposal["authoring_status"] = proposal.get("authoring_status") or "triage_required"
+                proposal["authoring_errors"] = list(proposal.get("authoring_errors") or [])
+                if reason not in proposal["authoring_errors"]:
+                    proposal["authoring_errors"].append(reason)
+                proposal["triage_reason"] = reason
+                proposal_path = proposal.get("_path")
+                if proposal_path:
+                    try:
+                        with open(proposal_path, "w", encoding="utf-8") as f:
+                            json.dump(proposal, f, indent=2, sort_keys=True)
+                    except Exception as e:
+                        self.external_log_sink.info(f"[Planner] Failed to update proposal {proposal_path}: {e}")
+                self.external_log_sink.info(f"[Planner] PatchProposal triage_required: {proposal_id} reason={reason}")
+                continue
+            worker_name = self._resolve_worker_name()
+            directive = {
+                "id": f"dir-{uuid.uuid4()}",
+                "type": "EXECUTE_PATCH_PROPOSAL",
+                "agent_name": worker_name,
+                "args": {"proposal_id": proposal_id, "mode": "branch"},
+                "context": {"proposal_id": proposal_id},
+            }
+            injected = self._inject_directives([directive])
+            if injected:
+                proposal_path = proposal.get("_path")
+                if proposal_path:
+                    try:
+                        proposal["state"] = "scheduled"
+                        proposal["scheduled_ts"] = time.time()
+                        with open(proposal_path, "w", encoding="utf-8") as f:
+                            json.dump(proposal, f, indent=2, sort_keys=True)
+                    except Exception as e:
+                        self.external_log_sink.info(f"[Planner] Failed to update proposal {proposal_path}: {e}")
+                scheduled.add(proposal_id)
+                self._scheduled_patch_proposals = scheduled
+                self._last_proposal_schedule_ts = time.time()
+                self._log_agent_activity(
+                    "PATCH_PROPOSAL_SCHEDULED",
+                    self.name,
+                    f"Scheduled PatchProposal {proposal_id}",
+                    {"proposal_id": proposal_id, "agent": worker_name},
+                    level="info",
+                )
+                self.external_log_sink.info(f"[Planner] Scheduled PatchProposal {proposal_id}")
+                return proposal
+        return None
+
     def _pick_next_mission(self) -> str | None:
         """
         Returns the next mission string that is not cooling down.
@@ -5242,14 +5500,6 @@ Respond with valid JSON:
             self._consecutive_idle += 1
             sleep_duration = self._get_idle_sleep_duration()
             self.external_log_sink.info(f"[Planner] 😴 Idle cycle #{self._consecutive_idle} - sleeping {sleep_duration}s")
-
-            # Only do curiosity research occasionally when idle (every 5th idle cycle)
-            if self._consecutive_idle % 5 == 0:
-                self.external_log_sink.info(f"[Planner] 🔍 Idle curiosity research...")
-                try:
-                    self._curiosity_research()
-                except Exception as e:
-                    self.external_log_sink.info(f"[Planner] Curiosity failed: {e}")
 
             return None  # Stay idle
 
@@ -5305,6 +5555,8 @@ Respond with valid JSON:
         Searches web for improvements, gaps, new tools.
         Stores findings in SharedMemory for future use.
         """
+        self.external_log_sink.info("[Curiosity] Planner does not execute tools directly; skipping research.")
+        return {"status": "skipped", "reason": "planner_no_direct_tools"}
         import random
         
         research_topics = [
@@ -9995,7 +10247,11 @@ TOOLSMITH MODE (Self-Evolution):
                 )
                 repaired = llm_fix_json_response(raw_response)
                 if repaired:
-                    plan = try_parse_json(repaired)
+                    # FIX: If repair already returned a dict, don't parse again
+                    if isinstance(repaired, dict):
+                        plan = repaired
+                    else:
+                        plan = try_parse_json(repaired)
                     if plan is not None:
                         self._log_agent_activity(
                             "PLAN_JSON_REPAIRED", self.name, "JSON repaired successfully.",
@@ -10993,6 +11249,33 @@ class ProtoAgent_Security(ProtoAgent):
         if task_lower in ("", "no specific intent", "none", "idle"):
             return "idle", None, {"reason": "no_specific_task"}, 0.0
         context_info = kwargs.get("context_info")
+        task_type = kwargs.get("task_type") or ""
+        scan_mode = None
+        if isinstance(context_info, dict):
+            scan_mode = context_info.get("mode")
+        scan_mode = scan_mode or kwargs.get("mode")
+        if task_type == "EXECUTE_PATCH_PROPOSAL" and scan_mode == "policy_scan":
+            from policy_scan import run_policy_scan, find_repo_root
+            proposal_id = None
+            if isinstance(context_info, dict):
+                proposal_id = context_info.get("proposal_id")
+            proposal_id = proposal_id or kwargs.get("proposal_id")
+            scan_id = proposal_id or f"unknown-{int(time.time())}"
+            base_dir = (
+                getattr(getattr(self, "orchestrator", None), "persistence_dir", None)
+                or getattr(self, "persistence_dir", None)
+                or "persistence_data"
+            )
+            repo_root = find_repo_root(os.path.dirname(os.path.abspath(__file__)))
+            report = run_policy_scan(scan_id, base_dir=base_dir, repo_root=repo_root, logger=self.external_log_sink)
+            summary = f"Policy scan {report.get('status')} for {report.get('scan_id')}"
+            final_report = {
+                "summary": summary,
+                "task_outcome_type": "PolicyScanResult",
+                "result": report,
+            }
+            progress = 1.0 if report.get("status") == "pass" else 0.5
+            return "completed", None, final_report, progress
         specific_tool = kwargs.get("tool_name")
         tool_args = kwargs.get("tool_args", {})
 
@@ -11042,6 +11325,7 @@ class ProtoAgent_Security(ProtoAgent):
                     "timestamp": ts,
                     "agent": self.name,
                     "task_id": task_id,
+                    "step": step_index,
                 }
                 if task_id:
                     self.external_log_sink.debug(
@@ -11175,7 +11459,7 @@ class ProtoAgent_Worker(ProtoAgent):
         task_lower = (task_description or "").strip().lower()
         if task_lower in ("", "no specific intent", "none", "idle"):
             return "idle", None, {"reason": "no_specific_task"}, 0.0
-        import json, re, time, traceback
+        import json, re, time, traceback, shutil
         from datetime import datetime
 
         t0 = time.time()
@@ -11183,6 +11467,9 @@ class ProtoAgent_Worker(ProtoAgent):
         context_plan = (context_info or {}) if isinstance(context_info, dict) else {}
         plan_id = context_plan.get("plan_id") or kwargs.get("plan_id")
         task_id = context_plan.get("task_id") or kwargs.get("task_id")
+        step_index = context_plan.get("step") if isinstance(context_plan, dict) else None
+        if step_index is None:
+            step_index = kwargs.get("step") or kwargs.get("step_id")
         try:
             if getattr(self, "orchestrator", None) and hasattr(self.orchestrator, "dynamic_directive_queue"):
                 qsize = len(self.orchestrator.dynamic_directive_queue)
@@ -11204,6 +11491,7 @@ class ProtoAgent_Worker(ProtoAgent):
                         "timestamp": time.time(),
                         "agent": self.name,
                         "task_id": task_id,
+                        "step": step_index,
                     }
                     self.external_log_sink.debug(
                         f"[DEBUG TaskResult Write] writer=worker_early agent={self.name} "
@@ -11216,6 +11504,524 @@ class ProtoAgent_Worker(ProtoAgent):
             except Exception as e:
                 self.external_log_sink.warning(f"Failed to store early TaskResult: {e}", extra={"agent": self.name})
             return report
+
+        task_type = kwargs.get("task_type") or ""
+        if task_type == "EXECUTE_PATCH_PROPOSAL":
+            started_ts = time.time()
+            proposal_id = context_plan.get("proposal_id") or kwargs.get("proposal_id")
+            result_id = proposal_id or f"unknown-{int(started_ts)}"
+            base_dir = (
+                getattr(getattr(self, "orchestrator", None), "persistence_dir", None)
+                or getattr(self, "persistence_dir", None)
+                or "persistence_data"
+            )
+            proposals_dir = os.path.join(base_dir, "proposals")
+            results_dir = os.path.join(proposals_dir, "results")
+            os.makedirs(results_dir, exist_ok=True)
+            os.makedirs("logs", exist_ok=True)
+            log_path = os.path.join("logs", f"autopatch_{result_id}.txt")
+            result_path = os.path.join(results_dir, f"{result_id}.json")
+
+            errors: list[dict] = []
+
+            def _cap(text: str, limit: int = 2000) -> str:
+                if not text:
+                    return ""
+                return text[-limit:]
+
+            def _write_artifact(path: str, content: str) -> None:
+                try:
+                    with open(path, "a", encoding="utf-8") as f:
+                        f.write(content)
+                        if not content.endswith("\n"):
+                            f.write("\n")
+                except Exception:
+                    pass
+
+            def _write_patch_result(patch_result: dict) -> None:
+                try:
+                    with open(result_path, "w", encoding="utf-8") as f:
+                        json.dump(patch_result, f, indent=2, sort_keys=True)
+                except Exception:
+                    pass
+
+            def _run_cmd(cmd: list[str], cwd: str) -> dict:
+                cmd_str = " ".join(cmd)
+                _write_artifact(log_path, f"$ {cmd_str}")
+                result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+                out = _cap(result.stdout or "")
+                err = _cap(result.stderr or "")
+                if out:
+                    _write_artifact(log_path, out)
+                if err:
+                    _write_artifact(log_path, err)
+                return {"returncode": result.returncode, "stdout": out, "stderr": err, "cmd": cmd_str}
+
+            def _git_current_branch(cwd: str) -> str:
+                res = _run_cmd(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd)
+                return res.get("stdout", "").strip() or "HEAD"
+
+            def _git_checkout(branch: str, cwd: str) -> dict:
+                return _run_cmd(["git", "checkout", branch], cwd)
+
+            def _git_create_branch(branch: str, cwd: str) -> dict:
+                return _run_cmd(["git", "checkout", "-b", branch], cwd)
+
+            def _git_delete_branch(branch: str, cwd: str) -> dict:
+                return _run_cmd(["git", "branch", "-D", branch], cwd)
+
+            def _summarize_diff(cwd: str) -> str:
+                show_res = _run_cmd(["git", "show", "--stat", "--oneline", "-1"], cwd)
+                return (show_res.get("stdout") or "").strip()
+
+            def _extract_patch_files(patch_text: str) -> set[str]:
+                files_found: set[str] = set()
+                for line in patch_text.splitlines():
+                    if line.startswith("+++ "):
+                        path = line[4:].strip()
+                        if path.startswith("b/"):
+                            path = path[2:]
+                        if path != "/dev/null":
+                            files_found.add(path)
+                return files_found
+
+            def _status_for_stage(stage: str | None) -> str:
+                if stage == "tests_failed":
+                    return "tests_failed"
+                if stage == "triage_required":
+                    return "triage_required"
+                return "apply_failed"
+
+            if not proposal_id:
+                msg = "PatchProposal missing proposal_id"
+                self.external_log_sink.info(f"[Worker] {msg}")
+                failure_stage = "missing_proposal_id"
+                patch_result = {
+                    "proposal_id": proposal_id,
+                    "branch": None,
+                    "status": _status_for_stage(failure_stage),
+                    "diff_summary": "",
+                    "commands_run": [],
+                    "artifacts": [log_path],
+                    "commit_sha": None,
+                    "changed_files": [],
+                    "started_ts": started_ts,
+                    "finished_ts": time.time(),
+                    "errors": [{"stage": failure_stage, "message": msg, "tail": ""}],
+                }
+                _write_patch_result(patch_result)
+                rep = _store_task_result_early("failed", msg, {"task_outcome_type": "PatchProposal", "result": patch_result})
+                return "failed", failure_stage, rep, 0.0
+
+            if not os.path.isdir(proposals_dir):
+                msg = f"PatchProposal not found: {proposal_id}"
+                self.external_log_sink.info(f"[Worker] {msg}")
+                failure_stage = "proposal_not_found"
+                patch_result = {
+                    "proposal_id": proposal_id,
+                    "branch": None,
+                    "status": _status_for_stage(failure_stage),
+                    "diff_summary": "",
+                    "commands_run": [],
+                    "artifacts": [log_path],
+                    "commit_sha": None,
+                    "changed_files": [],
+                    "started_ts": started_ts,
+                    "finished_ts": time.time(),
+                    "errors": [{"stage": failure_stage, "message": msg, "tail": ""}],
+                }
+                _write_patch_result(patch_result)
+                rep = _store_task_result_early("failed", msg, {"task_outcome_type": "PatchProposal", "result": patch_result})
+                return "failed", failure_stage, rep, 0.0
+
+            proposal = None
+            proposal_path = None
+            for fname in os.listdir(proposals_dir):
+                if not (fname.startswith("pp-") and fname.endswith(".json")):
+                    continue
+                path = os.path.join(proposals_dir, fname)
+                try:
+                    with open(path, "r", encoding="utf-8") as f:
+                        candidate = json.load(f)
+                    if isinstance(candidate, dict) and candidate.get("id") == proposal_id:
+                        proposal = candidate
+                        proposal_path = path
+                        break
+                except Exception:
+                    continue
+
+            if not proposal or not proposal_path:
+                msg = f"PatchProposal not found: {proposal_id}"
+                self.external_log_sink.info(f"[Worker] {msg}")
+                failure_stage = "proposal_not_found"
+                patch_result = {
+                    "proposal_id": proposal_id,
+                    "branch": None,
+                    "status": _status_for_stage(failure_stage),
+                    "diff_summary": "",
+                    "commands_run": [],
+                    "artifacts": [log_path],
+                    "commit_sha": None,
+                    "changed_files": [],
+                    "started_ts": started_ts,
+                    "finished_ts": time.time(),
+                    "errors": [{"stage": failure_stage, "message": msg, "tail": ""}],
+                }
+                _write_patch_result(patch_result)
+                rep = _store_task_result_early("failed", msg, {"task_outcome_type": "PatchProposal", "result": patch_result})
+                return "failed", failure_stage, rep, 0.0
+
+            state = proposal.get("state")
+            if state not in {"scheduled", "new"}:
+                msg = f"PatchProposal state invalid: {proposal_id} state={state}"
+                self.external_log_sink.info(f"[Worker] {msg}")
+                failure_stage = "invalid_state"
+                patch_result = {
+                    "proposal_id": proposal_id,
+                    "branch": None,
+                    "status": _status_for_stage(failure_stage),
+                    "diff_summary": "",
+                    "commands_run": [],
+                    "artifacts": [log_path],
+                    "commit_sha": None,
+                    "changed_files": [],
+                    "started_ts": started_ts,
+                    "finished_ts": time.time(),
+                    "errors": [{"stage": failure_stage, "message": msg, "tail": ""}],
+                }
+                _write_patch_result(patch_result)
+                rep = _store_task_result_early("failed", msg, {"task_outcome_type": "PatchProposal", "result": patch_result})
+                return "failed", failure_stage, rep, 0.0
+
+            files = proposal.get("files") or []
+            allowed_files = {f for f in files if isinstance(f, str)}
+            actionable = bool(proposal.get("actionable")) and bool(allowed_files)
+            if not actionable:
+                patch_result = {
+                    "proposal_id": proposal_id,
+                    "branch": None,
+                    "status": "triage_required",
+                    "diff_summary": "",
+                    "commands_run": [],
+                    "artifacts": [log_path],
+                    "commit_sha": None,
+                    "changed_files": [],
+                    "started_ts": started_ts,
+                    "finished_ts": time.time(),
+                    "errors": [{"stage": "triage", "message": "no_files_specified", "tail": ""}],
+                }
+                proposal["state"] = "triage_required"
+                proposal["finished_ts"] = patch_result["finished_ts"]
+                proposal["result"] = patch_result
+                try:
+                    with open(proposal_path, "w", encoding="utf-8") as f:
+                        json.dump(proposal, f, indent=2, sort_keys=True)
+                except Exception:
+                    pass
+                _write_patch_result(patch_result)
+                self.external_log_sink.info(f"[Worker] PatchProposal triage_required: {proposal_id}")
+                self.external_log_sink.info(f"[Worker] PatchResult triage_required: {proposal_id}")
+                rep = _store_task_result_early(
+                    "completed",
+                    "triage_required",
+                    {"task_outcome_type": "PatchProposal", "proposal_id": proposal_id, "result": patch_result},
+                )
+                return "completed", None, rep, 0.5
+
+            repo_root = None
+            try:
+                res = subprocess.run(
+                    ["git", "rev-parse", "--show-toplevel"],
+                    capture_output=True,
+                    text=True,
+                )
+                if res.returncode == 0:
+                    repo_root = res.stdout.strip()
+            except Exception:
+                pass
+
+            if not repo_root:
+                msg = "Git repository not found"
+                self.external_log_sink.info(f"[Worker] {msg}")
+                failure_stage = "repo_not_found"
+                patch_result = {
+                    "proposal_id": proposal_id,
+                    "branch": None,
+                    "status": _status_for_stage(failure_stage),
+                    "diff_summary": "",
+                    "commands_run": [],
+                    "artifacts": [log_path],
+                    "commit_sha": None,
+                    "changed_files": [],
+                    "started_ts": started_ts,
+                    "finished_ts": time.time(),
+                    "errors": [{"stage": failure_stage, "message": msg, "tail": ""}],
+                }
+                proposal["state"] = "failed"
+                proposal["finished_ts"] = patch_result["finished_ts"]
+                proposal["result"] = patch_result
+                try:
+                    with open(proposal_path, "w", encoding="utf-8") as f:
+                        json.dump(proposal, f, indent=2, sort_keys=True)
+                except Exception:
+                    pass
+                _write_patch_result(patch_result)
+                rep = _store_task_result_early("failed", msg, {"task_outcome_type": "PatchProposal", "result": patch_result})
+                return "failed", failure_stage, rep, 0.0
+
+            _write_artifact(log_path, f"PatchProposal: {proposal_id}")
+            branch_name = f"autopatch/{proposal_id}"
+            original_branch = _git_current_branch(repo_root)
+            branch_created = False
+            commands_run: list[str] = []
+            changed_files: list[str] = []
+            tests_run: list[str] = []
+            failure_stage: str | None = None
+
+            try:
+                status_res = _run_cmd(["git", "status", "--porcelain"], repo_root)
+                if status_res.get("stdout", "").strip():
+                    msg = "Worktree dirty; aborting PatchProposal execution"
+                    self.external_log_sink.info(f"[Worker] {msg}")
+                    failure_stage = "dirty_worktree"
+                    errors.append({"stage": failure_stage, "message": msg, "tail": ""})
+                    raise RuntimeError("dirty_worktree")
+
+                res = _git_create_branch(branch_name, repo_root)
+                if res["returncode"] != 0:
+                    failure_stage = "branch_create_failed"
+                    errors.append({"stage": failure_stage, "message": "branch_create_failed", "tail": res.get("stderr", "")})
+                    raise RuntimeError("branch_create_failed")
+                branch_created = True
+
+                edits_applied = 0
+                patch_text = proposal.get("patch")
+                if isinstance(patch_text, str) and patch_text.strip():
+                    patch_files = _extract_patch_files(patch_text)
+                    if not patch_files.issubset(allowed_files):
+                        failure_stage = "apply_failed"
+                        errors.append({"stage": "apply", "message": "patch_targets_outside_allowed_files", "tail": ""})
+                        raise RuntimeError("apply_failed")
+                    patch_file = os.path.join(repo_root, f".patch_{proposal_id}.diff")
+                    with open(patch_file, "w", encoding="utf-8") as f:
+                        f.write(patch_text)
+                    res = _run_cmd(["git", "apply", patch_file], repo_root)
+                    if res["returncode"] != 0:
+                        failure_stage = "apply_failed"
+                        errors.append({"stage": "apply", "message": "git apply failed", "tail": res.get("stderr", "")})
+                        raise RuntimeError("apply_failed")
+                    edits_applied += 1
+                    try:
+                        os.remove(patch_file)
+                    except Exception:
+                        pass
+
+                edits = proposal.get("edits") or []
+                for edit in edits:
+                    path = edit.get("path")
+                    content = edit.get("content")
+                    if not path or content is None or path not in allowed_files:
+                        continue
+                    abs_path = os.path.join(repo_root, path)
+                    os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+                    with open(abs_path, "w", encoding="utf-8") as f:
+                        f.write(str(content))
+                    edits_applied += 1
+
+                replacements = proposal.get("replacements") or []
+                for rep_item in replacements:
+                    path = rep_item.get("path")
+                    find_text = rep_item.get("find")
+                    replace_text = rep_item.get("replace")
+                    if not path or find_text is None or replace_text is None or path not in allowed_files:
+                        continue
+                    abs_path = os.path.join(repo_root, path)
+                    if not os.path.exists(abs_path):
+                        continue
+                    with open(abs_path, "r", encoding="utf-8") as f:
+                        data = f.read()
+                    if find_text in data:
+                        data = data.replace(find_text, replace_text)
+                        with open(abs_path, "w", encoding="utf-8") as f:
+                            f.write(data)
+                        edits_applied += 1
+
+                diff_res = _run_cmd(["git", "diff", "--name-only"], repo_root)
+                diff_names = [line.strip() for line in diff_res.get("stdout", "").splitlines() if line.strip()]
+                if edits_applied == 0 or not diff_names:
+                    failure_stage = "apply_failed"
+                    errors.append({"stage": "apply", "message": "no_changes_applied", "tail": ""})
+                    raise RuntimeError("apply_failed")
+                if not set(diff_names).issubset(allowed_files):
+                    failure_stage = "apply_failed"
+                    errors.append({"stage": "apply", "message": "apply_targets_outside_allowed_files", "tail": ""})
+                    raise RuntimeError("apply_targets_outside_allowed_files")
+                if any(path.startswith(("logs/", "persistence_data/")) for path in diff_names):
+                    failure_stage = "apply_failed"
+                    errors.append({"stage": "apply", "message": "changes_in_disallowed_paths", "tail": ""})
+                    raise RuntimeError("apply_failed")
+                changed_files = diff_names
+
+                failures = []
+                for path in changed_files:
+                    if not path.endswith(".py"):
+                        continue
+                    cmd = f"{sys.executable} -m py_compile {path}"
+                    tests_run.append(cmd)
+                    res = _run_cmd([sys.executable, "-m", "py_compile", path], repo_root)
+                    if res["returncode"] != 0:
+                        failures.append({"stage": "py_compile", "message": "py_compile failed", "tail": res.get("stderr", "")})
+
+                def _should_run_pytest(root: str) -> bool:
+                    if not shutil.which("pytest"):
+                        return False
+                    if os.path.exists(os.path.join(root, "pyproject.toml")):
+                        return True
+                    if os.path.exists(os.path.join(root, "requirements.txt")):
+                        return True
+                    if os.path.exists(os.path.join(root, "setup.cfg")):
+                        return True
+                    if os.path.exists(os.path.join(root, "tox.ini")):
+                        return True
+                    return False
+
+                if _should_run_pytest(repo_root):
+                    tests_run.append("pytest -q")
+                    res = _run_cmd(["pytest", "-q"], repo_root)
+                    if res["returncode"] != 0:
+                        failures.append({"stage": "pytest", "message": "pytest failed", "tail": res.get("stderr", "")})
+                else:
+                    _write_artifact(log_path, "SKIP pytest - not detected")
+
+                if shutil.which("ruff") and (
+                    os.path.exists(os.path.join(repo_root, "pyproject.toml"))
+                    or os.path.exists(os.path.join(repo_root, "ruff.toml"))
+                    or os.path.exists(os.path.join(repo_root, ".ruff.toml"))
+                ):
+                    tests_run.append("ruff check .")
+                    res = _run_cmd(["ruff", "check", "."], repo_root)
+                    if res["returncode"] != 0:
+                        failures.append({"stage": "ruff", "message": "ruff failed", "tail": res.get("stderr", "")})
+                else:
+                    _write_artifact(log_path, "SKIP ruff - not detected")
+
+                if shutil.which("flake8") and (
+                    os.path.exists(os.path.join(repo_root, ".flake8"))
+                    or os.path.exists(os.path.join(repo_root, "setup.cfg"))
+                    or os.path.exists(os.path.join(repo_root, "tox.ini"))
+                ):
+                    tests_run.append("flake8")
+                    res = _run_cmd(["flake8"], repo_root)
+                    if res["returncode"] != 0:
+                        failures.append({"stage": "flake8", "message": "flake8 failed", "tail": res.get("stderr", "")})
+                else:
+                    _write_artifact(log_path, "SKIP flake8 - not detected")
+
+                if failures:
+                    failure_stage = "tests_failed"
+                    errors.extend(failures)
+                    raise RuntimeError("tests_failed")
+
+                safe_files = [f for f in changed_files if not f.startswith(("logs/", "persistence_data/"))]
+                if not safe_files:
+                    failure_stage = "apply_failed"
+                    errors.append({"stage": "apply", "message": "no_safe_files_to_stage", "tail": ""})
+                    raise RuntimeError("apply_failed")
+                _run_cmd(["git", "add", "--"] + safe_files, repo_root)
+                commit_msg = f"autopatch: {proposal_id} {proposal.get('title', '')[:60]}"
+                commit_res = _run_cmd(["git", "commit", "-m", commit_msg], repo_root)
+                if commit_res["returncode"] != 0:
+                    failure_stage = "git_commit_failed"
+                    errors.append({"stage": failure_stage, "message": "git commit failed", "tail": commit_res.get("stderr", "")})
+                    raise RuntimeError("git_commit_failed")
+                sha_res = _run_cmd(["git", "rev-parse", "HEAD"], repo_root)
+                commit_sha = sha_res.get("stdout", "").strip() or None
+                diff_summary = _summarize_diff(repo_root)
+                _git_checkout(original_branch, repo_root)
+
+                patch_result = {
+                    "proposal_id": proposal_id,
+                    "branch": branch_name,
+                    "status": "tests_passed",
+                    "diff_summary": diff_summary,
+                    "commands_run": tests_run,
+                    "artifacts": [log_path],
+                    "commit_sha": commit_sha,
+                    "changed_files": changed_files,
+                    "started_ts": started_ts,
+                    "finished_ts": time.time(),
+                    "errors": errors,
+                }
+                proposal["state"] = "done"
+                proposal["finished_ts"] = patch_result["finished_ts"]
+                proposal["result"] = patch_result
+                proposal["branch"] = branch_name
+                proposal["commit_sha"] = commit_sha
+                with open(proposal_path, "w", encoding="utf-8") as f:
+                    json.dump(proposal, f, indent=2, sort_keys=True)
+                _write_patch_result(patch_result)
+                self.external_log_sink.info(f"[Worker] PatchProposal done: {proposal_id}")
+                self.external_log_sink.info(f"[Worker] PatchResult tests_passed: {proposal_id}")
+                rep = _store_task_result_early(
+                    "completed",
+                    "tests_passed",
+                    {"task_outcome_type": "PatchProposal", "proposal_id": proposal_id, "result": patch_result},
+                )
+                return "completed", None, rep, 1.0
+
+            except Exception as e:
+                err = str(e)
+                if failure_stage is None:
+                    if err == "dirty_worktree":
+                        failure_stage = "dirty_worktree"
+                    elif err == "branch_create_failed":
+                        failure_stage = "branch_create_failed"
+                    elif err == "apply_failed":
+                        failure_stage = "apply_failed"
+                    elif err == "tests_failed":
+                        failure_stage = "tests_failed"
+                    elif err == "git_commit_failed":
+                        failure_stage = "git_commit_failed"
+                    else:
+                        failure_stage = "apply_failed"
+                if branch_created:
+                    try:
+                        _run_cmd(["git", "reset", "--hard"], repo_root)
+                        _git_checkout(original_branch, repo_root)
+                        _git_delete_branch(branch_name, repo_root)
+                    except Exception:
+                        pass
+                status = _status_for_stage(failure_stage)
+                patch_result = {
+                    "proposal_id": proposal_id,
+                    "branch": branch_name,
+                    "status": status,
+                    "diff_summary": "",
+                    "commands_run": tests_run,
+                    "artifacts": [log_path],
+                    "commit_sha": None,
+                    "changed_files": changed_files,
+                    "started_ts": started_ts,
+                    "finished_ts": time.time(),
+                    "errors": errors or [{"stage": failure_stage or "apply_failed", "message": err, "tail": ""}],
+                }
+                proposal["state"] = "failed"
+                proposal["finished_ts"] = patch_result["finished_ts"]
+                proposal["result"] = patch_result
+                try:
+                    with open(proposal_path, "w", encoding="utf-8") as f:
+                        json.dump(proposal, f, indent=2, sort_keys=True)
+                    _write_patch_result(patch_result)
+                except Exception:
+                    pass
+                self.external_log_sink.info(f"[Worker] PatchProposal failed: {proposal_id}")
+                self.external_log_sink.info(f"[Worker] PatchResult {status}: {proposal_id}")
+                rep = _store_task_result_early(
+                    "failed",
+                    failure_stage or status,
+                    {"task_outcome_type": "PatchProposal", "proposal_id": proposal_id, "result": patch_result},
+                )
+                return "failed", failure_stage or status, rep, 0.0
 
         # ---------- quick guards ----------
         if not isinstance(task_description, str) or not task_description.strip():
@@ -11354,6 +12160,68 @@ class ProtoAgent_Worker(ProtoAgent):
                         "filename": f"report_{_now_ts()}",
                         "text_content": f"Task: {task_description}\nGenerated: {datetime.now()}\nStatus: draft"
                     }
+
+        # ---------- resolve step output references ----------
+        def _resolve_step_output_refs(args):
+            pattern = re.compile(r"^output_of_S(\d+)$", re.IGNORECASE)
+            unresolved = []
+
+            def _lookup(step_num: int):
+                if not (plan_id and getattr(self, "memdb", None)):
+                    return None
+                try:
+                    recent = self.memdb.recent("TaskResult", limit=500)
+                except Exception:
+                    return None
+                for entry in recent:
+                    if entry.get("plan_id") != plan_id:
+                        continue
+                    entry_step = entry.get("step")
+                    if entry_step is None:
+                        ctx = entry.get("context")
+                        if isinstance(ctx, dict):
+                            entry_step = ctx.get("step")
+                    task_id_local = entry.get("task_id") or ""
+                    if entry_step == step_num or task_id_local in (f"S{step_num}", f"step_{step_num}"):
+                        task_result = entry.get("task_result")
+                        if isinstance(task_result, dict):
+                            if "result" in task_result:
+                                return task_result.get("result")
+                            return task_result
+                        return task_result
+                return None
+
+            def _resolve(val):
+                if isinstance(val, dict):
+                    return {k: _resolve(v) for k, v in val.items()}
+                if isinstance(val, list):
+                    return [_resolve(v) for v in val]
+                if isinstance(val, str):
+                    m = pattern.match(val.strip())
+                    if m:
+                        step_num = int(m.group(1))
+                        resolved = None
+                        for _ in range(3):
+                            resolved = _lookup(step_num)
+                            if resolved is not None:
+                                return resolved
+                            time.sleep(1)
+                        unresolved.append(f"S{step_num}")
+                        return val
+                return val
+
+            resolved_args = _resolve(args)
+            if unresolved:
+                self.external_log_sink.info(
+                    f"[{self.name}] Unresolved step outputs: {', '.join(unresolved)}",
+                    extra={"agent": self.name, "plan_id": plan_id},
+                )
+            return resolved_args
+
+        try:
+            tool_args = _resolve_step_output_refs(tool_args)
+        except Exception as e:
+            self.external_log_sink.warning(f"Failed to resolve step outputs: {e}", extra={"agent": self.name})
 
         # ---------- arg translation (optional) ----------
         try:
@@ -11662,6 +12530,7 @@ class ProtoAgent_Worker(ProtoAgent):
                     "timestamp": ts,
                     "agent": self.name,
                     "task_id": task_id,
+                    "step": step_index,
                 }
                 if task_id:
                     self.external_log_sink.debug(

@@ -420,7 +420,21 @@ class CatalystVectorAlpha:
         # --- Start Curiosity Loop (idle-time learning) ---
         try:
             from curiosity_loop import CuriosityLoop
-            self.curiosity_loop = CuriosityLoop(cycle_time=300)  # Explore every 5 min
+            try:
+                from config import config as cva_config
+                cycle_time = cva_config.CURIOSITY_INTERVAL
+                cpu_max = cva_config.CURIOSITY_CPU_MAX
+                quiet_minutes = cva_config.CURIOSITY_QUIET_MINUTES
+            except Exception:
+                cycle_time = 300
+                cpu_max = 60.0
+                quiet_minutes = 10
+            self.curiosity_loop = CuriosityLoop(
+                cycle_time=cycle_time,
+                orchestrator=self,
+                cpu_max=cpu_max,
+                quiet_minutes=quiet_minutes,
+            )
             self.curiosity_loop.start()
             self.external_log_sink.info("[Curiosity] Started idle-time learning loop")
         except Exception as _e:
@@ -1086,6 +1100,7 @@ class CatalystVectorAlpha:
             'INJECT_EVENT': self._handle_inject_event,
             'REQUEST_HUMAN_INPUT': self._handle_request_human_input,
             'USER_COMMAND': self._handle_user_command,
+            'EXECUTE_PATCH_PROPOSAL': self._handle_execute_patch_proposal,
 
         }
 
@@ -1589,6 +1604,7 @@ class CatalystVectorAlpha:
             if hasattr(agent, 'memetic_kernel') and agent.memetic_kernel:
                 reflection = agent.memetic_kernel.reflect()
                 logger.debug(f"[MemeticKernel] {agent.name} reflects: '{reflection}'")
+
             else:
                 logger.debug(f"[MemeticKernel] {agent.name} has no MemeticKernel or it's not initialized for reflection (post-task).")
 
@@ -1699,6 +1715,24 @@ class CatalystVectorAlpha:
             self._log_swarm_activity("SWARM_COORDINATED_TASK", "CatalystVectorAlpha",
                                     f"Swarm '{swarm_name}' coordinated task '{task_description}'.",
                                     {"swarm": swarm_name, "task": task_description})
+
+    def _handle_execute_patch_proposal(self, directive: dict):
+        """Route a PatchProposal execution directive to a Worker."""
+        agent_name = directive.get("agent_name") or "ProtoAgent_Worker_instance_1"
+        args = directive.get("args") or {}
+        proposal_id = args.get("proposal_id")
+        mode = args.get("mode", "branch")
+        task_description = f"Execute PatchProposal {proposal_id} (mode={mode})"
+        forward = {
+            "type": "AGENT_PERFORM_TASK",
+            "agent_name": agent_name,
+            "task_description": task_description,
+            "task_type": "EXECUTE_PATCH_PROPOSAL",
+            "context": {"proposal_id": proposal_id, "mode": mode, "directive_type": "EXECUTE_PATCH_PROPOSAL"},
+        }
+        if directive.get("task_id"):
+            forward["task_id"] = directive.get("task_id")
+        self._handle_agent_perform_task(forward)
 
     def _handle_reporting_agent_summarize(self, directive: dict):
         """Handles the REPORTING_AGENT_SUMMARIZE directive."""
@@ -2194,13 +2228,14 @@ class CatalystVectorAlpha:
             if directive_type not in self._directive_handlers:
                 is_valid = False
                 validation_reason = f"Unknown directive type: {directive_type}."
-            elif directive_type in ['AGENT_PERFORM_TASK', 'SPAWN_AGENT_INSTANCE', 'BROADCAST_COMMAND', 'INITIATE_PLANNING_CYCLE', 'CATALYZE_TRANSFORMATION']:
+            elif directive_type in ['AGENT_PERFORM_TASK', 'SPAWN_AGENT_INSTANCE', 'BROADCAST_COMMAND', 'INITIATE_PLANNING_CYCLE', 'CATALYZE_TRANSFORMATION', 'EXECUTE_PATCH_PROPOSAL']:
                 agent_field = None
                 if directive_type == 'AGENT_PERFORM_TASK': agent_field = 'agent_name'
                 elif directive_type == 'SPAWN_AGENT_INSTANCE': agent_field = 'instance_name'
                 elif directive_type == 'BROADCAST_COMMAND': agent_field = 'target_agent'
                 elif directive_type == 'INITIATE_PLANNING_CYCLE': agent_field = 'planner_agent_name'
                 elif directive_type == 'CATALYZE_TRANSFORMATION': agent_field = 'target_agent_instance'
+                elif directive_type == 'EXECUTE_PATCH_PROPOSAL': agent_field = 'agent_name'
 
                 if agent_field and agent_field in directive:
                     if directive[agent_field] not in self.agent_instances:

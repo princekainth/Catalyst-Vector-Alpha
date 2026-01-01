@@ -33,6 +33,8 @@ class CVAConfig:
     # === Exploration ===
     EXPLORATION_RATE: float = 0.05  # 5% random exploration
     CURIOSITY_INTERVAL: int = 300  # seconds between curiosity loops
+    CURIOSITY_CPU_MAX: float = 60.0  # max CPU usage (%) to allow curiosity
+    CURIOSITY_QUIET_MINUTES: int = 10  # minutes since last incident resolution
     
     # === Paths ===
     PERSISTENCE_DIR: str = "persistence_data"
@@ -47,6 +49,8 @@ class CVAConfig:
             LLM_TIMEOUT=int(os.getenv("CVA_LLM_TIMEOUT", 60)),
             EXPLORATION_RATE=float(os.getenv("CVA_EXPLORATION_RATE", 0.05)),
             CURIOSITY_INTERVAL=int(os.getenv("CVA_CURIOSITY_INTERVAL", 300)),
+            CURIOSITY_CPU_MAX=float(os.getenv("CVA_CURIOSITY_CPU_MAX", 60.0)),
+            CURIOSITY_QUIET_MINUTES=int(os.getenv("CVA_CURIOSITY_QUIET_MINUTES", 10)),
         )
 
 # Global config instance

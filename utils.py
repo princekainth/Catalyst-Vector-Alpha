@@ -705,6 +705,18 @@ def sanitize_json_string(s: str) -> str:
 
 def try_parse_json(text: str) -> Optional[Dict[str, Any]]:
     """Attempt to parse JSON using multiple extraction and sanitization strategies."""
+    # === ADD THESE LINES AT THE TOP ===
+    if isinstance(text, dict):
+        return text
+    if isinstance(text, list):
+        return text
+    if text is None:
+        return None
+    if not isinstance(text, str):
+        # Last resort: try to convert to string
+        text = str(text)
+    # === END OF NEW LINES ===
+
     for candidate in extract_json_candidates(text):
         try:
             return json.loads(candidate)
