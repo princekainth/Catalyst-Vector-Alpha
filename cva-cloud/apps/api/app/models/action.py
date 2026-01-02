@@ -9,9 +9,9 @@ from app.db.base import Base
 class Action(Base):
     __tablename__ = "actions"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    incident_id: Mapped[str] = mapped_column(String(36), ForeignKey("incidents.id"))
-    user_id: Mapped[str] = mapped_column(String(36), nullable=True)
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    incident_id: Mapped[str] = mapped_column(String(100), ForeignKey("incidents.id"))
+    user_id: Mapped[str] = mapped_column(String(100), nullable=True)
     action_type: Mapped[str] = mapped_column(String(100))
     approved_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     outcome: Mapped[str] = mapped_column(String(50), default="pending")

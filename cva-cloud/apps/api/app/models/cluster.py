@@ -9,9 +9,9 @@ from app.db.base import Base
 class Cluster(Base):
     __tablename__ = "clusters"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    org_id: Mapped[str] = mapped_column(String(36), ForeignKey("organizations.id"), nullable=False)
-    user_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    org_id: Mapped[str] = mapped_column(String(100), ForeignKey("organizations.id"), nullable=False)
+    user_id: Mapped[str] = mapped_column(String(100), index=True, nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     api_key: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
     status: Mapped[str] = mapped_column(String(50), default="pending")

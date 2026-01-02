@@ -7,7 +7,11 @@ from sqlalchemy.orm import Session
 
 from app.core.security import get_org_id, verify_token
 from app.db.session import get_db
+from app.models.action import Action
 from app.models.cluster import Cluster
+from app.models.incident import Incident
+from app.models.organization import Organization
+from app.models.reasoning_trace import ReasoningTrace
 from app.models.incident import Incident
 from app.schemas.cluster import ClusterOut, ClusterCreate, ClusterInstallResponse
 
@@ -75,6 +79,12 @@ def create_cluster(
     org_id: str = Depends(get_org_id),
     db: Session = Depends(get_db),
 ):
+    db_org = db.query(Organization).filter(Organization.id == org_id).first()
+    if not db_org:
+        db_org = Organization(id=org_id, name=org_id)
+        db.add(db_org)
+        db.commit()
+
     existing = db.query(Cluster).filter(Cluster.org_id == org_id).count()
     if existing >= 10:
         raise HTTPException(status_code=429, detail="Cluster limit reached")
@@ -118,6 +128,46 @@ def cluster_heartbeat(
     cluster.agent_version = payload.get("agent_version") or cluster.agent_version
     db.commit()
     return {"status": "ok"}
+
+
+@router.delete("/{cluster_id}")
+@router.delete("/{cluster_id}/")
+def delete_cluster(
+    cluster_id: str,
+    user_id: str = Depends(verify_token),
+    org_id: str = Depends(get_org_id),
+    db: Session = Depends(get_db),
+):
+    cluster = (
+        db.query(Cluster)
+        .filter(
+            Cluster.id == cluster_id,
+            Cluster.org_id == org_id,
+            Cluster.user_id == user_id,
+        )
+        .first()
+    )
+    if not cluster:
+        raise HTTPException(status_code=404, detail="Cluster not found")
+
+    incident_ids = [
+        row[0]
+        for row in db.query(Incident.id).filter(Incident.cluster_id == cluster.id).all()
+    ]
+    if incident_ids:
+        db.query(ReasoningTrace).filter(
+            ReasoningTrace.incident_id.in_(incident_ids)
+        ).delete(synchronize_session=False)
+        db.query(Action).filter(Action.incident_id.in_(incident_ids)).delete(
+            synchronize_session=False
+        )
+        db.query(Incident).filter(Incident.id.in_(incident_ids)).delete(
+            synchronize_session=False
+        )
+
+    db.delete(cluster)
+    db.commit()
+    return {"status": "deleted"}
 
 
 @router.get("/{cluster_id}/pending-actions")

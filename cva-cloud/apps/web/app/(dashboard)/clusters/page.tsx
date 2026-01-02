@@ -1,5 +1,6 @@
 import Link from "next/link";
 import SectionHeader from "@/components/section-header";
+import ClusterActions from "@/components/cluster-actions";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { fetcher } from "@/lib/api";
@@ -89,14 +90,7 @@ export default async function ClustersPage({
                 </Badge>
                 <span className="text-white/70">{cluster.agent_version || "—"}</span>
                 <span className="text-white/70">{formatRelative(cluster.last_seen)}</span>
-                <div className="flex gap-2 text-xs text-white/70">
-                  <button className="rounded-md border border-white/10 px-2 py-1">
-                    View
-                  </button>
-                  <button className="rounded-md border border-white/10 px-2 py-1">
-                    Delete
-                  </button>
-                </div>
+                <ClusterActions clusterId={cluster.id} />
               </div>
             ))}
           </div>

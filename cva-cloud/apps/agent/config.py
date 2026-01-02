@@ -10,7 +10,7 @@ LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama").lower()
 
 # For Ollama
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://host.docker.internal:11434")
-LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME", "llama3")
+LLM_MODEL = os.getenv("OLLAMA_MODEL", "mistral-nemo:latest")
 
 # For OpenAI (Optional)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")

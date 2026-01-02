@@ -9,9 +9,9 @@ from app.db.base import Base
 class Incident(Base):
     __tablename__ = "incidents"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    cluster_id: Mapped[str] = mapped_column(String(36), ForeignKey("clusters.id"))
-    user_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    cluster_id: Mapped[str] = mapped_column(String(100), ForeignKey("clusters.id"))
+    user_id: Mapped[str] = mapped_column(String(100), index=True, nullable=False)
     namespace: Mapped[str] = mapped_column(String(255), default="default")
     pod_name: Mapped[str] = mapped_column(String(255))
     issue_type: Mapped[str] = mapped_column(String(100))

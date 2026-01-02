@@ -17,7 +17,7 @@ from config import (
     COHERE_BASE_URL,
     GOOGLE_API_KEY,
     GOOGLE_BASE_URL,
-    LLM_MODEL_NAME,
+    LLM_MODEL,
     LLM_PROVIDER,
     MISTRAL_API_KEY,
     MISTRAL_BASE_URL,
@@ -31,7 +31,7 @@ class OllamaLLMIntegration:
     def __init__(
         self,
         host: str = OLLAMA_URL,
-        chat_model: str = LLM_MODEL_NAME,
+        chat_model: str = LLM_MODEL,
         logger: Optional[logging.Logger] = None,
     ):
         self.host = host

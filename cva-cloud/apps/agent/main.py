@@ -1,7 +1,7 @@
 import time
 
 from api_client import CVAApiClient
-from config import CHECK_INTERVAL, CVA_CLUSTER_ID, LLM_MODEL_NAME, LLM_PROVIDER
+from config import CHECK_INTERVAL, CVA_CLUSTER_ID, LLM_MODEL, LLM_PROVIDER
 from k8s_student import K8sStudent
 from llm import OllamaLLMIntegration
 
@@ -20,7 +20,7 @@ def calculate_severity(pod: dict) -> str:
 
 
 def _check_llm_config() -> None:
-    print(f"CVA Agent LLM provider: {LLM_PROVIDER}, model: {LLM_MODEL_NAME}")
+    print(f"CVA Agent LLM provider: {LLM_PROVIDER}, model: {LLM_MODEL}")
     # Instantiation validates provider + required keys without network calls.
     OllamaLLMIntegration()
 
@@ -34,25 +34,28 @@ def main() -> None:
     api.send_heartbeat("1.0.0")
 
     while True:
-        status = k8s_student.get_cached_status()
-        problem_pods = status.get("problem_pods", []) if isinstance(status, dict) else []
+        status = k8s_student.work()
+        problem_pods = status.get("details", {}).get("problem_pods", []) if isinstance(status, dict) else []
 
         for pod in problem_pods:
             analysis = k8s_student.analyze(pod)
-            incident_id = api.report_incident(
-                pod_name=pod.get("name", "unknown"),
-                namespace=pod.get("namespace", "default"),
-                issue_type=pod.get("reason", "Unknown"),
-                severity=calculate_severity(pod),
-                reasoning_trace=analysis.get("trace", {}),
-                action_type=analysis.get("action"),
-                action_config={
-                    "recommended_actions": analysis.get("recommended_actions", []),
-                    "action_plan": analysis.get("action_plan", {}),
-                },
-            )
-            if incident_id:
-                print(f"Reported incident {incident_id} for {pod.get('name')}")
+            try:
+                incident_id = api.report_incident(
+                    pod_name=pod.get("name", "unknown"),
+                    namespace=pod.get("namespace", "default"),
+                    issue_type=pod.get("reason", "Unknown"),
+                    severity=calculate_severity(pod),
+                    reasoning_trace=analysis.get("trace", {}),
+                    action_type=analysis.get("action"),
+                    action_config={
+                        "recommended_actions": analysis.get("recommended_actions", []),
+                        "action_plan": analysis.get("action_plan", {}),
+                    },
+                )
+                if incident_id:
+                    print(f"Reported incident {incident_id} for {pod.get('name')}")
+            except Exception as e:
+                print(f"Failed to report incident for {pod.get('name')}: {e}")
 
         actions = api.get_pending_actions()
         for action in actions:

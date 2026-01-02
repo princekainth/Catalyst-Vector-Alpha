@@ -9,8 +9,8 @@ from app.db.base import Base
 class ReasoningTrace(Base):
     __tablename__ = "reasoning_traces"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    incident_id: Mapped[str] = mapped_column(String(36), ForeignKey("incidents.id"))
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    incident_id: Mapped[str] = mapped_column(String(100), ForeignKey("incidents.id"))
     trace_json: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
