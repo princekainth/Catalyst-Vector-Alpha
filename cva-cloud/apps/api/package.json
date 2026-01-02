@@ -1,0 +1,7 @@
+{
+  "name": "cva-api",
+  "private": true,
+  "scripts": {
+    "dev": "uvicorn app.main:app --reload --port 8000"
+  }
+}

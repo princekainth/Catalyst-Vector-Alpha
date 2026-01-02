@@ -1,0 +1,62 @@
+# 2. CreateContainerConfigError - Missing ConfigMap
+apiVersion: v1
+kind: Pod
+metadata:
+  name: config-error
+spec:
+  containers:
+  - name: nginx
+    image: nginx
+    envFrom:
+    - configMapRef:
+        name: missing-config
+  restartPolicy: Always
+---
+# 3. Init Container Failure
+apiVersion: v1
+kind: Pod
+metadata:
+  name: init-fail
+spec:
+  initContainers:
+  - name: init-fail
+    image: busybox
+    command: ["sh", "-c", "exit 1"]
+  containers:
+  - name: nginx
+    image: nginx
+  restartPolicy: Always
+---
+# 4. Volume Mount Error
+apiVersion: v1
+kind: Pod
+metadata:
+  name: vol-error
+spec:
+  volumes:
+  - name: test-vol
+    emptyDir: {}
+  containers:
+  - name: nginx
+    image: nginx
+    volumeMounts:
+    - name: nonexistent-vol
+      mountPath: /data
+  restartPolicy: Always
+---
+# 5. Missing Secret
+apiVersion: v1
+kind: Pod
+metadata:
+  name: secret-error
+spec:
+  containers:
+  - name: nginx
+    image: nginx
+    env:
+    - name: DB_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          name: missing-secret
+          key: password
+  restartPolicy: Always

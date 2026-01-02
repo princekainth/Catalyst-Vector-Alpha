@@ -15,7 +15,7 @@ import re
 from typing import Optional
 from datetime import datetime
 
-from .base_student import BaseStudent
+from base_student import BaseStudent
 from reasoning_engine import get_reasoning_engine, ReasoningTrace
 from quarantine import is_quarantined, set_quarantine
 
@@ -128,7 +128,10 @@ class K8sStudent(BaseStudent):
             # Try to fix
             result = self._remediate_pod(pod)
             
-            if result.get("success"):
+            if result.get("planned"):
+                fixed.append(pod_key)
+                self._mark_remediated(pod_key)
+            elif result.get("success"):
                 fixed.append(pod_key)
                 self._mark_remediated(pod_key)
             else:
@@ -426,62 +429,18 @@ class K8sStudent(BaseStudent):
                 evidence=[action_plan.get('rationale', 'Standard remediation')]
             )
 
-            # Step 6: Execute
-            trace.act(f"Executing {action_plan['action']}")
-
-            if self.tools and hasattr(self.tools, 'safe_call'):
-                recommended_actions = self._build_recommended_actions(action_plan, pod, logs)
-                tool_result = self.tools.safe_call(
-                    "microsoft_autonomous_remediation",
-                    pod_name=name,
-                    namespace=namespace,
-                    recommended_actions=recommended_actions,
-                )
-
-                # Step 7: Verify
-                time.sleep(5)
-                still_broken = self._pod_still_broken(name, namespace)
-
-                if not still_broken:
-                    trace.verify("Pod recovered successfully", success=True)
-                    self.reasoning.complete_trace(trace, "SUCCESS")
-
-                    # Record to shared memory
-                    if hasattr(self, 'shared_memory') and self.shared_memory:
-                        self.shared_memory.add_memory(
-                            self.name,
-                            f"Fixed {reason} on {namespace}/{name} using {action_plan['action']}",
-                            category="outcome"
-                        )
-
-                    result = {"success": True, "action": action_plan['action'], "trace_id": trace.trace_id, "details": tool_result}
-                else:
-                    trace.verify("Pod still unhealthy after fix attempt", success=False)
-
-                    # Try web search fallback
-                    trace.analyze("Local fix failed, searching web for solutions", confidence=0.5)
-                    web_fix = self._search_web_for_fix(reason, namespace, name)
-
-                    if web_fix:
-                        trace.recall(f"Found web solution: {web_fix.get('title', '')[:50]}")
-                        web_result = self._apply_web_fix(web_fix['url'], reason, name, namespace)
-
-                        if web_result and web_result.get('status') == 'applied':
-                            trace.act(f"Applied web fix: {web_result.get('command', '')[:50]}")
-                            trace.verify("Checking if web fix worked")
-
-                            time.sleep(5)
-                            if not self._pod_still_broken(name, namespace):
-                                self.reasoning.complete_trace(trace, "SUCCESS_VIA_WEB")
-                                result = {"success": True, "action": "web_fix", "trace_id": trace.trace_id}
-
-                    if not result.get("success"):
-                        self.reasoning.complete_trace(trace, "FAILED")
-                        result = {"success": False, "error": "All remediation attempts failed", "trace_id": trace.trace_id}
-            else:
-                trace.verify("No tool registry available", success=False)
-                self.reasoning.complete_trace(trace, "FAILED_NO_TOOLS")
-                result = {"success": False, "error": "No tools available"}
+            # Step 6: Plan (no execution in agent loop)
+            recommended_actions = self._build_recommended_actions(action_plan, pod, logs)
+            self.reasoning.complete_trace(trace, "PLANNED")
+            result = {
+                "success": True,
+                "planned": True,
+                "action": action_plan.get("action"),
+                "action_plan": action_plan,
+                "recommended_actions": recommended_actions,
+                "trace_id": trace.trace_id,
+                "trace": trace.to_dict(),
+            }
 
         except Exception as e:
             trace.verify(f"Exception: {str(e)[:100]}", success=False)
@@ -497,6 +456,94 @@ class K8sStudent(BaseStudent):
             self._failed_attempts.pop(track_key, None)
 
         return result
+
+    def analyze(self, pod: dict) -> dict:
+        """Return reasoning trace and planned action without executing."""
+        plan = self._remediate_pod(pod)
+        return {
+            "trace": plan.get("trace", {}),
+            "action_plan": plan.get("action_plan", {}),
+            "recommended_actions": plan.get("recommended_actions", []),
+            "action": plan.get("action"),
+        }
+
+    def execute_fix(self, incident_id: str, action_type: str, config: dict) -> dict:
+        """Execute an approved fix based on action_type and config."""
+        pod_name = (config or {}).get("pod_name") or (config or {}).get("name")
+        namespace = (config or {}).get("namespace") or "default"
+        message = (config or {}).get("message") or ""
+        issue_type = (config or {}).get("issue_type") or (config or {}).get("reason") or ""
+        pod = {"name": pod_name, "namespace": namespace, "message": message, "reason": issue_type}
+
+        if not pod_name:
+            return {"success": False, "error": "Missing pod name", "incident_id": incident_id}
+
+        if action_type in ("fix_image_tag", "update_image_url"):
+            image = (config or {}).get("image")
+            if image:
+                dep_name = self._get_deployment_owner(pod_name, namespace)
+                if not dep_name:
+                    return {"success": False, "error": "No deployment owner found", "incident_id": incident_id}
+                return self._set_image(dep_name, namespace, image)
+            return self._fix_image_pull(pod)
+
+        if action_type in ("create_missing_config", "create_missing_secret"):
+            cm_name = (config or {}).get("configmap")
+            sec_name = (config or {}).get("secret")
+            if cm_name:
+                return self._create_configmap(cm_name, namespace)
+            if sec_name:
+                return self._create_secret(sec_name, namespace)
+            return self._fix_config_error(pod)
+
+        if action_type in ("add_missing_env_var",):
+            dep_name = self._get_deployment_owner(pod_name, namespace)
+            if not dep_name:
+                return {"success": False, "error": "No deployment owner found", "incident_id": incident_id}
+            var_name = (config or {}).get("env_name") or (config or {}).get("var_name") or "MISSING_ENV"
+            var_value = (config or {}).get("env_value") or "changeme"
+            return self._add_env_var(dep_name, namespace, var_name, var_value)
+
+        if action_type in ("increase_memory_limits", "adjust_resources"):
+            dep_name = self._get_deployment_owner(pod_name, namespace)
+            if not dep_name:
+                return {"success": False, "error": "No deployment owner found", "incident_id": incident_id}
+            request = (config or {}).get("requests") or "256Mi"
+            limit = (config or {}).get("memory") or "512Mi"
+            return self._increase_memory(dep_name, namespace, request, limit)
+
+        if action_type in ("restart_deployment", "generic_remediation"):
+            dep_name = self._get_deployment_owner(pod_name, namespace)
+            if not dep_name:
+                return {"success": False, "error": "No deployment owner found", "incident_id": incident_id}
+            try:
+                result = subprocess.run(
+                    ["kubectl", "rollout", "restart", f"deployment/{dep_name}", "-n", namespace],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                if result.returncode == 0:
+                    return {"success": True, "action": "restart_deployment", "output": result.stdout}
+                return {"success": False, "error": result.stderr}
+            except Exception as e:
+                return {"success": False, "error": str(e)}
+
+        if action_type == "delete_pod":
+            try:
+                result = subprocess.run(
+                    ["kubectl", "delete", "pod", pod_name, "-n", namespace],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                if result.returncode == 0:
+                    return {"success": True, "action": "delete_pod", "output": result.stdout}
+                return {"success": False, "error": result.stderr}
+            except Exception as e:
+                return {"success": False, "error": str(e)}
+
+        return {"success": False, "error": f"Unsupported action: {action_type}"}
 
     def _get_typical_causes(self, reason: str) -> str:
         """Return typical causes for error types."""
@@ -557,7 +604,7 @@ Respond with ONLY valid JSON (no markdown, no backticks):
 {{"action": "action_name", "confidence": 0.85, "rationale": "one sentence why"}}"""
 
         try:
-            from shared_models import OllamaLLMIntegration
+            from llm import OllamaLLMIntegration
             llm = OllamaLLMIntegration()
             response = llm.generate_text(prompt=prompt, temperature=0.1, max_tokens=150, json_mode=True)
 
@@ -1081,7 +1128,7 @@ Respond with ONLY valid JSON (no markdown, no backticks):
                 return None
             
             # 2. Ask LLM to extract kubectl fix
-            from shared_models import OllamaLLMIntegration
+            from llm import OllamaLLMIntegration
             llm = OllamaLLMIntegration()
             
             # Get actual deployment name from Kubernetes
