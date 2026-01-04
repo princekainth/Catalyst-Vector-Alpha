@@ -1,6 +1,7 @@
 import SectionHeader from "@/components/section-header";
 import { Card } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
+import ClusterStatusBadge from "@/components/cluster-status-badge";
+import LocalTime from "@/components/local-time";
 import { fetcher } from "@/lib/api";
 import { getAuthHeaders } from "@/lib/api.server";
 import type { Cluster } from "@/lib/types";
@@ -34,17 +35,19 @@ export default async function ClusterDetailPage({
       <Card className="space-y-4">
         <div className="flex items-center justify-between">
           <span className="text-sm text-white/60">Status</span>
-          <Badge tone={cluster.status === "connected" ? "success" : "warning"}>
-            {cluster.status}
-          </Badge>
+          <ClusterStatusBadge status={cluster.status} lastSeen={cluster.last_seen} />
         </div>
         <div className="flex items-center justify-between text-sm">
           <span className="text-white/60">Agent Version</span>
-          <span>{cluster.agent_version || "—"}</span>
+          <span>{cluster.agent_version || "Not reported"}</span>
         </div>
         <div className="flex items-center justify-between text-sm">
           <span className="text-white/60">Last Seen</span>
-          <span>{cluster.last_seen || "never"}</span>
+          <LocalTime value={cluster.last_seen} mode="relative" />
+        </div>
+        <div className="flex items-center justify-between text-sm">
+          <span className="text-white/60">Created At</span>
+          <LocalTime value={cluster.created_at} mode="absolute" />
         </div>
         <div className="flex items-center justify-between text-sm">
           <span className="text-white/60">Cluster ID</span>

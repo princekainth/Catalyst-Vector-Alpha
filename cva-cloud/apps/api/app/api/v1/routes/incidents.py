@@ -36,19 +36,13 @@ def _get_cluster_by_api_key(
 
 @router.get("/", response_model=list[IncidentOut])
 def list_incidents(
-    user_id: str = Depends(verify_token),
-    org_id: str = Depends(get_org_id),
     db: Session = Depends(get_db),
     status: str | None = Query(default=None),
     severity: str | None = Query(default=None),
     issue_type: str | None = Query(default=None),
     cluster_id: str | None = Query(default=None),
 ):
-    query = (
-        db.query(Incident)
-        .join(Cluster)
-        .filter(Cluster.org_id == org_id, Incident.user_id == user_id)
-    )
+    query = db.query(Incident)
     if status:
         query = query.filter(Incident.status == status)
     if severity:
@@ -63,10 +57,28 @@ def list_incidents(
 @router.post("/report")
 def report_incident(
     payload: IncidentReport,
-    authorization: str | None = Header(default=None),
     db: Session = Depends(get_db),
 ):
-    cluster = _get_cluster_by_api_key(db, payload.cluster_id, authorization)
+    cluster = (
+        db.query(Cluster)
+        .filter(Cluster.id == payload.cluster_id)
+        .first()
+    )
+    if not cluster:
+        raise HTTPException(status_code=404, detail="Cluster not found")
+
+    existing = (
+        db.query(Incident)
+        .filter(
+            Incident.cluster_id == cluster.id,
+            Incident.pod_name == payload.pod_name,
+            Incident.issue_type == payload.issue_type,
+            Incident.status == "pending",
+        )
+        .first()
+    )
+    if existing:
+        return {"incident_id": existing.id}
     incident = Incident(
         id=f"inc-{uuid.uuid4()}",
         cluster_id=cluster.id,
@@ -97,17 +109,12 @@ def report_incident(
 @router.get("/{incident_id}/", response_model=IncidentOut)
 def get_incident(
     incident_id: str,
-    user_id: str = Depends(verify_token),
-    org_id: str = Depends(get_org_id),
     db: Session = Depends(get_db),
 ):
     return (
         db.query(Incident)
-        .join(Cluster)
         .filter(
-            Cluster.org_id == org_id,
             Incident.id == incident_id,
-            Incident.user_id == user_id,
         )
         .first()
     )
@@ -117,18 +124,13 @@ def get_incident(
 @router.get("/{incident_id}/trace/", response_model=list[ReasoningTraceOut])
 def get_reasoning_trace(
     incident_id: str,
-    user_id: str = Depends(verify_token),
-    org_id: str = Depends(get_org_id),
     db: Session = Depends(get_db),
 ):
     return (
         db.query(ReasoningTrace)
         .join(Incident)
-        .join(Cluster)
         .filter(
-            Cluster.org_id == org_id,
             Incident.id == incident_id,
-            Incident.user_id == user_id,
         )
         .all()
     )
@@ -139,23 +141,9 @@ def get_reasoning_trace(
 def update_incident_status(
     incident_id: str,
     payload: IncidentUpdate,
-    authorization: str | None = Header(default=None),
     db: Session = Depends(get_db),
 ):
-    if not authorization or not authorization.lower().startswith("bearer "):
-        raise HTTPException(status_code=401, detail="Missing API key")
-    token = authorization.split(" ", 1)[1].strip()
-    if not token:
-        raise HTTPException(status_code=401, detail="Missing API key")
-    cluster = db.query(Cluster).filter(Cluster.api_key == token).first()
-    if not cluster:
-        raise HTTPException(status_code=401, detail="Invalid API key")
-
-    incident = (
-        db.query(Incident)
-        .filter(Incident.id == incident_id, Incident.cluster_id == cluster.id)
-        .first()
-    )
+    incident = db.query(Incident).filter(Incident.id == incident_id).first()
     if not incident:
         raise HTTPException(status_code=404, detail="Incident not found")
     incident.status = payload.status
@@ -169,22 +157,24 @@ def update_incident_status(
 @router.post("/{incident_id}/approve")
 def approve_incident(
     incident_id: str,
-    user_id: str = Depends(verify_token),
-    org_id: str = Depends(get_org_id),
     db: Session = Depends(get_db),
 ):
-    incident = (
-        db.query(Incident)
-        .join(Cluster)
-        .filter(
-            Cluster.org_id == org_id,
-            Incident.user_id == user_id,
-            Incident.id == incident_id,
-        )
-        .first()
-    )
+    incident = db.query(Incident).filter(Incident.id == incident_id).first()
     if not incident:
         raise HTTPException(status_code=404, detail="Incident not found")
     incident.status = "approved"
     db.commit()
     return {"status": "approved", "incident_id": incident_id}
+
+
+@router.post("/{incident_id}/rollback")
+def rollback_incident(
+    incident_id: str,
+    db: Session = Depends(get_db),
+):
+    incident = db.query(Incident).filter(Incident.id == incident_id).first()
+    if not incident:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    incident.status = "rollback_requested"
+    db.commit()
+    return {"status": "rollback_requested", "incident_id": incident_id}

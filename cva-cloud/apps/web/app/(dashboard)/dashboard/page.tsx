@@ -1,9 +1,11 @@
+import Link from "next/link";
 import SectionHeader from "@/components/section-header";
 import { Card, CardTitle, CardValue } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { fetcher } from "@/lib/api";
 import { getAuthHeaders } from "@/lib/api.server";
 import type { Cluster, Incident } from "@/lib/types";
+import ClusterStatusBadge from "@/components/cluster-status-badge";
 
 async function getData() {
   try {
@@ -18,9 +20,25 @@ async function getData() {
   }
 }
 
+function normalizeTimestamp(value: string): string {
+  const cleaned = value.includes("T") ? value : value.replace(" ", "T");
+  if (cleaned.includes("Z") || cleaned.match(/[+-]\d\d:\d\d$/)) {
+    return cleaned;
+  }
+  return `${cleaned}Z`;
+}
+
 export default async function DashboardPage() {
   const { clusters, incidents } = await getData();
   const activeIncidents = incidents.filter((item) => item.status !== "fixed");
+  const now = Date.now();
+  const incidentsToday = incidents.filter((incident) => {
+    const normalized = normalizeTimestamp(incident.created_at);
+    const created = new Date(normalized);
+    if (Number.isNaN(created.getTime())) return false;
+    return now - created.getTime() <= 24 * 60 * 60 * 1000;
+  });
+  const estimatedSavingsHours = Math.max(0.5, incidentsToday.length * 0.4);
 
   return (
     <div className="space-y-8">
@@ -35,12 +53,12 @@ export default async function DashboardPage() {
           <CardValue>{activeIncidents.length}</CardValue>
         </Card>
         <Card>
-          <CardTitle>Actions Today</CardTitle>
-          <CardValue>18</CardValue>
+          <CardTitle>Incidents Today</CardTitle>
+          <CardValue>{incidentsToday.length}</CardValue>
         </Card>
         <Card>
           <CardTitle>Estimated Savings</CardTitle>
-          <CardValue>$4.2k</CardValue>
+          <CardValue>{estimatedSavingsHours.toFixed(1)}h</CardValue>
         </Card>
       </div>
 
@@ -77,9 +95,15 @@ export default async function DashboardPage() {
                   <p className="font-semibold">{cluster.name}</p>
                   <p className="text-xs text-white/50">{cluster.status}</p>
                 </div>
-                <Badge tone={cluster.status === "connected" ? "success" : "warning"}>
-                  {cluster.status}
-                </Badge>
+                <div className="flex items-center gap-2">
+                  <ClusterStatusBadge status={cluster.status} lastSeen={cluster.last_seen} />
+                  <Link
+                    href={`/clusters/${cluster.id}`}
+                    className="rounded-md border border-white/10 px-2 py-1 text-xs text-white/70"
+                  >
+                    Details
+                  </Link>
+                </div>
               </div>
             ))}
             {clusters.length === 0 ? (

@@ -36,7 +36,7 @@ class CVAApiClient:
             "action_config": action_config or {},
         }
         response = requests.post(
-            f"{self.base_url}/api/v1/incidents/report/",
+            f"{self.base_url}/api/v1/incidents/report",
             json=payload,
             headers=self._headers(),
             timeout=10,
@@ -64,7 +64,10 @@ class CVAApiClient:
             headers=self._headers(),
             timeout=10,
         )
-        response.raise_for_status()
+        if response.status_code >= 400:
+            raise RuntimeError(
+                f"Update incident failed ({response.status_code}): {response.text[:200]}"
+            )
 
     def send_heartbeat(self, agent_version: str) -> None:
         payload = {"agent_version": agent_version}

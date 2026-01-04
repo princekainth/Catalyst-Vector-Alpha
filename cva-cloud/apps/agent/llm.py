@@ -3,7 +3,10 @@ from typing import Optional
 
 import ollama
 import requests
-from openai import OpenAI
+try:
+    from openai import OpenAI
+except ImportError:
+    OpenAI = None
 
 from config import (
     ANTHROPIC_API_KEY,
@@ -42,12 +45,19 @@ class OllamaLLMIntegration:
         self._openai_client = None
 
         if self.provider == "ollama":
-            self._ollama_client = ollama.Client(host=host)
+            try:
+                self._ollama_client = ollama.Client(base_url=host)
+            except TypeError:
+                self._ollama_client = ollama.Client(host=host)
         elif self.provider == "openai":
+            if OpenAI is None:
+                raise RuntimeError("OpenAI client not available in this environment")
             if not OPENAI_API_KEY:
                 raise ValueError("OPENAI_API_KEY is required for OpenAI provider")
             self._openai_client = OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
         elif self.provider == "azure_openai":
+            if OpenAI is None:
+                raise RuntimeError("OpenAI client not available in this environment")
             if not AZURE_OPENAI_API_KEY:
                 raise ValueError("AZURE_OPENAI_API_KEY is required for Azure OpenAI provider")
             if not AZURE_OPENAI_ENDPOINT or not AZURE_OPENAI_DEPLOYMENT:

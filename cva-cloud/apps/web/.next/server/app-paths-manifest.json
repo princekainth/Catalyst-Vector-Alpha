@@ -1,8 +1,8 @@
 {
-  "/_not-found/page": "app/_not-found/page.js",
-  "/(dashboard)/clusters/new/page": "app/(dashboard)/clusters/new/page.js",
+  "/page": "app/page.js",
   "/(dashboard)/clusters/page": "app/(dashboard)/clusters/page.js",
-  "/(dashboard)/incidents/page": "app/(dashboard)/incidents/page.js",
   "/(dashboard)/dashboard/page": "app/(dashboard)/dashboard/page.js",
-  "/(dashboard)/policies/page": "app/(dashboard)/policies/page.js"
+  "/(dashboard)/clusters/new/page": "app/(dashboard)/clusters/new/page.js",
+  "/(dashboard)/policies/page": "app/(dashboard)/policies/page.js",
+  "/(dashboard)/incidents/page": "app/(dashboard)/incidents/page.js"
 }

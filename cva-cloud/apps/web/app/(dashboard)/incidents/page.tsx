@@ -1,4 +1,5 @@
 import Link from "next/link";
+import IncidentActionsList from "@/components/incident-actions-list";
 import SectionHeader from "@/components/section-header";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -17,13 +18,14 @@ async function getIncidents() {
 
 export default async function IncidentsPage() {
   const incidents = await getIncidents();
+  const visibleIncidents = incidents.filter((incident) => incident.status !== "dismissed");
 
   return (
     <div className="space-y-8">
       <SectionHeader title="Incidents">Review and approve remediation actions.</SectionHeader>
       <div className="space-y-4">
-        {incidents.map((incident) => (
-          <Card key={incident.id} className="flex items-start justify-between gap-6">
+        {visibleIncidents.map((incident) => (
+          <Card key={incident.id} className="relative flex items-start justify-between gap-6">
             <div>
               <p className="text-sm text-white/50">{incident.cluster_id}</p>
               <h3 className="text-lg font-display">{incident.pod_name}</h3>
@@ -32,16 +34,21 @@ export default async function IncidentsPage() {
                 <Badge tone="danger">{incident.severity}</Badge>
                 <Badge tone="warning">{incident.status}</Badge>
               </div>
+              <div className="mt-3">
+                <IncidentActionsList incidentId={incident.id} />
+              </div>
+              <div className="mt-4">
+                <Link
+                  href={`/incidents/${incident.id}`}
+                  className="rounded-md border border-white/20 px-3 py-2 text-xs text-white/80"
+                >
+                  View Details
+                </Link>
+              </div>
             </div>
-            <Link
-              href={`/incidents/${incident.id}`}
-              className="rounded-md border border-white/20 px-3 py-2 text-xs text-white/80"
-            >
-              View Details
-            </Link>
           </Card>
         ))}
-        {incidents.length === 0 ? (
+        {visibleIncidents.length === 0 ? (
           <Card>No incidents to show yet.</Card>
         ) : null}
       </div>

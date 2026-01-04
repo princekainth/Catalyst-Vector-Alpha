@@ -42,6 +42,7 @@ def install_agent(cluster_id: str, api_key: str):
             return Response(content="Cluster not found", status_code=404)
 
         api_url = os.getenv("NEXT_PUBLIC_API_URL", "http://localhost:8000")
+        ollama_url = os.getenv("CVA_OLLAMA_URL", "http://host.minikube.internal:11434")
         manifest = f"""apiVersion: v1
 kind: Namespace
 metadata:
@@ -104,6 +105,8 @@ spec:
               value: {cluster_id}
             - name: CVA_API_KEY
               value: {api_key}
+            - name: OLLAMA_URL
+              value: {ollama_url}
 """
         return Response(content=manifest, media_type="application/yaml")
     finally:

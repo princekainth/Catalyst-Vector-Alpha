@@ -6,7 +6,7 @@ class Settings(BaseSettings):
     env: str = "development"
     api_v1_prefix: str = "/api/v1"
 
-    database_url: str = "postgresql+psycopg2://cva:cva@localhost:5432/cva"
+    database_url: str = "sqlite:///./cva.db"
     redis_url: str = "redis://localhost:6379/0"
 
     clerk_jwks_url: str = ""

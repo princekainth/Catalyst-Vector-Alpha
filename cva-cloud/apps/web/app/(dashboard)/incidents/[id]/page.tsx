@@ -1,6 +1,7 @@
 import SectionHeader from "@/components/section-header";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import IncidentActions from "@/components/incident-actions";
 import { fetcher } from "@/lib/api";
 import { getAuthHeaders } from "@/lib/api.server";
 import type { Incident, ReasoningTrace } from "@/lib/types";
@@ -31,7 +32,16 @@ export default async function IncidentDetail({ params }: { params: { id: string 
     return <Card>Incident not found.</Card>;
   }
 
-  const traceSteps = traces[0]?.trace_json ? JSON.parse(traces[0].trace_json) : [];
+  const tracePayload = traces[0]?.trace_json ? JSON.parse(traces[0].trace_json) : null;
+  const traceSteps = Array.isArray(tracePayload)
+    ? tracePayload
+    : tracePayload?.steps || [];
+  const normalizedSteps = traceSteps.map((step: any) => ({
+    stage: step.stage || step.step_type || step.type || "step",
+    message: step.message || step.content || "",
+    confidence: step.confidence,
+    evidence: Array.isArray(step.evidence) ? step.evidence : [],
+  }));
 
   return (
     <div className="space-y-8">
@@ -40,11 +50,11 @@ export default async function IncidentDetail({ params }: { params: { id: string 
         <Card className="space-y-4">
           <h3 className="text-lg font-display">Reasoning Timeline</h3>
           <div className="space-y-4 text-sm">
-            {traceSteps.map((step: any, idx: number) => (
+            {normalizedSteps.map((step: any, idx: number) => (
               <div key={idx} className="rounded-lg border border-white/10 p-4">
                 <div className="flex items-center justify-between">
-                  <p className="font-semibold">{step.stage}</p>
-                  {step.confidence ? (
+                  <p className="font-semibold">{String(step.stage).toUpperCase()}</p>
+                  {typeof step.confidence === "number" ? (
                     <Badge tone="success">{Math.round(step.confidence * 100)}%</Badge>
                   ) : null}
                 </div>
@@ -68,10 +78,7 @@ export default async function IncidentDetail({ params }: { params: { id: string 
           <p className="text-sm text-white/70">Issue Type: {incident.issue_type}</p>
           <p className="text-sm text-white/70">Summary: {incident.summary}</p>
           <p className="text-sm text-white/70">Status: {incident.status}</p>
-          <div className="flex gap-2">
-            <Badge tone="warning">Approve & Fix</Badge>
-            <Badge tone="neutral">Rollback</Badge>
-          </div>
+          <IncidentActions incidentId={incident.id} />
         </Card>
       </div>
     </div>

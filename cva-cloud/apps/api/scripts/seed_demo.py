@@ -7,6 +7,7 @@ from app.models.user import User
 from app.models.cluster import Cluster
 from app.models.incident import Incident
 from app.models.reasoning_trace import ReasoningTrace
+from app.models.policy import Policy
 
 
 def run():
@@ -81,6 +82,21 @@ def run():
     db.add(cluster)
     db.add(incident)
     db.add(trace)
+
+    policy = Policy(
+        id="pol-demo-1",
+        org_id=org.id,
+        cluster_id=None,
+        name="Auto-approve ImagePullBackOff",
+        issue_type="ImagePullBackOff",
+        auto_approve=True,
+        max_memory_mb=None,
+        allow_placeholder=False,
+        status="active",
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+    db.add(policy)
     db.commit()
     db.close()
     print("Seeded demo data")

@@ -39,31 +39,21 @@ def _get_cluster_by_api_key(
 
 @router.get("/", response_model=list[ClusterOut])
 def list_clusters(
-    user_id: str = Depends(verify_token),
-    org_id: str = Depends(get_org_id),
     db: Session = Depends(get_db),
 ):
-    return (
-        db.query(Cluster)
-        .filter(Cluster.org_id == org_id, Cluster.user_id == user_id)
-        .all()
-    )
+    return db.query(Cluster).all()
 
 
 @router.get("/{cluster_id}", response_model=ClusterOut)
 @router.get("/{cluster_id}/", response_model=ClusterOut)
 def get_cluster(
     cluster_id: str,
-    user_id: str = Depends(verify_token),
-    org_id: str = Depends(get_org_id),
     db: Session = Depends(get_db),
 ):
     cluster = (
         db.query(Cluster)
         .filter(
             Cluster.id == cluster_id,
-            Cluster.org_id == org_id,
-            Cluster.user_id == user_id,
         )
         .first()
     )
@@ -75,7 +65,6 @@ def get_cluster(
 @router.post("/", response_model=ClusterInstallResponse)
 def create_cluster(
     payload: ClusterCreate,
-    user_id: str = Depends(verify_token),
     org_id: str = Depends(get_org_id),
     db: Session = Depends(get_db),
 ):
@@ -94,7 +83,7 @@ def create_cluster(
     cluster = Cluster(
         id=cluster_id,
         org_id=org_id,
-        user_id=user_id,
+        user_id=org_id,
         name=payload.name,
         api_key=api_key,
         status="pending",
@@ -134,16 +123,12 @@ def cluster_heartbeat(
 @router.delete("/{cluster_id}/")
 def delete_cluster(
     cluster_id: str,
-    user_id: str = Depends(verify_token),
-    org_id: str = Depends(get_org_id),
     db: Session = Depends(get_db),
 ):
     cluster = (
         db.query(Cluster)
         .filter(
             Cluster.id == cluster_id,
-            Cluster.org_id == org_id,
-            Cluster.user_id == user_id,
         )
         .first()
     )

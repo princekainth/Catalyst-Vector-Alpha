@@ -12,8 +12,14 @@ import subprocess
 import json
 import time
 import re
+import os
+import urllib.request
+import logging
+import hashlib
 from typing import Optional
 from datetime import datetime
+from kubernetes import client, config
+from kubernetes.client.exceptions import ApiException
 
 from base_student import BaseStudent
 from reasoning_engine import get_reasoning_engine, ReasoningTrace
@@ -49,12 +55,19 @@ class K8sStudent(BaseStudent):
         self.reasoning = get_reasoning_engine()
         
         # Track what we've already tried to fix
-        self._remediated_pods: dict[str, float] = {}  # pod_key -> timestamp
-        self._cooldown_seconds = 300  # Don't retry same pod for 5 min
+        self._remediated_pods: dict[str, float] = {}  # pod_key:reason -> timestamp
+        self._recent_decisions: dict[str, float] = {}  # pod_key:reason -> timestamp
+        self._decision_fingerprints: dict[str, str] = {}  # pod_key:reason -> fingerprint
+        self._cooldown_seconds = 60
+        self._cooldown_by_reason = {
+            "CrashLoopBackOff": 60,
+            "Pending": 120,
+        }
         self._failed_attempts: dict[str, int] = {}  # deployment_key -> fail count
         self._max_attempts = 3  # Stop after 3 failures
         self._permanently_skip: set[str] = set()  # Pods we gave up on
         self._last_status: Optional[dict] = None
+        self._k8s_v1 = None
         
         # Severity order for prioritization
         self.SEVERITY = {
@@ -82,21 +95,8 @@ class K8sStudent(BaseStudent):
         4. Return summary
         """
         # 1. Get problem pods
-        items = self._get_pods_snapshot()
-        problem_pods = self._parse_problem_pods(items)
-        all_pods = self._parse_all_pods(items)
-        healthy = sum(1 for p in all_pods if p.get("ready"))
-        unhealthy = len(all_pods) - healthy
-        self._last_status = {
-            "timestamp": time.time(),
-            "total_pods": len(all_pods),
-            "healthy": healthy,
-            "unhealthy": unhealthy,
-            "unhealthy_count": unhealthy,
-            "problem_pods": problem_pods,
-            "namespace": self.namespace,
-            "status": "ok",
-        }
+        status = self.scan()
+        problem_pods = status.get("problem_pods", []) if isinstance(status, dict) else []
         
         if not problem_pods:
             return {"success": True, "action": "patrol", "details": {"message": "All pods healthy"}}
@@ -115,9 +115,11 @@ class K8sStudent(BaseStudent):
         for pod in sorted_pods[:5]:
             pod_key = f"{pod['namespace']}/{pod['name']}"
             
-            # Check cooldown
-            if self._in_cooldown(pod_key):
-                skipped.append(pod_key)
+            reason = pod.get("reason", "")
+
+            # Check cooldown per pod+reason
+            if self._in_cooldown(pod_key, reason):
+                skipped.append(f"{pod_key} ({reason})")
                 continue
             
             # Check if pod still exists
@@ -125,15 +127,16 @@ class K8sStudent(BaseStudent):
                 skipped.append(f"{pod_key} (gone)")
                 continue
             
+            # Mark as seen to prevent immediate reprocessing
+            self._mark_remediated(pod_key, reason)
+
             # Try to fix
             result = self._remediate_pod(pod)
             
             if result.get("planned"):
                 fixed.append(pod_key)
-                self._mark_remediated(pod_key)
             elif result.get("success"):
                 fixed.append(pod_key)
-                self._mark_remediated(pod_key)
             else:
                 failed.append(pod_key)
         
@@ -148,6 +151,26 @@ class K8sStudent(BaseStudent):
                 "skipped": skipped,
             }
         }
+
+    def scan(self) -> dict:
+        """Fetch pods and update cached status without remediation."""
+        items = self._get_pods_snapshot()
+        problem_pods = self._parse_problem_pods(items)
+        all_pods = self._parse_all_pods(items)
+        healthy = sum(1 for p in all_pods if p.get("ready"))
+        unhealthy = len(all_pods) - healthy
+        status = {
+            "timestamp": time.time(),
+            "total_pods": len(all_pods),
+            "healthy": healthy,
+            "unhealthy": unhealthy,
+            "unhealthy_count": unhealthy,
+            "problem_pods": problem_pods,
+            "namespace": self.namespace,
+            "status": "ok",
+        }
+        self._last_status = status
+        return status
     
     def get_status(self) -> dict:
         """Return current K8s cluster status."""
@@ -232,6 +255,7 @@ class K8sStudent(BaseStudent):
             container_statuses = status.get("containerStatuses", [])
 
             for cs in container_statuses:
+                state = (cs.get("state") or {})
                 waiting = (cs.get("state", {}) or {}).get("waiting", {})
                 reason = waiting.get("reason", "")
 
@@ -248,6 +272,8 @@ class K8sStudent(BaseStudent):
                         "restarts": cs.get("restartCount", 0),
                         "message": waiting.get("message", ""),
                         "container": cs.get("name"),
+                        "phase": phase,
+                        "state": state,
                         "lastState": cs.get("lastState", {}) or {},
                     })
 
@@ -273,6 +299,8 @@ class K8sStudent(BaseStudent):
                         "restarts": sum(cs.get("restartCount", 0) for cs in container_statuses),
                         "message": cond_msg,
                         "container": container_statuses[0].get("name") if container_statuses else None,
+                        "phase": phase,
+                        "state": (container_statuses[0].get("state") if container_statuses else {}),
                     })
 
             # Check for pending
@@ -283,6 +311,9 @@ class K8sStudent(BaseStudent):
                     "reason": "Pending",
                     "restarts": 0,
                     "message": "",
+                    "container": container_statuses[0].get("name") if container_statuses else None,
+                    "phase": phase,
+                    "state": (container_statuses[0].get("state") if container_statuses else {}),
                 })
 
         # Dedupe by pod name
@@ -349,6 +380,28 @@ class K8sStudent(BaseStudent):
         pod_key = f"{namespace}/{name}"
         deployment_name = self._get_deployment_name(name, namespace)
         track_key = f"{namespace}/{deployment_name}" if deployment_name else pod_key
+        fingerprint = self._pod_fingerprint(pod)
+        fingerprint_key = f"{pod_key}:{reason}"
+        previous_fingerprint = self._decision_fingerprints.get(fingerprint_key)
+        fingerprint_hash = hashlib.sha256(fingerprint.encode("utf-8")).hexdigest()[:12]
+        previous_hash = (
+            hashlib.sha256(previous_fingerprint.encode("utf-8")).hexdigest()[:12]
+            if previous_fingerprint
+            else None
+        )
+        if previous_fingerprint == fingerprint:
+            print(f"[FINGERPRINT] skipping {pod_key}:{reason} (no change)")
+            return {"success": False, "skipped": True, "reason": "fingerprint_unchanged"}
+        if previous_hash:
+            print(
+                f"[FINGERPRINT] change {pod_key}:{reason} {previous_hash} -> {fingerprint_hash}"
+            )
+        else:
+            print(f"[FINGERPRINT] new {pod_key}:{reason} {fingerprint_hash}")
+        if self._in_decision_cooldown(pod_key, reason):
+            print(f"[COOLDOWN] skipping {pod_key}:{reason}")
+            return {"success": False, "skipped": True, "reason": "cooldown"}
+        self._mark_decision(pod_key, reason, fingerprint=fingerprint)
 
         # Skip if quarantined globally
         if is_quarantined(pod_key):
@@ -378,17 +431,22 @@ class K8sStudent(BaseStudent):
         try:
             # Step 1: Observe
             trace.observe(
-                f"Detected {reason} on pod {namespace}/{name}",
+                f"Observe: summary for {namespace}/{name} ({reason})",
                 evidence=[f"Restarts: {pod.get('restarts', 0)}", f"Message: {pod.get('message', 'none')[:100]}"]
             )
 
             # Step 2: Get more context
-            logs = self._get_pod_logs(name, namespace, tail=50)
-            log_preview = logs[:200] if logs else "No logs available"
-            trace.observe(f"Retrieved pod logs", evidence=[log_preview])
+            logs_info = self._get_pod_logs(pod, tail=50)
+            logs = logs_info.get("logs") if logs_info.get("ok") else ""
+            log_source = logs_info.get("source") or "skipped"
+            if logs_info.get("ok"):
+                log_preview = logs[:200] if logs else "No logs available"
+            else:
+                log_preview = logs_info.get("error") or "No logs available"
+            trace.observe("Observe: logs", evidence=[f"source={log_source}", log_preview])
             events = self._get_pod_events(name, namespace, limit=5)
             events_preview = events[:400] if events else "No events available"
-            trace.observe("Retrieved pod events", evidence=[events_preview])
+            trace.observe("Observe: events", evidence=[events_preview])
 
             # Check for unfixable scenarios
             unfixable, unfixable_reason = self._is_unfixable(pod, logs)
@@ -460,7 +518,10 @@ class K8sStudent(BaseStudent):
     def analyze(self, pod: dict) -> dict:
         """Return reasoning trace and planned action without executing."""
         plan = self._remediate_pod(pod)
+        if plan.get("skipped"):
+            return {"skipped": True, "reason": plan.get("reason", "cooldown")}
         return {
+            "skipped": False,
             "trace": plan.get("trace", {}),
             "action_plan": plan.get("action_plan", {}),
             "recommended_actions": plan.get("recommended_actions", []),
@@ -604,6 +665,24 @@ Respond with ONLY valid JSON (no markdown, no backticks):
 {{"action": "action_name", "confidence": 0.85, "rationale": "one sentence why"}}"""
 
         try:
+            logger = logging.getLogger(self.name or "K8sStudent")
+            ollama_url = os.getenv("OLLAMA_URL", "http://host.minikube.internal:11434")
+            model = os.getenv("OLLAMA_MODEL", "mistral-nemo:latest")
+            logger.info(f"[OLLAMA DEBUG] OLLAMA_URL={ollama_url} model={model}")
+
+            try:
+                tags = (
+                    urllib.request.urlopen(
+                        ollama_url.rstrip("/") + "/api/tags",
+                        timeout=3,
+                    )
+                    .read()
+                    .decode("utf-8")[:200]
+                )
+                logger.info(f"[OLLAMA DEBUG] /api/tags={tags}")
+            except Exception as e:
+                logger.warning(f"[OLLAMA DEBUG] tags fetch failed: {e!r}")
+
             from llm import OllamaLLMIntegration
             llm = OllamaLLMIntegration()
             response = llm.generate_text(prompt=prompt, temperature=0.1, max_tokens=150, json_mode=True)
@@ -766,7 +845,8 @@ Respond with ONLY valid JSON (no markdown, no backticks):
         name, namespace = pod["name"], pod["namespace"]
         
         # Get logs to diagnose
-        logs = self._get_pod_logs(name, namespace)
+        logs_info = self._get_pod_logs(pod, tail=50)
+        logs = logs_info.get("logs") if logs_info.get("ok") else ""
         
         # Get deployment owner
         dep_name = self._get_deployment_owner(name, namespace)
@@ -974,16 +1054,106 @@ Respond with ONLY valid JSON (no markdown, no backticks):
     # Helpers
     # ─────────────────────────────────────────────────────────────
     
-    def _get_pod_logs(self, name: str, namespace: str, tail: int = 50) -> str:
-        """Get pod logs."""
+    def _get_k8s_v1(self):
+        if self._k8s_v1 is not None:
+            return self._k8s_v1
         try:
-            result = subprocess.run(
-                ["kubectl", "logs", name, "-n", namespace, f"--tail={tail}"],
-                capture_output=True, text=True, timeout=30
+            config.load_incluster_config()
+        except Exception:
+            try:
+                config.load_kube_config()
+            except Exception:
+                self._k8s_v1 = None
+                return None
+        self._k8s_v1 = client.CoreV1Api()
+        return self._k8s_v1
+
+    def _get_pod_logs(self, pod: dict, tail: int = 50) -> dict:
+        """Get pod logs if the pod/container state is ready for it."""
+        name = pod.get("name")
+        namespace = pod.get("namespace")
+        container_name = pod.get("container")
+        phase = (pod.get("phase") or "").lower()
+        state = pod.get("state") or {}
+        restart_count = pod.get("restarts", 0)
+
+        if not name or not namespace or not container_name:
+            return {
+                "ok": False,
+                "logs": None,
+                "error": "logs skipped (missing pod/container name)",
+                "source": None,
+            }
+
+        can_log = False
+        if phase == "running":
+            can_log = True
+        elif state.get("terminated") is not None:
+            can_log = True
+
+        if not can_log:
+            return {
+                "ok": False,
+                "logs": None,
+                "error": f"logs skipped (phase={pod.get('phase')}, state={state})",
+                "source": None,
+            }
+
+        v1 = self._get_k8s_v1()
+        if v1 is None:
+            return {
+                "ok": False,
+                "logs": None,
+                "error": "logs unavailable (k8s client not configured)",
+                "source": None,
+            }
+
+        waiting_reason = (state.get("waiting") or {}).get("reason")
+        use_previous = False
+        if waiting_reason == "CrashLoopBackOff":
+            use_previous = True
+        if restart_count and restart_count > 0:
+            use_previous = True
+        if state.get("terminated") is not None and restart_count > 0:
+            use_previous = True
+
+        def _try(previous_flag: bool) -> str:
+            return v1.read_namespaced_pod_log(
+                name=name,
+                namespace=namespace,
+                container=container_name,
+                tail_lines=200,
+                timestamps=False,
+                previous=previous_flag,
             )
-            return result.stdout + result.stderr
-        except:
-            return ""
+
+        try:
+            if use_previous:
+                try:
+                    logs = _try(True)
+                    if logs and logs.strip():
+                        return {"ok": True, "logs": logs, "error": None, "source": "previous"}
+                except ApiException:
+                    pass
+
+            logs = _try(False)
+            if logs and logs.strip():
+                return {"ok": True, "logs": logs, "error": None, "source": "current"}
+            return {
+                "ok": False,
+                "logs": None,
+                "error": "No logs available",
+                "source": "current",
+            }
+        except ApiException as e:
+            body = getattr(e, "body", "") or ""
+            reason = body.strip() or e.reason or "BadRequest"
+            return {
+                "ok": False,
+                "logs": None,
+                "error": f"No logs available ({e.status}): {reason}",
+                "source": None,
+            }
 
     def _get_pod_events(self, name: str, namespace: str, limit: int = 5) -> str:
         """Get recent events for a pod."""
@@ -1058,23 +1228,78 @@ Respond with ONLY valid JSON (no markdown, no backticks):
         """Get deployment name for tracking across pod restarts."""
         return self._get_deployment_owner(pod_name, namespace)
     
-    def _in_cooldown(self, pod_key: str) -> bool:
-        """Check if pod is in cooldown period."""
-        if pod_key not in self._remediated_pods:
+    def _cooldown_seconds_for_reason(self, reason: str) -> int:
+        return self._cooldown_by_reason.get(reason, self._cooldown_seconds)
+
+    def _in_cooldown(self, pod_key: str, reason: str) -> bool:
+        """Check if pod is in cooldown period for the same reason."""
+        key = f"{pod_key}:{reason}"
+        if key not in self._remediated_pods:
             return False
-        last_time = self._remediated_pods[pod_key]
-        return (time.time() - last_time) < self._cooldown_seconds
+        last_time = self._remediated_pods[key]
+        cooldown = self._cooldown_seconds_for_reason(reason)
+        return (time.time() - last_time) < cooldown
     
-    def _mark_remediated(self, pod_key: str):
-        """Mark pod as recently remediated."""
-        self._remediated_pods[pod_key] = time.time()
+    def _mark_remediated(self, pod_key: str, reason: str):
+        """Mark pod as recently handled for a reason."""
+        key = f"{pod_key}:{reason}"
+        self._remediated_pods[key] = time.time()
         
         # Cleanup old entries
         now = time.time()
+        max_cooldown = max(self._cooldown_seconds, *self._cooldown_by_reason.values())
         self._remediated_pods = {
             k: v for k, v in self._remediated_pods.items()
-            if (now - v) < self._cooldown_seconds * 2
+            if (now - v) < max_cooldown * 2
         }
+
+    def _in_decision_cooldown(self, pod_key: str, reason: str) -> bool:
+        """Check cooldown for repeated LLM decisions on the same pod+reason."""
+        key = f"{pod_key}:{reason}"
+        if key not in self._recent_decisions:
+            return False
+        last_time = self._recent_decisions[key]
+        cooldown = self._cooldown_seconds_for_reason(reason)
+        return (time.time() - last_time) < cooldown
+
+    def _mark_decision(self, pod_key: str, reason: str, fingerprint: Optional[str] = None) -> None:
+        """Track the latest LLM decision timestamp for a pod+reason."""
+        key = f"{pod_key}:{reason}"
+        self._recent_decisions[key] = time.time()
+        if fingerprint is not None:
+            self._decision_fingerprints[key] = fingerprint
+        now = time.time()
+        max_cooldown = max(self._cooldown_seconds, *self._cooldown_by_reason.values())
+        self._recent_decisions = {
+            k: v for k, v in self._recent_decisions.items()
+            if (now - v) < max_cooldown * 2
+        }
+
+    def _pod_fingerprint(self, pod: dict) -> str:
+        """Create a stable fingerprint for a pod's failure state."""
+        def _state_snapshot(state: dict) -> dict:
+            waiting = (state or {}).get("waiting") or {}
+            terminated = (state or {}).get("terminated") or {}
+            return {
+                "waiting_reason": waiting.get("reason"),
+                "waiting_message": (waiting.get("message") or "")[:120],
+                "terminated_reason": terminated.get("reason"),
+                "terminated_exit_code": terminated.get("exitCode"),
+                "terminated_signal": terminated.get("signal"),
+            }
+
+        data = {
+            "reason": pod.get("reason"),
+            "message": (pod.get("message") or "")[:120],
+            "phase": pod.get("phase"),
+            "container": pod.get("container"),
+            "state": _state_snapshot(pod.get("state") or {}),
+            "lastState": _state_snapshot(pod.get("lastState") or {}),
+        }
+        try:
+            return json.dumps(data, sort_keys=True, separators=(",", ":"))
+        except TypeError:
+            return str(data)
 
     # ─────────────────────────────────────────────────────────────
     # Web Search & Learning
