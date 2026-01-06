@@ -1,11 +1,14 @@
 import Link from "next/link";
 import IncidentActionsList from "@/components/incident-actions-list";
+import IncidentsHistoryClient from "@/components/incidents-history-client";
 import SectionHeader from "@/components/section-header";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { fetcher } from "@/lib/api";
 import { getAuthHeaders } from "@/lib/api.server";
 import type { Incident } from "@/lib/types";
+
+export const dynamic = "force-dynamic";
 
 async function getIncidents() {
   try {
@@ -16,15 +19,28 @@ async function getIncidents() {
   }
 }
 
+async function getArchivedIncidents() {
+  try {
+    const headers = { ...(await getAuthHeaders()) };
+    return await fetcher<Incident[]>("/api/v1/incidents/archived", { headers });
+  } catch {
+    return [] as Incident[];
+  }
+}
+
 export default async function IncidentsPage() {
   const incidents = await getIncidents();
-  const visibleIncidents = incidents.filter((incident) => incident.status !== "dismissed");
+  const historyStatuses = new Set(["dismissed", "fixed", "failed"]);
+  const activeIncidents = incidents.filter((incident) => !historyStatuses.has(incident.status));
+  const historyIncidents = incidents.filter((incident) => historyStatuses.has(incident.status));
+  const archivedIncidents = await getArchivedIncidents();
 
   return (
     <div className="space-y-8">
       <SectionHeader title="Incidents">Review and approve remediation actions.</SectionHeader>
       <div className="space-y-4">
-        {visibleIncidents.map((incident) => (
+        <h3 className="text-xs uppercase tracking-[0.3em] text-white/50">Active</h3>
+        {activeIncidents.map((incident) => (
           <Card key={incident.id} className="relative flex items-start justify-between gap-6">
             <div>
               <p className="text-sm text-white/50">{incident.cluster_id}</p>
@@ -48,10 +64,12 @@ export default async function IncidentsPage() {
             </div>
           </Card>
         ))}
-        {visibleIncidents.length === 0 ? (
-          <Card>No incidents to show yet.</Card>
+        {activeIncidents.length === 0 ? (
+          <Card>No active incidents right now.</Card>
         ) : null}
       </div>
+      <IncidentsHistoryClient items={historyIncidents} mode="history" />
+      <IncidentsHistoryClient items={archivedIncidents} mode="archived" />
     </div>
   );
 }

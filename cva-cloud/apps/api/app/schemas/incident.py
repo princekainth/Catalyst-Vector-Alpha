@@ -16,6 +16,7 @@ class IncidentBase(BaseModel):
     outcome: str | None = None
     executed_at: datetime | None = None
     completed_at: datetime | None = None
+    archived_at: datetime | None = None
     created_at: datetime
 
 
@@ -46,3 +47,4 @@ class IncidentReport(BaseModel):
 class IncidentUpdate(BaseModel):
     status: str
     outcome: dict | None = None
+    action_type: str | None = None

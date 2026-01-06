@@ -9,7 +9,7 @@ from app.db.base import Base
 class Incident(Base):
     __tablename__ = "incidents"
 
-    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
     cluster_id: Mapped[str] = mapped_column(String(100), ForeignKey("clusters.id"))
     user_id: Mapped[str] = mapped_column(String(100), index=True, nullable=False)
     namespace: Mapped[str] = mapped_column(String(255), default="default")
@@ -23,6 +23,7 @@ class Incident(Base):
     outcome: Mapped[str] = mapped_column(Text, default="", nullable=True)
     executed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     cluster = relationship("Cluster", back_populates="incidents")

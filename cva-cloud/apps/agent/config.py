@@ -1,6 +1,6 @@
 import os
 
-CVA_API_URL = os.getenv("CVA_API_URL", "http://localhost:8000")
+CVA_API_URL = os.getenv("CVA_API_URL", "http://localhost:8001")
 CVA_CLUSTER_ID = os.getenv("CVA_CLUSTER_ID")
 CVA_API_KEY = os.getenv("CVA_API_KEY")
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "30"))

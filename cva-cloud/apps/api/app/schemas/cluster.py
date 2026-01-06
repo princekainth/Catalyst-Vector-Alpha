@@ -8,6 +8,7 @@ class ClusterBase(BaseModel):
     status: str
     agent_version: str | None
     last_seen: datetime | None
+    pod_snapshot: list[dict] | None = None
     created_at: datetime
 
 

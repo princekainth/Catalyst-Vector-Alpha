@@ -13,12 +13,17 @@ load_dotenv()
 
 app = FastAPI(title=settings.app_name)
 
+allowed_origins = os.getenv(
+    "CVA_WEB_ORIGINS",
+    "http://localhost:3000,http://127.0.0.1:3000",
+).split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[origin.strip() for origin in allowed_origins if origin.strip()],
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"]
+    allow_headers=["*"],
 )
 
 app.include_router(api_router, prefix=settings.api_v1_prefix)
@@ -41,7 +46,12 @@ def install_agent(cluster_id: str, api_key: str):
         if not cluster:
             return Response(content="Cluster not found", status_code=404)
 
-        api_url = os.getenv("NEXT_PUBLIC_API_URL", "http://localhost:8000")
+        api_url = os.getenv(
+            "CVA_API_URL",
+            os.getenv("NEXT_PUBLIC_API_URL", "http://localhost:8001"),
+        )
+        agent_image = os.getenv("CVA_AGENT_IMAGE", "cva-agent:local")
+        agent_pull_policy = os.getenv("CVA_AGENT_PULL_POLICY", "IfNotPresent")
         ollama_url = os.getenv("CVA_OLLAMA_URL", "http://host.minikube.internal:11434")
         manifest = f"""apiVersion: v1
 kind: Namespace
@@ -61,7 +71,7 @@ metadata:
 rules:
   - apiGroups: [\"\"]
     resources: [\"pods\", \"events\", \"configmaps\", \"secrets\"]
-    verbs: [\"get\", \"list\", \"watch\", \"patch\"]
+    verbs: [\"get\", \"list\", \"watch\", \"patch\", \"delete\"]
   - apiGroups: [\"apps\"]
     resources: [\"deployments\", \"replicasets\"]
     verbs: [\"get\", \"list\", \"watch\", \"patch\"]
@@ -97,7 +107,8 @@ spec:
       serviceAccountName: cva-agent
       containers:
         - name: cva-agent
-          image: your-registry/cva-agent:latest
+          image: {agent_image}
+          imagePullPolicy: {agent_pull_policy}
           env:
             - name: CVA_API_URL
               value: {api_url}

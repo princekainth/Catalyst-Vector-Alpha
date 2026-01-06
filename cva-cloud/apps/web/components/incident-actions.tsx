@@ -2,56 +2,43 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { useAuth } from "@clerk/nextjs";
-
-import { API_BASE } from "@/lib/api";
-
-
+import { toast } from "@/components/ui/toast";
 export default function IncidentActions({ incidentId }: { incidentId: string }) {
   const router = useRouter();
-  const { getToken } = useAuth();
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
 
   const approveIncident = async () => {
     setLoading(true);
     setMessage("");
-    const token = await getToken();
-    const headers: Record<string, string> = {};
-    if (token) {
-      headers.Authorization = `Bearer ${token}`;
-    }
-    const res = await fetch(`${API_BASE}/api/v1/incidents/${incidentId}/approve/`, {
+    const res = await fetch(`/api/v1/incidents/${incidentId}/approve`, {
       method: "POST",
-      headers,
     });
     setLoading(false);
     if (res.ok) {
       setMessage("Approved. Awaiting agent execution.");
+      toast("Approved. Awaiting agent execution.", "success");
       router.refresh();
     } else {
       setMessage("Failed to approve incident.");
+      toast("Failed to approve incident.", "error");
     }
   };
 
   const rollbackIncident = async () => {
     setLoading(true);
     setMessage("");
-    const token = await getToken();
-    const headers: Record<string, string> = {};
-    if (token) {
-      headers.Authorization = `Bearer ${token}`;
-    }
-    const res = await fetch(`${API_BASE}/api/v1/incidents/${incidentId}/rollback/`, {
+    const res = await fetch(`/api/v1/incidents/${incidentId}/rollback`, {
       method: "POST",
-      headers,
     });
     setLoading(false);
     if (res.ok) {
       setMessage("Rollback requested.");
+      toast("Rollback requested.", "info");
       router.refresh();
     } else {
       setMessage("Failed to request rollback.");
+      toast("Failed to request rollback.", "error");
     }
   };
 

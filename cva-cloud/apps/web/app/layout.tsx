@@ -7,6 +7,7 @@ import {
   SignedOut,
   UserButton,
 } from "@clerk/nextjs";
+import Toaster from "@/components/ui/toaster";
 
 export const metadata = {
   title: "CVA Cloud",
@@ -26,6 +27,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
               <UserButton />
             </SignedIn>
           </header>
+          <Toaster />
           {children}
         </body>
       </html>

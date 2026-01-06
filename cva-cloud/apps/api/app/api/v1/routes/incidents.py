@@ -2,7 +2,7 @@ import json
 from datetime import datetime
 import uuid
 
-from fastapi import APIRouter, Depends, Query, Header, HTTPException
+from fastapi import APIRouter, Depends, Query, Header, HTTPException, Body
 from sqlalchemy.orm import Session
 
 from app.core.security import get_org_id, verify_token
@@ -42,7 +42,7 @@ def list_incidents(
     issue_type: str | None = Query(default=None),
     cluster_id: str | None = Query(default=None),
 ):
-    query = db.query(Incident)
+    query = db.query(Incident).filter(Incident.archived_at.is_(None))
     if status:
         query = query.filter(Incident.status == status)
     if severity:
@@ -52,6 +52,18 @@ def list_incidents(
     if cluster_id:
         query = query.filter(Incident.cluster_id == cluster_id)
     return query.all()
+
+
+@router.get("/archived", response_model=list[IncidentOut])
+@router.get("/archived/", response_model=list[IncidentOut])
+def list_archived_incidents(
+    db: Session = Depends(get_db),
+    cluster_id: str | None = Query(default=None),
+):
+    query = db.query(Incident).filter(Incident.archived_at.is_not(None))
+    if cluster_id:
+        query = query.filter(Incident.cluster_id == cluster_id)
+    return query.order_by(Incident.archived_at.desc()).all()
 
 
 @router.post("/report")
@@ -71,16 +83,28 @@ def report_incident(
         db.query(Incident)
         .filter(
             Incident.cluster_id == cluster.id,
+            Incident.namespace == payload.namespace,
             Incident.pod_name == payload.pod_name,
             Incident.issue_type == payload.issue_type,
-            Incident.status == "pending",
+            Incident.status.in_(["pending", "open"]),
+            Incident.archived_at.is_(None),
         )
+        .order_by(Incident.created_at.desc())
         .first()
     )
     if existing:
+        updated = False
+        if payload.action_type and not existing.action_type:
+            existing.action_type = payload.action_type
+            updated = True
+        if payload.action_config and (not existing.action_config or existing.action_config in ("", "{}")):
+            existing.action_config = json.dumps(payload.action_config)
+            updated = True
+        if updated:
+            db.commit()
         return {"incident_id": existing.id}
     incident = Incident(
-        id=f"inc-{uuid.uuid4()}",
+        id=str(uuid.uuid4()),
         cluster_id=cluster.id,
         user_id=cluster.user_id,
         namespace=payload.namespace,
@@ -94,8 +118,9 @@ def report_incident(
         created_at=datetime.utcnow(),
     )
     db.add(incident)
+    db.flush()
     trace = ReasoningTrace(
-        id=f"trace-{incident.id}",
+        id=f"trace-{uuid.uuid4()}",
         incident_id=incident.id,
         trace_json=json.dumps(payload.reasoning_trace),
         created_at=datetime.utcnow(),
@@ -111,13 +136,17 @@ def get_incident(
     incident_id: str,
     db: Session = Depends(get_db),
 ):
-    return (
+    incident = (
         db.query(Incident)
         .filter(
             Incident.id == incident_id,
+            Incident.archived_at.is_(None),
         )
         .first()
     )
+    if not incident:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    return incident
 
 
 @router.get("/{incident_id}/trace", response_model=list[ReasoningTraceOut])
@@ -131,9 +160,23 @@ def get_reasoning_trace(
         .join(Incident)
         .filter(
             Incident.id == incident_id,
+            Incident.archived_at.is_(None),
         )
         .all()
     )
+
+
+@router.post("/{incident_id}/restore")
+def restore_incident(
+    incident_id: str,
+    db: Session = Depends(get_db),
+):
+    incident = db.query(Incident).filter(Incident.id == incident_id).first()
+    if not incident:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    incident.archived_at = None
+    db.commit()
+    return {"status": "restored", "incident_id": incident_id}
 
 
 @router.patch("/{incident_id}")
@@ -149,6 +192,8 @@ def update_incident_status(
     incident.status = payload.status
     if payload.outcome is not None:
         incident.outcome = json.dumps(payload.outcome)
+    if payload.action_type:
+        incident.action_type = payload.action_type
     incident.completed_at = datetime.utcnow()
     db.commit()
     return {"status": "ok"}
@@ -162,7 +207,28 @@ def approve_incident(
     incident = db.query(Incident).filter(Incident.id == incident_id).first()
     if not incident:
         raise HTTPException(status_code=404, detail="Incident not found")
+    action_config: dict = {}
+    if incident.action_config:
+        try:
+            action_config = json.loads(incident.action_config)
+        except Exception:
+            action_config = {}
+    if not incident.action_type:
+        recs = action_config.get("recommended_actions") or []
+        if recs and isinstance(recs[0], dict):
+            incident.action_type = recs[0].get("action") or incident.action_type
+            action_config.update(recs[0])
+        if not incident.action_type:
+            incident.action_type = "generic_remediation"
+    action_config.setdefault("pod_name", incident.pod_name)
+    action_config.setdefault("namespace", incident.namespace)
+    action_config.setdefault("issue_type", incident.issue_type)
+    action_config.setdefault("message", incident.summary)
+    incident.action_config = json.dumps(action_config)
     incident.status = "approved"
+    incident.executed_at = None
+    incident.completed_at = None
+    incident.outcome = ""
     db.commit()
     return {"status": "approved", "incident_id": incident_id}
 
@@ -178,3 +244,52 @@ def rollback_incident(
     incident.status = "rollback_requested"
     db.commit()
     return {"status": "rollback_requested", "incident_id": incident_id}
+
+
+@router.post("/history/clear")
+def clear_history(payload: dict | None = Body(default=None), db: Session = Depends(get_db)):
+    ids = None
+    if payload:
+        ids = payload.get("ids")
+    if ids is not None and len(ids) == 0:
+        return {"deleted": 0}
+    if ids:
+        query = db.query(Incident).filter(Incident.id.in_(ids))
+    else:
+        query = db.query(Incident).filter(Incident.status.in_(["dismissed", "fixed", "failed"]))
+    incident_ids = [row[0] for row in query.with_entities(Incident.id).all()]
+    deleted = 0
+    if incident_ids:
+        deleted = (
+            db.query(Incident)
+            .filter(Incident.id.in_(incident_ids))
+            .update({Incident.archived_at: datetime.utcnow()}, synchronize_session=False)
+        )
+    db.commit()
+    return {"deleted": deleted}
+
+
+@router.get("/export")
+@router.get("/export/")
+def export_incidents(
+    db: Session = Depends(get_db),
+    scope: str = Query(default="archived"),
+):
+    if scope == "all":
+        incidents = db.query(Incident).all()
+    else:
+        incidents = db.query(Incident).filter(Incident.archived_at.is_not(None)).all()
+    incident_ids = [incident.id for incident in incidents]
+    traces = []
+    if incident_ids:
+        traces = (
+            db.query(ReasoningTrace)
+            .filter(ReasoningTrace.incident_id.in_(incident_ids))
+            .all()
+        )
+    return {
+        "scope": scope,
+        "count": len(incidents),
+        "incidents": incidents,
+        "traces": traces,
+    }

@@ -3,14 +3,8 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useAuth } from "@clerk/nextjs";
-
-import { API_BASE } from "@/lib/api";
-
-
 export default function ClusterActions({ clusterId }: { clusterId: string }) {
   const router = useRouter();
-  const { getToken } = useAuth();
   const [deleting, setDeleting] = useState(false);
   const [message, setMessage] = useState("");
 
@@ -20,17 +14,8 @@ export default function ClusterActions({ clusterId }: { clusterId: string }) {
     }
     setMessage("");
     setDeleting(true);
-    const token = await getToken();
-    if (!token) {
-      setMessage("Sign in to delete clusters.");
-      setDeleting(false);
-      return;
-    }
-    const res = await fetch(`${API_BASE}/api/v1/clusters/${clusterId}/`, {
+    const res = await fetch(`/api/v1/clusters/${clusterId}/`, {
       method: "DELETE",
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
     });
     setDeleting(false);
     if (res.ok) {

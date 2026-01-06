@@ -1,6 +1,7 @@
 from datetime import datetime
 import json
 import uuid
+import os
 
 from fastapi import APIRouter, Depends, HTTPException, Header
 from sqlalchemy.orm import Session
@@ -94,7 +95,11 @@ def create_cluster(
     db.add(cluster)
     db.commit()
     db.refresh(cluster)
-    install_command = f"kubectl apply -f https://cva.yourdomain.com/install/{cluster_id}/{api_key}"
+    install_base = os.getenv(
+        "CVA_INSTALL_URL",
+        os.getenv("NEXT_PUBLIC_API_URL", "http://localhost:8001"),
+    ).rstrip("/")
+    install_command = f"kubectl apply -f {install_base}/install/{cluster_id}/{api_key}"
     return {
         "cluster_id": cluster_id,
         "api_key": api_key,
@@ -115,6 +120,8 @@ def cluster_heartbeat(
     cluster.status = "connected"
     cluster.last_seen = datetime.utcnow()
     cluster.agent_version = payload.get("agent_version") or cluster.agent_version
+    if "pod_snapshot" in payload:
+        cluster.pod_snapshot = payload.get("pod_snapshot")
     db.commit()
     return {"status": "ok"}
 
@@ -155,6 +162,33 @@ def delete_cluster(
     return {"status": "deleted"}
 
 
+@router.get("/{cluster_id}/install")
+@router.get("/{cluster_id}/install/")
+def get_install_command(
+    cluster_id: str,
+    db: Session = Depends(get_db),
+):
+    cluster = (
+        db.query(Cluster)
+        .filter(
+            Cluster.id == cluster_id,
+        )
+        .first()
+    )
+    if not cluster:
+        raise HTTPException(status_code=404, detail="Cluster not found")
+    install_base = os.getenv(
+        "CVA_INSTALL_URL",
+        os.getenv("NEXT_PUBLIC_API_URL", "http://localhost:8001"),
+    ).rstrip("/")
+    install_command = f"kubectl apply -f {install_base}/install/{cluster.id}/{cluster.api_key}"
+    return {
+        "cluster_id": cluster.id,
+        "api_key": cluster.api_key,
+        "install_command": install_command,
+    }
+
+
 @router.get("/{cluster_id}/pending-actions")
 @router.get("/{cluster_id}/pending-actions/")
 def get_pending_actions(
@@ -181,12 +215,10 @@ def get_pending_actions(
                 action_config = json.loads(incident.action_config)
             except Exception:
                 action_config = {}
-        action_config.update({
-            "pod_name": incident.pod_name,
-            "namespace": incident.namespace,
-            "issue_type": incident.issue_type,
-            "message": incident.summary,
-        })
+        action_config.setdefault("pod_name", incident.pod_name)
+        action_config.setdefault("namespace", incident.namespace)
+        action_config.setdefault("issue_type", incident.issue_type)
+        action_config.setdefault("message", incident.summary)
         actions.append(
             {
                 "incident_id": incident.id,

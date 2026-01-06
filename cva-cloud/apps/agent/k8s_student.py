@@ -60,7 +60,7 @@ class K8sStudent(BaseStudent):
         self._decision_fingerprints: dict[str, str] = {}  # pod_key:reason -> fingerprint
         self._cooldown_seconds = 60
         self._cooldown_by_reason = {
-            "CrashLoopBackOff": 60,
+            "CrashLoopBackOff": 300,
             "Pending": 120,
         }
         self._failed_attempts: dict[str, int] = {}  # deployment_key -> fail count
@@ -166,6 +166,7 @@ class K8sStudent(BaseStudent):
             "unhealthy": unhealthy,
             "unhealthy_count": unhealthy,
             "problem_pods": problem_pods,
+            "pod_snapshot": all_pods,
             "namespace": self.namespace,
             "status": "ok",
         }
@@ -250,6 +251,18 @@ class K8sStudent(BaseStudent):
             metadata = item.get("metadata", {})
             status = item.get("status", {})
             phase = status.get("phase", "")
+            uid = metadata.get("uid")
+            owners = metadata.get("ownerReferences", []) or []
+            owner_name = owners[0].get("name") if owners else None
+            owner_kind = owners[0].get("kind") if owners else None
+            namespace = metadata.get("namespace", "default")
+            workload_key = (
+                f"{namespace}/{owner_name}"
+                if owner_name
+                else f"{namespace}/{metadata.get('name')}:{uid}"
+                if uid
+                else f"{namespace}/{metadata.get('name')}"
+            )
 
             # Check container statuses
             container_statuses = status.get("containerStatuses", [])
@@ -267,7 +280,7 @@ class K8sStudent(BaseStudent):
                 if reason in self.SEVERITY:  # Only check actual current issues, not old restart counts
                     problems.append({
                         "name": metadata.get("name"),
-                        "namespace": metadata.get("namespace", "default"),
+                        "namespace": namespace,
                         "reason": reason or "CrashLoopBackOff",
                         "restarts": cs.get("restartCount", 0),
                         "message": waiting.get("message", ""),
@@ -275,6 +288,10 @@ class K8sStudent(BaseStudent):
                         "phase": phase,
                         "state": state,
                         "lastState": cs.get("lastState", {}) or {},
+                        "uid": uid,
+                        "owner_name": owner_name,
+                        "owner_kind": owner_kind,
+                        "workload_key": workload_key,
                     })
 
             # Detect Running but not Ready (probe failures or config issues)
@@ -294,26 +311,34 @@ class K8sStudent(BaseStudent):
                         cond_msg = ""
                     problems.append({
                         "name": metadata.get("name"),
-                        "namespace": metadata.get("namespace", "default"),
+                        "namespace": namespace,
                         "reason": "NotReady",
                         "restarts": sum(cs.get("restartCount", 0) for cs in container_statuses),
                         "message": cond_msg,
                         "container": container_statuses[0].get("name") if container_statuses else None,
                         "phase": phase,
                         "state": (container_statuses[0].get("state") if container_statuses else {}),
+                        "uid": uid,
+                        "owner_name": owner_name,
+                        "owner_kind": owner_kind,
+                        "workload_key": workload_key,
                     })
 
             # Check for pending
             if phase == "Pending":
                 problems.append({
                     "name": metadata.get("name"),
-                    "namespace": metadata.get("namespace", "default"),
+                    "namespace": namespace,
                     "reason": "Pending",
                     "restarts": 0,
                     "message": "",
                     "container": container_statuses[0].get("name") if container_statuses else None,
                     "phase": phase,
                     "state": (container_statuses[0].get("state") if container_statuses else {}),
+                    "uid": uid,
+                    "owner_name": owner_name,
+                    "owner_kind": owner_kind,
+                    "workload_key": workload_key,
                 })
 
         # Dedupe by pod name
@@ -378,10 +403,18 @@ class K8sStudent(BaseStudent):
         namespace = pod["namespace"]
         reason = pod["reason"]
         pod_key = f"{namespace}/{name}"
+        pod_uid = pod.get("uid")
         deployment_name = self._get_deployment_name(name, namespace)
-        track_key = f"{namespace}/{deployment_name}" if deployment_name else pod_key
+        identity_key = (
+            f"{namespace}/{deployment_name}"
+            if deployment_name
+            else f"{pod_key}:{pod_uid}"
+            if pod_uid
+            else pod_key
+        )
+        track_key = f"{namespace}/{deployment_name}" if deployment_name else identity_key
         fingerprint = self._pod_fingerprint(pod)
-        fingerprint_key = f"{pod_key}:{reason}"
+        fingerprint_key = f"{identity_key}:{reason}"
         previous_fingerprint = self._decision_fingerprints.get(fingerprint_key)
         fingerprint_hash = hashlib.sha256(fingerprint.encode("utf-8")).hexdigest()[:12]
         previous_hash = (
@@ -390,22 +423,22 @@ class K8sStudent(BaseStudent):
             else None
         )
         if previous_fingerprint == fingerprint:
-            print(f"[FINGERPRINT] skipping {pod_key}:{reason} (no change)")
+            print(f"[FINGERPRINT] skipping {identity_key}:{reason} (no change)")
             return {"success": False, "skipped": True, "reason": "fingerprint_unchanged"}
         if previous_hash:
             print(
-                f"[FINGERPRINT] change {pod_key}:{reason} {previous_hash} -> {fingerprint_hash}"
+                f"[FINGERPRINT] change {identity_key}:{reason} {previous_hash} -> {fingerprint_hash}"
             )
         else:
-            print(f"[FINGERPRINT] new {pod_key}:{reason} {fingerprint_hash}")
-        if self._in_decision_cooldown(pod_key, reason):
-            print(f"[COOLDOWN] skipping {pod_key}:{reason}")
+            print(f"[FINGERPRINT] new {identity_key}:{reason} {fingerprint_hash}")
+        if self._in_decision_cooldown(identity_key, reason):
+            print(f"[COOLDOWN] skipping {identity_key}:{reason}")
             return {"success": False, "skipped": True, "reason": "cooldown"}
-        self._mark_decision(pod_key, reason, fingerprint=fingerprint)
+        self._mark_decision(identity_key, reason, fingerprint=fingerprint)
 
         # Skip if quarantined globally
-        if is_quarantined(pod_key):
-            print(f"[{self.name}] Skipping quarantined pod {pod_key}")
+        if is_quarantined(identity_key):
+            print(f"[{self.name}] Skipping quarantined pod {identity_key}")
             return {"success": False, "skipped": True, "reason": "quarantined"}
 
         # Skip if we've permanently given up
@@ -465,10 +498,19 @@ class K8sStudent(BaseStudent):
                 return {"success": False, "unfixable": True, "reason": unfixable_reason, "trace_id": trace.trace_id}
 
             # Step 3: Analyze
-            trace.analyze(
-                f"Error type {reason} typically caused by: " + self._get_typical_causes(reason),
-                confidence=0.8
-            )
+            if reason == "CrashLoopBackOff":
+                action_plan = self._analyze_crashloop(pod, logs, deployment_name)
+                trace.analyze(
+                    action_plan.get("rationale")
+                    or f"CrashLoopBackOff analysis for {namespace}/{name}",
+                    confidence=action_plan.get("confidence", 0.8),
+                )
+            else:
+                trace.analyze(
+                    f"Error type {reason} typically caused by: " + self._get_typical_causes(reason),
+                    confidence=0.8
+                )
+                action_plan = self._decide_action_llm(reason, logs, pod)
 
             # Step 4: Check memory for similar issues
             if hasattr(self, 'shared_memory') and self.shared_memory:
@@ -480,7 +522,6 @@ class K8sStudent(BaseStudent):
                     )
 
             # Step 5: Decide on action
-            action_plan = self._decide_action_llm(reason, logs, pod)
             trace.decide(
                 f"Will attempt: {action_plan['action']}",
                 confidence=action_plan.get('confidence', 0.7),
@@ -540,12 +581,36 @@ class K8sStudent(BaseStudent):
             return {"success": False, "error": "Missing pod name", "incident_id": incident_id}
 
         if action_type in ("fix_image_tag", "update_image_url"):
+            dep_name = self._get_deployment_owner(pod_name, namespace)
+            if not dep_name:
+                try:
+                    result = subprocess.run(
+                        ["kubectl", "delete", "pod", pod_name, "-n", namespace],
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                    )
+                    if result.returncode == 0:
+                        return {
+                            "success": True,
+                            "action": "delete_pod",
+                            "output": result.stdout,
+                            "note": "No deployment owner found; deleted pod",
+                        }
+                    err_text = (result.stderr or "").lower()
+                    if "not found" in err_text or "notfound" in err_text:
+                        return {
+                            "success": True,
+                            "action": "delete_pod",
+                            "note": "Pod already gone; treat delete as successful",
+                        }
+                    return {"success": False, "error": result.stderr}
+                except Exception as e:
+                    return {"success": False, "error": str(e)}
             image = (config or {}).get("image")
             if image:
-                dep_name = self._get_deployment_owner(pod_name, namespace)
-                if not dep_name:
-                    return {"success": False, "error": "No deployment owner found", "incident_id": incident_id}
-                return self._set_image(dep_name, namespace, image)
+                container_name = (config or {}).get("container_name") or (config or {}).get("container")
+                return self._set_image(dep_name, namespace, image, container_name)
             return self._fix_image_pull(pod)
 
         if action_type in ("create_missing_config", "create_missing_secret"):
@@ -573,10 +638,58 @@ class K8sStudent(BaseStudent):
             limit = (config or {}).get("memory") or "512Mi"
             return self._increase_memory(dep_name, namespace, request, limit)
 
-        if action_type in ("restart_deployment", "generic_remediation"):
+        if action_type in ("rollback_deployment", "rollback"):
             dep_name = self._get_deployment_owner(pod_name, namespace)
             if not dep_name:
                 return {"success": False, "error": "No deployment owner found", "incident_id": incident_id}
+            return self._rollback_deployment(dep_name, namespace)
+
+        if action_type == "fix_env":
+            dep_name = self._get_deployment_owner(pod_name, namespace)
+            if not dep_name:
+                return {"success": False, "error": "No deployment owner found", "incident_id": incident_id}
+            env_vars = (
+                (config or {}).get("env_vars")
+                or (config or {}).get("details", {}).get("env_vars")
+                or []
+            )
+            container_name = (config or {}).get("container_name") or (config or {}).get("container")
+            return self._patch_deployment_env(dep_name, namespace, container_name, env_vars)
+
+        if action_type == "wait_dependency":
+            return {
+                "success": True,
+                "action": "wait_dependency",
+                "note": "Waiting for dependency readiness",
+            }
+
+        if action_type in ("restart_deployment", "generic_remediation"):
+            dep_name = self._get_deployment_owner(pod_name, namespace)
+            if not dep_name:
+                try:
+                    result = subprocess.run(
+                        ["kubectl", "delete", "pod", pod_name, "-n", namespace],
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                    )
+                    if result.returncode == 0:
+                        return {
+                            "success": True,
+                            "action": "delete_pod",
+                            "output": result.stdout,
+                            "note": "No deployment owner found; deleted pod",
+                        }
+                    err_text = (result.stderr or "").lower()
+                    if "not found" in err_text or "notfound" in err_text:
+                        return {
+                            "success": True,
+                            "action": "delete_pod",
+                            "note": "Pod already gone; treat delete as successful",
+                        }
+                    return {"success": False, "error": result.stderr}
+                except Exception as e:
+                    return {"success": False, "error": str(e)}
             try:
                 result = subprocess.run(
                     ["kubectl", "rollout", "restart", f"deployment/{dep_name}", "-n", namespace],
@@ -600,6 +713,13 @@ class K8sStudent(BaseStudent):
                 )
                 if result.returncode == 0:
                     return {"success": True, "action": "delete_pod", "output": result.stdout}
+                err_text = (result.stderr or "").lower()
+                if "not found" in err_text or "notfound" in err_text:
+                    return {
+                        "success": True,
+                        "action": "delete_pod",
+                        "note": "Pod already gone; treat delete as successful",
+                    }
                 return {"success": False, "error": result.stderr}
             except Exception as e:
                 return {"success": False, "error": str(e)}
@@ -773,6 +893,92 @@ Respond with ONLY valid JSON (no markdown, no backticks):
             "rationale": f"Unknown error type: {reason}"
         }
 
+    def _analyze_crashloop(self, pod: dict, logs: str, deployment_name: Optional[str]) -> dict:
+        """Intelligent CrashLoopBackOff analysis using LLM."""
+        name = pod.get("name", "unknown")
+        namespace = pod.get("namespace", "default")
+        container_name = pod.get("container") or "unknown"
+        restarts = pod.get("restarts", 0)
+        message = (pod.get("message") or "")[:200]
+        state = pod.get("state") or {}
+        last_state = pod.get("lastState") or {}
+        terminated = last_state.get("terminated") or state.get("terminated") or {}
+        exit_code = terminated.get("exitCode")
+
+        if not deployment_name:
+            return {
+                "action": "delete_pod",
+                "confidence": 0.6,
+                "rationale": "No deployment owner found; bare pod is likely misconfigured",
+                "details": {
+                    "root_cause": "no_deployment_owner",
+                    "container_name": container_name,
+                },
+            }
+
+        prompt = f"""Pod {namespace}/{name} is crashing with CrashLoopBackOff.
+
+Container: {container_name}
+Error Message: {message}
+Logs (last 50 lines):
+{logs[:400] if logs else "No logs available"}
+
+Exit code: {exit_code}
+Restart count: {restarts}
+
+Analyze the root cause and recommend ONE action.
+
+Respond ONLY with valid JSON in this exact format:
+{{
+  "root_cause": "brief explanation",
+  "action": "increase_memory|rollback|fix_env|wait_dependency",
+  "details": {{
+    "memory_request": "256Mi",
+    "memory_limit": "512Mi",
+    "env_vars": ["VAR_NAME"],
+    "reason": "why this fix"
+  }}
+}}"""
+
+        try:
+            from llm import OllamaLLMIntegration
+            llm = OllamaLLMIntegration()
+            response = llm.generate_text(prompt=prompt, temperature=0.2, max_tokens=500, json_mode=True)
+            response = response.strip()
+            if response.startswith("```"):
+                response = "\n".join(line for line in response.split("\n") if not line.startswith("```"))
+            analysis = json.loads(response)
+        except Exception as e:
+            fallback = self._decide_action_fallback("CrashLoopBackOff", logs, pod)
+            fallback["details"] = {"root_cause": f"LLM failed: {e}"}
+            return fallback
+
+        action_map = {
+            "increase_memory": "increase_memory_limits",
+            "rollback": "rollback_deployment",
+            "fix_env": "fix_env",
+            "wait_dependency": "wait_dependency",
+        }
+        raw_action = analysis.get("action") or "wait_dependency"
+        action = action_map.get(raw_action, "wait_dependency")
+        details = analysis.get("details") or {}
+        if action == "fix_env" and not details.get("env_vars"):
+            details["env_vars"] = re.findall(r"\b[A-Z][A-Z0-9_]{2,}\b", logs)
+        root_cause = analysis.get("root_cause") or details.get("reason") or "CrashLoopBackOff analysis"
+        return {
+            "action": action,
+            "confidence": 0.85,
+            "rationale": root_cause,
+            "details": {
+                "memory_request": details.get("memory_request", "256Mi"),
+                "memory_limit": details.get("memory_limit", "512Mi"),
+                "env_vars": details.get("env_vars", []),
+                "root_cause": root_cause,
+                "container_name": container_name,
+                "deployment_name": deployment_name,
+            },
+        }
+
     def _build_recommended_actions(self, action_plan: dict, pod: dict, logs: str) -> list[dict]:
         if not isinstance(action_plan, dict):
             return []
@@ -780,12 +986,13 @@ Respond with ONLY valid JSON (no markdown, no backticks):
         if not action:
             return []
         rationale = action_plan.get("rationale") or ""
+        details = action_plan.get("details") or {}
 
         if action == "increase_memory_limits":
             return [{
                 "action": "adjust_resources",
-                "memory": "512Mi",
-                "requests": "256Mi",
+                "memory": details.get("memory_limit", "512Mi"),
+                "requests": details.get("memory_request", "256Mi"),
                 "reason": rationale or "Increase memory limits",
             }]
 
@@ -798,10 +1005,35 @@ Respond with ONLY valid JSON (no markdown, no backticks):
                     image = m.group(1)
             except Exception:
                 image = None
-            rec = {"action": "update_image_url", "reason": rationale or "Image pull error"}
+            rec = {
+                "action": "update_image_url",
+                "reason": rationale or "Image pull error",
+            }
             if image:
                 rec["image"] = image
+            container_name = pod.get("container")
+            if container_name:
+                rec["container_name"] = container_name
             return [rec]
+
+        if action == "rollback_deployment":
+            return [{
+                "action": "rollback_deployment",
+                "reason": rationale or "Rollback deployment",
+            }]
+
+        if action == "fix_env":
+            return [{
+                "action": "fix_env",
+                "env_vars": details.get("env_vars", []),
+                "reason": rationale or "Add missing environment variables",
+            }]
+
+        if action == "wait_dependency":
+            return [{
+                "action": "wait_dependency",
+                "reason": rationale or "Wait for dependency readiness",
+            }]
 
         return [{
             "action": action,
@@ -885,6 +1117,7 @@ Respond with ONLY valid JSON (no markdown, no backticks):
     def _fix_image_pull(self, pod: dict) -> dict:
         """Fix ImagePullBackOff - usually typo in image tag."""
         name, namespace = pod["name"], pod["namespace"]
+        container_name = pod.get("container")
         
         dep_name = self._get_deployment_owner(name, namespace)
         if not dep_name:
@@ -893,11 +1126,45 @@ Respond with ONLY valid JSON (no markdown, no backticks):
         # Get current image
         try:
             result = subprocess.run(
-                ["kubectl", "get", "deployment", dep_name, "-n", namespace, "-o", 
-                 "jsonpath={.spec.template.spec.containers[0].image}"],
-                capture_output=True, text=True, timeout=10
+                [
+                    "kubectl",
+                    "get",
+                    "deployment",
+                    dep_name,
+                    "-n",
+                    namespace,
+                    "-o",
+                    "jsonpath={range .spec.template.spec.containers[*]}{.name}{\"|\"}{.image}{\"\\n\"}{end}",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
-            current_image = result.stdout.strip()
+            if result.returncode != 0:
+                return {"success": False, "error": result.stderr or "Failed to read deployment image"}
+            pairs = []
+            for line in result.stdout.strip().splitlines():
+                if "|" not in line:
+                    continue
+                cname, image = line.split("|", 1)
+                if cname:
+                    pairs.append((cname.strip(), image.strip()))
+            current_image = None
+            if container_name:
+                for cname, image in pairs:
+                    if cname == container_name:
+                        current_image = image
+                        break
+            if not current_image:
+                if len(pairs) == 1:
+                    current_image = pairs[0][1]
+                elif len(pairs) > 1:
+                    return {
+                        "success": False,
+                        "error": "Multiple containers found; specify container_name",
+                    }
+            if not current_image:
+                return {"success": False, "error": "Could not determine current image"}
             
             # Try common fixes
             fixed_image = current_image
@@ -907,7 +1174,7 @@ Respond with ONLY valid JSON (no markdown, no backticks):
                 fixed_image = f"{current_image}:latest"
             
             if fixed_image != current_image:
-                return self._set_image(dep_name, namespace, fixed_image)
+                return self._set_image(dep_name, namespace, fixed_image, container_name)
             
             return {"success": False, "error": "Could not determine correct image"}
         except Exception as e:
@@ -930,6 +1197,65 @@ Respond with ONLY valid JSON (no markdown, no backticks):
     # ─────────────────────────────────────────────────────────────
     # Fix Actions
     # ─────────────────────────────────────────────────────────────
+
+    def _rollback_deployment(self, dep_name: str, namespace: str) -> dict:
+        """Rollback deployment to previous revision."""
+        try:
+            result = subprocess.run(
+                ["kubectl", "rollout", "undo", f"deployment/{dep_name}", "-n", namespace],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode == 0:
+                return {"success": True, "action": f"Rolled back {dep_name}", "output": result.stdout}
+            return {"success": False, "error": result.stderr}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _patch_deployment_env(
+        self,
+        dep_name: str,
+        namespace: str,
+        container_name: Optional[str],
+        env_vars: list,
+    ) -> dict:
+        """Add missing environment variables to deployment."""
+        if not env_vars:
+            return {"success": False, "error": "No env vars specified"}
+        actions = []
+        for var in env_vars:
+            if isinstance(var, dict):
+                var_name = var.get("name") or var.get("key")
+                var_value = var.get("value", "changeme")
+            else:
+                var_name = str(var)
+                var_value = "changeme"
+            if not var_name:
+                continue
+            cmd = [
+                "kubectl",
+                "set",
+                "env",
+                f"deployment/{dep_name}",
+                f"{var_name}={var_value}",
+                "-n",
+                namespace,
+            ]
+            if container_name:
+                cmd.extend(["--containers", container_name])
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode != 0:
+                return {"success": False, "error": result.stderr}
+            actions.append(var_name)
+        if not actions:
+            return {"success": False, "error": "No valid env vars to patch"}
+        return {"success": True, "action": f"Added env vars: {actions}"}
     
     def _add_env_var(self, dep_name: str, namespace: str, var_name: str, var_value: str) -> dict:
         """Add environment variable to deployment."""
@@ -1032,10 +1358,93 @@ Respond with ONLY valid JSON (no markdown, no backticks):
         except Exception as e:
             return {"success": False, "error": str(e)}
     
-    def _set_image(self, dep_name: str, namespace: str, image: str) -> dict:
+    def _set_image(
+        self,
+        dep_name: str,
+        namespace: str,
+        image: str,
+        container_name: Optional[str] = None,
+    ) -> dict:
         """Set container image for deployment."""
         try:
-            container_name = dep_name.split("-")[0]
+            result = subprocess.run(
+                [
+                    "kubectl",
+                    "get",
+                    "deployment",
+                    dep_name,
+                    "-n",
+                    namespace,
+                    "-o",
+                    "jsonpath={range .spec.template.spec.containers[*]}{.name}{\"|\"}{.image}{\"\\n\"}{end}",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode != 0:
+                return {
+                    "success": False,
+                    "error": f"Failed to get container names: {result.stderr}",
+                }
+            pairs = []
+            for line in result.stdout.strip().splitlines():
+                if "|" not in line:
+                    continue
+                name, img = line.split("|", 1)
+                if name:
+                    pairs.append((name.strip(), img.strip()))
+            if not pairs:
+                return {"success": False, "error": "Could not determine container name"}
+
+            def _image_base(value: str) -> str:
+                if "@" in value:
+                    value = value.split("@", 1)[0]
+                if ":" in value:
+                    value = value.rsplit(":", 1)[0]
+                if "/" in value:
+                    value = value.split("/")[-1]
+                return value
+
+            def _match_by_image() -> list[str]:
+                target_base = _image_base(image)
+                return [name for name, img in pairs if _image_base(img) == target_base]
+
+            available = ", ".join(name for name, _ in pairs)
+            if container_name:
+                names = {name for name, _ in pairs}
+                if container_name not in names:
+                    matches = _match_by_image()
+                    if len(matches) == 1:
+                        container_name = matches[0]
+                    else:
+                        return {
+                            "success": False,
+                            "error": f"Container '{container_name}' not found. Available: {available}",
+                        }
+            else:
+                if len(pairs) == 1:
+                    container_name = pairs[0][0]
+                else:
+                    matches = _match_by_image()
+                    if len(matches) == 1:
+                        container_name = matches[0]
+                    else:
+                        return {
+                            "success": False,
+                            "error": f"Multiple containers found; specify container_name. Available: {available}",
+                        }
+            current_image = None
+            for name, img in pairs:
+                if name == container_name:
+                    current_image = img
+                    break
+            if current_image and current_image == image:
+                return {
+                    "success": False,
+                    "error": "Requested image matches current image; no change applied",
+                }
+
             result = subprocess.run(
                 ["kubectl", "set", "image", f"deployment/{dep_name}",
                  f"{container_name}={image}", "-n", namespace],
@@ -1045,8 +1454,10 @@ Respond with ONLY valid JSON (no markdown, no backticks):
             if result.returncode == 0:
                 print(f"[{self.name}] ✅ Set image to {image}")
                 return {"success": True, "action": f"Set image to {image}"}
-            else:
-                return {"success": False, "error": result.stderr}
+            return {
+                "success": False,
+                "error": f"{result.stderr or ''}{result.stdout or ''}".strip(),
+            }
         except Exception as e:
             return {"success": False, "error": str(e)}
     
@@ -1277,24 +1688,33 @@ Respond with ONLY valid JSON (no markdown, no backticks):
 
     def _pod_fingerprint(self, pod: dict) -> str:
         """Create a stable fingerprint for a pod's failure state."""
-        def _state_snapshot(state: dict) -> dict:
+        def _state_snapshot(state: dict, container_name: Optional[str]) -> dict:
+            # Exclude noisy fields (restartCount/timestamps/containerID) to avoid false changes.
             waiting = (state or {}).get("waiting") or {}
             terminated = (state or {}).get("terminated") or {}
+            if waiting.get("reason"):
+                return {
+                    "container": container_name,
+                    "state": "waiting",
+                    "waiting_reason": waiting.get("reason"),
+                }
+            if terminated:
+                return {
+                    "container": container_name,
+                    "state": "terminated",
+                    "terminated_reason": terminated.get("reason"),
+                    "terminated_exit_code": terminated.get("exitCode"),
+                }
             return {
-                "waiting_reason": waiting.get("reason"),
-                "waiting_message": (waiting.get("message") or "")[:120],
-                "terminated_reason": terminated.get("reason"),
-                "terminated_exit_code": terminated.get("exitCode"),
-                "terminated_signal": terminated.get("signal"),
+                "container": container_name,
+                "state": "unknown",
             }
 
         data = {
             "reason": pod.get("reason"),
-            "message": (pod.get("message") or "")[:120],
             "phase": pod.get("phase"),
             "container": pod.get("container"),
-            "state": _state_snapshot(pod.get("state") or {}),
-            "lastState": _state_snapshot(pod.get("lastState") or {}),
+            "state": _state_snapshot(pod.get("state") or {}, pod.get("container")),
         }
         try:
             return json.dumps(data, sort_keys=True, separators=(",", ":"))

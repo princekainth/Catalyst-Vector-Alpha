@@ -4,6 +4,7 @@ const isProtectedRoute = createRouteMatcher([
   "/dashboard(.*)",
   "/incidents(.*)",
   "/clusters(.*)",
+  "/policies(.*)",
 ]);
 
 export default clerkMiddleware((auth, req) => {
@@ -11,11 +12,12 @@ export default clerkMiddleware((auth, req) => {
     auth().protect();
   }
 });
+
 export const config = {
   matcher: [
-    // Skip Next.js internals and all static files, unless found in search params
-    "/((?!_next|[^?]*\\.(?:html?|css|js(?!on)|jpe?g|webp|png|gif|svg|ttf|woff2?|ico|csv|docx?|xlsx?|zip|webmanifest)).*)",
-    // Always run for API routes
+    // run middleware on all routes except next internals + static files
+    "/((?!_next|.*\\..*).*)",
+    "/",
     "/(api|trpc)(.*)",
   ],
 };

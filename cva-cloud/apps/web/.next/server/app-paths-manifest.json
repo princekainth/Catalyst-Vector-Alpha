@@ -1,8 +1,9 @@
 {
   "/page": "app/page.js",
-  "/(dashboard)/clusters/page": "app/(dashboard)/clusters/page.js",
+  "/api/v1/incidents/[incidentId]/approve/route": "app/api/v1/incidents/[incidentId]/approve/route.js",
   "/(dashboard)/dashboard/page": "app/(dashboard)/dashboard/page.js",
-  "/(dashboard)/clusters/new/page": "app/(dashboard)/clusters/new/page.js",
-  "/(dashboard)/policies/page": "app/(dashboard)/policies/page.js",
-  "/(dashboard)/incidents/page": "app/(dashboard)/incidents/page.js"
+  "/(dashboard)/clusters/[id]/page": "app/(dashboard)/clusters/[id]/page.js",
+  "/(dashboard)/incidents/[id]/page": "app/(dashboard)/incidents/[id]/page.js",
+  "/(dashboard)/incidents/page": "app/(dashboard)/incidents/page.js",
+  "/(dashboard)/clusters/page": "app/(dashboard)/clusters/page.js"
 }

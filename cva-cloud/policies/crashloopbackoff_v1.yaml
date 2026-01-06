@@ -1,0 +1,42 @@
+version: 1
+id: crashloopbackoff_v1
+applies_to:
+  reasons: ["CrashLoopBackOff"]
+  namespaces: ["*"]
+
+# Hard safety limits (never exceed)
+safety:
+  max_actions_per_workload_per_hour: 3
+  cooldown_seconds_by_reason:
+    CrashLoopBackOff: 300
+  require_human_on:
+    - "prod"
+    - "kube-system"
+
+# What we’re allowed to do for this failure type (v1 = conservative)
+allowed_actions:
+  - action: restart_deployment
+    enabled: true
+    constraints:
+      only_if_has_deployment_owner: true
+      max_restarts_per_hour: 2
+
+  - action: delete_pod
+    enabled: false   # keep off in v1 (too aggressive)
+
+# Decision recipe (deterministic first, then LLM if needed later)
+decision:
+  strategy: "deterministic_first"
+  deterministic_rules:
+    - name: restart_if_high_restarts
+      when:
+        min_restart_count: 3
+      then:
+        action: restart_deployment
+        confidence: 0.70
+        rationale: "CrashLoopBackOff with repeated restarts -> try rolling restart once."
+
+# Escalation / stop conditions
+escalation:
+  max_attempts: 3
+  on_exceed_max_attempts: "needs_human"

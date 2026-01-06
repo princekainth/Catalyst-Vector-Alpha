@@ -2,6 +2,8 @@ import SectionHeader from "@/components/section-header";
 import { Card } from "@/components/ui/card";
 import ClusterStatusBadge from "@/components/cluster-status-badge";
 import LocalTime from "@/components/local-time";
+import ClusterPodsPanel from "@/components/cluster-pods-panel";
+import ClusterInstallCard from "@/components/cluster-install-card";
 import { fetcher } from "@/lib/api";
 import { getAuthHeaders } from "@/lib/api.server";
 import type { Cluster } from "@/lib/types";
@@ -54,6 +56,16 @@ export default async function ClusterDetailPage({
           <span className="text-xs text-white/70">{cluster.id}</span>
         </div>
       </Card>
+      <Card className="space-y-4">
+        <h3 className="text-lg font-display">Agent Status</h3>
+        <ClusterInstallCard
+          clusterId={cluster.id}
+          status={cluster.status}
+          lastSeen={cluster.last_seen}
+        />
+      </Card>
+
+      <ClusterPodsPanel clusterId={cluster.id} />
     </div>
   );
 }

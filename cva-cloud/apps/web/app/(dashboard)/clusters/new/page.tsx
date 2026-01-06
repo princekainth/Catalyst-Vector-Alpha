@@ -2,9 +2,6 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { useAuth } from "@clerk/nextjs";
-
-import { API_BASE } from "@/lib/api";
 import { Card } from "@/components/ui/card";
 import SectionHeader from "@/components/section-header";
 
@@ -16,24 +13,18 @@ type InstallResponse = {
 
 export default function NewClusterPage() {
   const router = useRouter();
-  const { getToken } = useAuth();
   const [name, setName] = useState("");
   const [install, setInstall] = useState<InstallResponse | null>(null);
   const [checking, setChecking] = useState(false);
   const [error, setError] = useState("");
+  const [copyLabel, setCopyLabel] = useState("Copy command");
 
   const createCluster = async () => {
     setError("");
-    const token = await getToken();
-    if (!token) {
-      setError("Please sign in to continue.");
-      return;
-    }
-    const res = await fetch(`${API_BASE}/api/v1/clusters/`, {
+    const res = await fetch("/api/v1/clusters/", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
       },
       body: JSON.stringify({ name }),
     });
@@ -49,17 +40,7 @@ export default function NewClusterPage() {
   const checkConnection = async () => {
     if (!install) return;
     setChecking(true);
-    const token = await getToken();
-    if (!token) {
-      setError("Please sign in to continue.");
-      setChecking(false);
-      return;
-    }
-    const res = await fetch(`${API_BASE}/api/v1/clusters/${install.cluster_id}/`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    });
+    const res = await fetch(`/api/v1/clusters/${install.cluster_id}/`);
     setChecking(false);
     if (!res.ok) {
       setError("Unable to check cluster status.");
@@ -70,6 +51,18 @@ export default function NewClusterPage() {
       router.push("/clusters?connected=1");
     } else {
       setError(`Cluster status: ${data.status}`);
+    }
+  };
+
+  const copyCommand = async () => {
+    if (!install) return;
+    try {
+      await navigator.clipboard.writeText(install.install_command);
+      setCopyLabel("Copied!");
+      setTimeout(() => setCopyLabel("Copy command"), 2000);
+    } catch {
+      setCopyLabel("Copy failed");
+      setTimeout(() => setCopyLabel("Copy command"), 2000);
     }
   };
 
@@ -105,9 +98,18 @@ export default function NewClusterPage() {
             <li>Run it in your cluster.</li>
             <li>Wait about 30 seconds for the agent to connect.</li>
           </ol>
-          <code className="block rounded-md bg-black/40 p-3 text-xs text-white/80">
-            {install.install_command}
-          </code>
+          <div className="rounded-md border border-white/10 bg-black/40 p-3">
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <code className="text-xs text-white/80">{install.install_command}</code>
+              <button
+                type="button"
+                className="rounded-md border border-white/10 px-3 py-1 text-xs text-white/70 hover:border-white/30"
+                onClick={copyCommand}
+              >
+                {copyLabel}
+              </button>
+            </div>
+          </div>
           <button
             className="w-fit rounded-md border border-white/10 px-4 py-2 text-sm"
             onClick={checkConnection}

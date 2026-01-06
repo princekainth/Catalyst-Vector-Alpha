@@ -1,9 +1,9 @@
 {
   "pages": {
-    "/(dashboard)/clusters/page": [
+    "/(dashboard)/clusters/[id]/page": [
       "static/chunks/webpack.js",
       "static/chunks/main-app.js",
-      "static/chunks/app/(dashboard)/clusters/page.js"
+      "static/chunks/app/(dashboard)/clusters/[id]/page.js"
     ],
     "/(dashboard)/layout": [
       "static/chunks/webpack.js",
@@ -16,11 +16,6 @@
       "static/css/app/layout.css",
       "static/chunks/app/layout.js"
     ],
-    "/(dashboard)/clusters/[id]/page": [
-      "static/chunks/webpack.js",
-      "static/chunks/main-app.js",
-      "static/chunks/app/(dashboard)/clusters/[id]/page.js"
-    ],
     "/(dashboard)/dashboard/page": [
       "static/chunks/webpack.js",
       "static/chunks/main-app.js",
@@ -31,20 +26,30 @@
       "static/chunks/main-app.js",
       "static/chunks/app/page.js"
     ],
+    "/(dashboard)/clusters/page": [
+      "static/chunks/webpack.js",
+      "static/chunks/main-app.js",
+      "static/chunks/app/(dashboard)/clusters/page.js"
+    ],
     "/(dashboard)/incidents/page": [
       "static/chunks/webpack.js",
       "static/chunks/main-app.js",
       "static/chunks/app/(dashboard)/incidents/page.js"
     ],
-    "/(dashboard)/clusters/new/page": [
+    "/(dashboard)/incidents/[id]/page": [
       "static/chunks/webpack.js",
       "static/chunks/main-app.js",
-      "static/chunks/app/(dashboard)/clusters/new/page.js"
+      "static/chunks/app/(dashboard)/incidents/[id]/page.js"
     ],
     "/(dashboard)/policies/page": [
       "static/chunks/webpack.js",
       "static/chunks/main-app.js",
       "static/chunks/app/(dashboard)/policies/page.js"
+    ],
+    "/(dashboard)/clusters/new/page": [
+      "static/chunks/webpack.js",
+      "static/chunks/main-app.js",
+      "static/chunks/app/(dashboard)/clusters/new/page.js"
     ]
   }
 }

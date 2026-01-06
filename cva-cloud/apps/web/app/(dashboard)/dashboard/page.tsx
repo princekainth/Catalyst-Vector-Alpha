@@ -6,6 +6,9 @@ import { fetcher } from "@/lib/api";
 import { getAuthHeaders } from "@/lib/api.server";
 import type { Cluster, Incident } from "@/lib/types";
 import ClusterStatusBadge from "@/components/cluster-status-badge";
+import { currentUser } from "@clerk/nextjs/server";
+
+export const dynamic = "force-dynamic";
 
 async function getData() {
   try {
@@ -28,21 +31,77 @@ function normalizeTimestamp(value: string): string {
   return `${cleaned}Z`;
 }
 
+function getEffectiveStatus(status: string, lastSeen?: string | null) {
+  if (!lastSeen) return "disconnected";
+  const normalized = normalizeTimestamp(lastSeen);
+  const date = new Date(normalized);
+  if (Number.isNaN(date.getTime())) return "disconnected";
+  const ageMs = Date.now() - date.getTime();
+  if (ageMs > 300_000) return "disconnected";
+  if (ageMs > 90_000) return "stale";
+  return status === "connected" ? "connected" : "connected";
+}
+
+function greetingForHour(hour: number): string {
+  if (hour < 12) return "Good morning";
+  if (hour < 18) return "Good afternoon";
+  return "Good evening";
+}
+
 export default async function DashboardPage() {
   const { clusters, incidents } = await getData();
-  const activeIncidents = incidents.filter((item) => item.status !== "fixed");
+  const user = await currentUser();
+  const displayName =
+    user?.firstName ||
+    user?.fullName ||
+    user?.primaryEmailAddress?.emailAddress ||
+    "there";
+  const activeIncidents = incidents.filter(
+    (item) => item.status !== "fixed" && item.status !== "dismissed"
+  );
   const now = Date.now();
-  const incidentsToday = incidents.filter((incident) => {
-    const normalized = normalizeTimestamp(incident.created_at);
-    const created = new Date(normalized);
-    if (Number.isNaN(created.getTime())) return false;
-    return now - created.getTime() <= 24 * 60 * 60 * 1000;
-  });
-  const estimatedSavingsHours = Math.max(0.5, incidentsToday.length * 0.4);
+  const pendingApprovals = incidents.filter((incident) => incident.status === "pending");
+  const impactedClusters = new Set(activeIncidents.map((incident) => incident.cluster_id)).size;
+  const greeting = greetingForHour(new Date().getHours());
 
   return (
     <div className="space-y-8">
-      <SectionHeader title="Dashboard">Realtime view across clusters.</SectionHeader>
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <SectionHeader title={`${greeting}, ${displayName}.`}>
+          Welcome to Mission Control. Connect a cluster to start remediation.
+        </SectionHeader>
+        {clusters.length > 0 ? (
+          <Link
+            href="/clusters/new"
+            className="rounded-md border border-white/10 px-3 py-2 text-xs text-white/70"
+          >
+            Connect Cluster
+          </Link>
+        ) : null}
+      </div>
+
+      {clusters.length === 0 ? (
+        <Card className="flex flex-col gap-4">
+          <div>
+            <h3 className="text-lg font-display">Connect your first cluster</h3>
+            <p className="text-sm text-white/60">
+              Install the CVA agent and start streaming incidents into your dashboard.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-3 text-sm text-white/60">
+            <span>1. Generate install command</span>
+            <span>2. Apply to cluster</span>
+            <span>3. Approve your first fix</span>
+          </div>
+          <Link
+            href="/clusters/new"
+            className="w-fit rounded-md bg-accent px-4 py-2 text-sm font-semibold text-black"
+          >
+            Connect Cluster
+          </Link>
+        </Card>
+      ) : null}
+
       <div className="grid gap-4 md:grid-cols-4">
         <Card>
           <CardTitle>Total Clusters</CardTitle>
@@ -53,12 +112,12 @@ export default async function DashboardPage() {
           <CardValue>{activeIncidents.length}</CardValue>
         </Card>
         <Card>
-          <CardTitle>Incidents Today</CardTitle>
-          <CardValue>{incidentsToday.length}</CardValue>
+          <CardTitle>Clusters Impacted</CardTitle>
+          <CardValue>{impactedClusters}</CardValue>
         </Card>
         <Card>
-          <CardTitle>Estimated Savings</CardTitle>
-          <CardValue>{estimatedSavingsHours.toFixed(1)}h</CardValue>
+          <CardTitle>Pending Approvals</CardTitle>
+          <CardValue>{pendingApprovals.length}</CardValue>
         </Card>
       </div>
 
@@ -93,7 +152,9 @@ export default async function DashboardPage() {
               <div key={cluster.id} className="flex items-center justify-between">
                 <div>
                   <p className="font-semibold">{cluster.name}</p>
-                  <p className="text-xs text-white/50">{cluster.status}</p>
+                  <p className="text-xs text-white/50">
+                    {getEffectiveStatus(cluster.status, cluster.last_seen)}
+                  </p>
                 </div>
                 <div className="flex items-center gap-2">
                   <ClusterStatusBadge status={cluster.status} lastSeen={cluster.last_seen} />
