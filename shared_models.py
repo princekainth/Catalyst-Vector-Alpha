@@ -1538,6 +1538,7 @@ class SharedWorldModel:
     def __init__(self, external_log_sink):
         self._model = {}
         self.external_log_sink = external_log_sink
+        self.knowledge_base = [] # Phase 7: Hive Mind Gossip Storage
         self.initialize_model()
 
     def initialize_model(self):
@@ -1572,8 +1573,39 @@ class SharedWorldModel:
             "details": {"key": key, "old_value": old_value, "new_value": value}
         }))
 
+    # --- Phase 7: Hive Mind (Collective Intelligence) ---
+    def add_insight(self, insight: dict):
+        """Stores a successful strategy in the collective knowledge base."""
+        # Add basic metadata
+        if "timestamp" not in insight:
+            insight["timestamp"] = timestamp_now()
+        
+        self.knowledge_base.append(insight)
+        self.external_log_sink.info(f"🧠 [Hive Mind] New insight added by {insight.get('agent', 'unknown')}: {insight.get('task', 'N/A')}")
+        
+        # Keep limited history (e.g., last 100 insights)
+        if len(self.knowledge_base) > 100:
+            self.knowledge_base.pop(0)
+
+    def search_insights(self, query: str, limit: int = 3) -> list:
+        """Finds relevant insights based on keyword matching."""
+        query_words = set(query.lower().split())
+        results = []
+        
+        for insight in reversed(self.knowledge_base):
+            task_desc = insight.get("task", "").lower()
+            # Simple score: overlap of words
+            score = sum(1 for w in query_words if w in task_desc)
+            if score > 0:
+                results.append((score, insight))
+        
+        # Sort by score desc
+        results.sort(key=lambda x: x[0], reverse=True)
+        return [r[1] for r in results[:limit]]
+
     def get_state(self):
-        return {'model': self._model}
+        return {'model': self._model, 'knowledge_base': self.knowledge_base}
 
     def load_state(self, state):
         self._model = state.get('model', {})
+        self.knowledge_base = state.get('knowledge_base', [])

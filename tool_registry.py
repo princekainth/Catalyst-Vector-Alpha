@@ -441,6 +441,16 @@ GENERATE_REPORT_PDF_PARAMS = {"type": "object", "properties": {"title": {"type":
 HASH_TEXT_PARAMS = {"type": "object", "properties": {"text": {"type": "string"}, "algorithm": {"type": "string", "enum": ["md5","sha1","sha256","sha512"], "default": "sha256"}}, "required": ["text"]}
 EXTRACT_IOCS_PARAMS = {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}
 
+SPAWN_AGENT_PARAMS = {
+    "type": "object",
+    "properties": {
+        "purpose": {"type": "string", "description": "Clear description of what the new agent should do (min 10 chars)."},
+        "context": {"type": "object", "description": "Optional context/memory to pass to the agent."},
+        "ttl_hours": {"type": "number", "default": 4.0, "maximum": 24.0, "description": "Lifespan in hours."}
+    },
+    "required": ["purpose"]
+}
+
 # Tool-specific normalizers
 def _normalize_pdf_args(a: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(a or {})
@@ -771,11 +781,43 @@ Do NOT include keys that are not in MissingKeys. Do NOT repeat provided args."""
 
             # Info Retrieval
             Tool("web_search", "Performs a web search using SerpApi.", WEB_SEARCH_PARAMS, _tf("web_search_tool"),
-                 task_type="InformationRetrieval", roles_allowed={"Planner", "Observer", "Security"}, redact_fields={"api_key"},
+                 task_type="InformationRetrieval", roles_allowed={"Planner", "Observer", "Security", "Worker", "Notifier"}, redact_fields={"api_key"},
                  validator=lambda a: not _is_placeholder(a.get("query"))),
             Tool("read_webpage", "Reads the textual content of a webpage from a URL.", READ_WEBPAGE_PARAMS, _tf("read_webpage_tool"),
-                 task_type="InformationRetrieval", roles_allowed={"Planner", "Observer"},
+                 task_type="InformationRetrieval", roles_allowed={"Planner", "Observer", "Worker", "Security", "Notifier"},
                  validator=lambda a: isinstance(a.get("url"), str) and _looks_like_url(a.get("url"))),
+
+            # Toolsmith (Auto-Coding) - Enabled via Config
+            *(
+                [Tool(
+                    "toolsmith_generate",
+                    "Generates a new Python tool implementation for a specific purpose.",
+                    {
+                        "type": "object",
+                        "properties": {
+                            "tool_name": {"type": "string"},
+                            "description": {"type": "string"},
+                            "parameters": {"type": "object"},
+                            "python_code": {"type": "string", "description": "Optional: Initial code draft"}
+                        },
+                        "required": ["tool_name", "description"]
+                    },
+                    sandbox_toolsmith.generate_tool,
+                    task_type="ToolGeneration",
+                    roles_allowed={"Planner", "Worker"}
+                )] if self.toolsmith_enabled else []
+            ),
+            
+            # --- MITOSIS / REPRODUCTION ---
+            Tool(
+                "spawn_agent",
+                "Spawns a new dynamic agent (sub-agent) to perform a specific task.",
+                SPAWN_AGENT_PARAMS,
+                _tf("spawn_agent"),
+                task_type="TaskDelegation",
+                roles_allowed={"Planner", "Worker"},
+                validator=lambda a: not _is_placeholder(a.get("purpose")) and len(a.get("purpose", "")) >= 10
+            ),
 
             Tool("redact_pii", "Redact PII from text.", REDACT_PII_PARAMS, _tf("redact_pii_tool"),
                  validator=lambda a: not _is_placeholder(a.get("text")), task_type="GenericTask", roles_allowed={"Planner","Observer"}),

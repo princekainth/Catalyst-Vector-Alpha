@@ -92,11 +92,22 @@ class DynamicAgent(ProtoAgent):
     
     
     def check_expiration(self) -> bool:
-        """Check if agent has expired."""
+        """Check if agent has expired or starved."""
+        if self.is_expired:
+            return True
+        
+        # Check time
         if datetime.now(timezone.utc) > self.spec.expires_at:
             self.is_expired = True
-            logger.info(f"Agent {self.spec.name} expired")
+            logger.info(f"Agent {self.spec.name} expired (TTL)")
             return True
+        
+        # Check energy (Starvation)
+        if hasattr(self, 'energy') and self.energy <= 0:
+            self.is_expired = True
+            logger.info(f"Agent {self.spec.name} expired (Starvation)")
+            return True
+            
         return False
     
     def execute_task(self, task: Dict[str, Any]) -> Dict[str, Any]:

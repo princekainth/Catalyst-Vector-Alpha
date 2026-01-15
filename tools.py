@@ -4301,39 +4301,53 @@ __all__ = [
     "tool_health_check_tool", "list_available_tools_tool",
     
     # Utility functions
-    "standardize_response", "ToolConfig"
+    # Utility functions
+    "standardize_response", "ToolConfig",
+    "spawn_agent"
 ]
-@retry_on_failure(max_retries=2)
-def spawn_specialized_agent(purpose: str, context: dict, parent_agent: str = "system") -> dict:
+
+# --- PROCESS SPAWNING (Mitosis) ---
+def spawn_agent(purpose: str, context: Optional[Dict[str, Any]] = None, ttl_hours: float = 4.0) -> dict:
     """
-    Spawn a specialized agent for a specific task.
+    Spawns a new dynamic agent (sub-agent) for a specific task.
     
     Args:
-        purpose: What this agent should accomplish
-        context: Relevant context (emails, alerts, data)
-        parent_agent: Name of agent requesting spawn
-    
-    Returns:
-        {"success": bool, "agent_id": str, "agent_name": str}
+        purpose: Clear description of what the new agent should do.
+        context: Optional dictionary of context/memory to pass to the agent.
+        ttl_hours: How long the agent should live (max 24).
     """
+    _usage_tracker.track_usage("spawn_agent")
+    
+    # Validation
+    if not purpose or len(purpose) < 10:
+        return standardize_response("error", error="Purpose must be descriptive (min 10 chars)")
+    
+    if ttl_hours > 24:
+        return standardize_response("error", error="TTL cannot exceed 24 hours")
+
+    # Access global system instance
     try:
-        # Get CVA instance from global context
+        # Get CVA instance from global context (injected by app.py)
         cva = globals().get('_cva_instance')
+        
         if not cva:
-            return {"success": False, "error": "CVA not available"}
+            return standardize_response("error", error="System instance not available for spawning (Context missing)")
         
-        agent_id = cva.handle_spawn_request(purpose, context, parent_agent)
+        directive = {
+            "type": "SPAWN_DYNAMIC_AGENT",
+            "purpose": purpose,
+            "context": context or {},
+            "requester_agent": "Tool_Caller", 
+            "timestamp": _now_iso()
+        }
         
-        if agent_id:
-            agent = cva.agent_factory.get_agent(agent_id)
-            return {
-                "success": True,
-                "agent_id": agent_id,
-                "agent_name": agent.spec.name,
-                "expires_at": agent.spec.expires_at.isoformat()
-            }
+        # Inject directive
+        cva.inject_directives([directive])
         
-        return {"success": False, "error": "Spawn failed"}
-        
+        return standardize_response("ok", 
+                                  summary=f"Spawn request for '{purpose}' submitted to system kernel.",
+                                  data={"status": "queued", "purpose": purpose})
+                                  
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        _usage_tracker.track_usage("spawn_agent", success=False)
+        return standardize_response("error", error=str(e))

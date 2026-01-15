@@ -168,6 +168,31 @@ else
   say "CVA sandbox container is running."
 fi
 
+# --- 6.5) Start PostgreSQL Database -------------------------------------------
+warn "\n[5.7/6] Checking PostgreSQL database..."
+if ! docker ps | grep -q cva_db_container; then
+  if docker ps -a | grep -q cva_db_container; then
+    warn "Database container exists but is stopped. Starting..."
+    docker start cva_db_container
+  else
+    warn "Database container doesn't exist. Starting new postgres:15-alpine..."
+    docker run -d \
+      --name cva_db_container \
+      -p 5433:5432 \
+      -e POSTGRES_DB=cva_db \
+      -e POSTGRES_USER=cva_user \
+      -e POSTGRES_PASSWORD=your_secure_password_here \
+      -v "$PROJECT_DIR/persistence_data/postgres:/var/lib/postgresql/data" \
+      pgvector/pgvector:pg15
+  fi
+  
+  # Wait for DB to be ready
+  warn "Waiting for database to initialize (approx 10s)..."
+  sleep 10
+else
+  say "PostgreSQL database is running."
+fi
+
 # --- 7) Launch the application (single entrypoint) ----------------------------
 warn "\n[6/6] Launching Catalyst Vector Alpha (app.py)..."
 echo ""

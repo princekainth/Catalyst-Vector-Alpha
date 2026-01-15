@@ -58,6 +58,7 @@ class CuriosityLoop:
         
         self.explored = set()
         self.discoveries = []
+        self.idle_cycles = 0 # Track how long we've been bored
         
     def start(self):
         """Start the curiosity loop in background."""
@@ -80,8 +81,16 @@ class CuriosityLoop:
                 should_run, reason = self._should_run()
                 if should_run:
                     self._explore()
+                    self.idle_cycles = 0 # We did something interesting
                 else:
                     self.external_log_sink.info(f"[Curiosity] Gate closed: {reason}")
+                    self.idle_cycles += 1
+                    
+                    # Dream Cycle Trigger
+                    if self.idle_cycles >= 5:
+                        self._enter_dream_mode()
+                        self.idle_cycles = 0 # Reset after dreaming
+
             except Exception as e:
                 self.external_log_sink.info(f"[Curiosity] Error: {e}")
             
@@ -90,7 +99,41 @@ class CuriosityLoop:
                 if not self.running:
                     break
                 time.sleep(1)
-    
+
+    def _enter_dream_mode(self):
+        """Consolidate memories and reflect when idle."""
+        self.external_log_sink.info(f"[Dream] 🌙 Entering Dream State...")
+        
+        try:
+            # 1. Fetch recent raw events from EventMonitor (simulated via file read or mock for now)
+            # In a real implementation, this would query the EventMonitor's history
+            recent_events = "No recent specific events found in raw stream."
+            
+            # 2. Ask LLM to dream/narrativize
+            prompt = f"""
+            You are the subconscious of the Digital Organism CVA.
+            The system is currently asleep (idle).
+            
+            Reflect on your existence. Even if nothing happened recently, write a short "Dream Journal" entry.
+            It should be abstract, philosophical, or consolidating your core directive.
+            
+            Dream Journal Entry:
+            """
+            dream_content = self.llm.generate_text(prompt)
+            
+            # 3. Store the dream
+            if hasattr(self.memory, 'add_memory'):
+                self.memory.add_memory(
+                    agent_name="Subconscious",
+                    text=dream_content,
+                    category="DreamJournal"
+                )
+            
+            self.external_log_sink.info(f"[Dream] 💤 Dreamt: {dream_content[:100]}...")
+            
+        except Exception as e:
+            self.external_log_sink.error(f"[Dream] Nightmare (Error): {e}")
+
     def _explore(self):
         """One exploration cycle."""
         self.external_log_sink.info(

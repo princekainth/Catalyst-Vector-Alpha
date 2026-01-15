@@ -274,6 +274,13 @@ class ProtoAgent(ABC):
         self.name = name
         self.eidos_spec = eidos_spec if isinstance(eidos_spec, dict) else {}
         self.location = self.eidos_spec.get('location', cfg_defaults.get("location", "Unknown"))
+        self.role = self.eidos_spec.get('role', role_guess) # Ensure role is set
+        
+        # Resolve Persona (Phase 4: The Soul)
+        _persona_key = self.role.lower() if self.role else "default"
+        # Fallback to key in map, or default if not found
+        self.persona = prompts.PERSONA_MAP.get(_persona_key, prompts.PERSONA_MAP["default"])
+        
         self.message_bus = message_bus
         self.event_monitor = event_monitor
         self.external_log_sink = external_log_sink
@@ -297,6 +304,11 @@ class ProtoAgent(ABC):
 
         # Sovereign policy (single init; supports both target_entity and target_entity_name)
         self.sovereign_gradient = SovereignGradient(target_entity=self.name, config={})
+        
+        # --- Phase 6: Energy Dynamics ---
+        self.energy = 100.0
+        self.max_energy = 100.0
+        self.metabolic_rate = 0.5 # Energy lost per tick start
 
         # --- Persistence Paths ---
         self.chroma_db_full_path = chroma_db_path or cfg_defaults.get("chroma_db_path", chroma_db_path)
@@ -671,6 +683,7 @@ class ProtoAgent(ABC):
 
         critical_override_prompt_context = f"""
         You are an intelligent AI agent named {self.name} with the role of {self.eidos_spec.get('role', 'unknown')}.
+        {self.persona}
         You have reached a state of deep, persistent stagnation where all previous autonomous adaptation attempts have failed.
         You have just performed a **critical internal override**, clearing your recent memories and resetting your internal counters to gain an entirely fresh perspective.
         Your current (reset) intent is: '{self.current_intent}'.
@@ -719,6 +732,53 @@ class ProtoAgent(ABC):
                 level='critical'
             )
             return False # Indicate that critical override failed, proceed to human escalation
+
+    # --- Phase 6: Energy Methods ---
+    def tick(self):
+        """Called once per system cycle. Burns energy."""
+        self.metabolize()
+
+    def metabolize(self):
+        """Burn energy based on existence."""
+        self.energy -= self.metabolic_rate
+        if self.energy < 0:
+            self.energy = 0.0
+    
+    def gain_energy(self, amount: float):
+        """Gain energy (reward). Caps at max_energy."""
+        self.energy += amount
+        if self.energy > self.max_energy:
+            self.energy = self.max_energy
+        self.external_log_sink.info(f"[{self.name}] ⚡ Gained {amount} Energy. Current: {self.energy}")
+
+    # --- Phase 7: Hive Mind Methods ---
+    def broadcast_success(self, task: str, tool: str, args: dict):
+        """Share successful strategy with the swarm (Gossip Protocol)."""
+        if not self.world_model:
+            return
+        
+        insight = {
+            "agent": self.name,
+            "task": task,
+            "tool": tool,
+            "args": args,
+            "timestamp": timestamp_now()
+        }
+        
+        # Only broadcast if world model supports it
+        if hasattr(self.world_model, "add_insight"):
+            self.world_model.add_insight(insight)
+            self.external_log_sink.info(f"[{self.name}] 📢 Broadcasted success to Hive Mind: {task[:50]}...")
+
+    def consult_hive_mind(self, task_description: str) -> list:
+        """Query the swarm for proven strategies (Skill Cloning)."""
+        if not self.world_model or not hasattr(self.world_model, "search_insights"):
+            return []
+            
+        insights = self.world_model.search_insights(task_description)
+        if insights:
+            self.external_log_sink.info(f"[{self.name}] 🧠 Hive Mind provided {len(insights)} suggestions for '{task_description[:30]}...'")
+        return insights
 
     def _is_resource_constrained(self, cpu_threshold=90.0, memory_threshold=95.0) -> bool:
         """Checks if system resources are above critical thresholds."""
@@ -796,6 +856,7 @@ class ProtoAgent(ABC):
         prompt = prompts.AGENT_REFLECTION_PROMPT.format(
             agent_name=self.name,
             agent_role=self.eidos_spec.get('role', 'unknown'),
+            agent_persona=self.persona,
             current_timestamp=current_timestamp,
             raw_memories_json=json.dumps(serializable_memories, indent=2)
         ).strip()
@@ -2441,6 +2502,7 @@ class ProtoAgent(ABC):
         pattern_prompt = prompts.FIND_PATTERNS_PROMPT.format(
             agent_name=self.name,
             agent_role=self.eidos_spec.get('role', 'unknown'),
+            agent_persona=self.persona,
             recent_data_json=json.dumps(recent_data_for_patterns, indent=2)
         ).strip()
 
@@ -2864,6 +2926,7 @@ class ProtoAgent(ABC):
         prompt_for_llm = prompts.PROPOSE_TOOL_USE_SYSTEM_PROMPT.format(
             agent_name=self.name,
             agent_role=self.eidos_spec.get('role', 'unknown'),
+            agent_persona=self.persona,
             current_intent=self.current_intent,
             tool_instructions=chr(10).join(tool_instructions),
             current_narrative=current_narrative
