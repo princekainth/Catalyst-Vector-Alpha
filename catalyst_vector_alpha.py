@@ -456,8 +456,8 @@ class CatalystVectorAlpha:
                 tool_registry=self.tool_registry,
                 log_sink=self.external_log_sink,
                 approval_mode="autonomous",  # Changed to autonomous by user request
-                gap_threshold=3,  # Trigger evolution after 3 capability gaps
-                cycle_interval=300,  # Check every 5 minutes
+                gap_threshold=1,  # Trigger immediately on first gap (Demo mode)
+                cycle_interval=10,  # Check every 10 seconds (Accelerated for demo)
             )
             self.evolution_agent.start()
             self.external_log_sink.info("[EvolutionAgent] 🧬 Started self-evolution monitoring")

@@ -12,8 +12,31 @@
   <style>
     body {
       font-family: 'Inter', sans-serif;
-      background: #0a0e1a;
+      background: #020617;
+      /* Deeper dark */
       color: #e2e8f0;
+      background-image:
+        radial-gradient(at 0% 0%, hsla(253, 16%, 7%, 1) 0, transparent 50%),
+        radial-gradient(at 50% 0%, hsla(225, 39%, 30%, 0.15) 0, transparent 50%),
+        radial-gradient(at 100% 0%, hsla(339, 49%, 30%, 0.1) 0, transparent 50%);
+      background-attachment: fixed;
+    }
+
+    .glass {
+      background: rgba(15, 23, 42, 0.6);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+    }
+
+    .glow-blue {
+      border-color: rgba(59, 130, 246, 0.3);
+      box-shadow: 0 0 20px rgba(59, 130, 246, 0.1);
+    }
+
+    .glow-purple {
+      border-color: rgba(168, 85, 247, 0.3);
+      box-shadow: 0 0 20px rgba(168, 85, 247, 0.1);
     }
 
     .font-mono {
@@ -21,9 +44,19 @@
     }
 
     .agent-card {
-      background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
-      border: 1px solid #334155;
-      transition: all 0.3s;
+      background: rgba(30, 41, 59, 0.4);
+      backdrop-filter: blur(8px);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .metric-card {
+      background: rgba(15, 23, 42, 0.6);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      border-radius: 0.75rem;
+      padding: 1.5rem;
     }
 
     .agent-card:hover {
@@ -197,17 +230,64 @@
       0%,
       100% {
         opacity: 1;
+        transform: scale(1);
       }
 
       50% {
-        opacity: 0.5;
+        opacity: 0.6;
+        transform: scale(0.9);
       }
     }
 
+    .heartbeat {
+      animation: heartbeat 1.5s ease-in-out infinite;
+    }
+
+    @keyframes heartbeat {
+      0% {
+        transform: scale(1);
+      }
+
+      14% {
+        transform: scale(1.1);
+      }
+
+      28% {
+        transform: scale(1);
+      }
+
+      42% {
+        transform: scale(1.1);
+      }
+
+      70% {
+        transform: scale(1);
+      }
+    }
+
+    .custom-scrollbar::-webkit-scrollbar {
+      width: 5px;
+    }
+
+    .custom-scrollbar::-webkit-scrollbar-track {
+      background: rgba(0, 0, 0, 0.1);
+    }
+
+    .custom-scrollbar::-webkit-scrollbar-thumb {
+      background: rgba(59, 130, 246, 0.4);
+      border-radius: 10px;
+    }
+
+    .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+      background: rgba(59, 130, 246, 0.6);
+    }
+
     .metric-card {
-      background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
-      border: 1px solid #334155;
-      border-radius: 1rem;
+      background: rgba(15, 23, 42, 0.6);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      border-radius: 0.75rem;
       padding: 1.5rem;
     }
 
@@ -235,8 +315,13 @@
           Dreaming...</span>
       </h1>
       <div class="flex items-center gap-4">
-        <p class="text-slate-400">Autonomous Agent Control Center</p>
-        <span id="system-mood" class="text-sm px-2 py-1 rounded bg-slate-800 text-slate-300">--</span>
+        <div class="flex items-center bg-slate-800/50 rounded-full px-3 py-1 border border-slate-700/50 shadow-inner">
+          <span class="status-dot status-active heartbeat mr-2"></span>
+          <span id="system-status-msg" class="text-[10px] font-bold text-emerald-400 uppercase tracking-widest">System
+            Vitality High</span>
+        </div>
+        <span id="system-mood"
+          class="text-xs px-2 py-1 rounded-lg bg-indigo-900/30 text-indigo-300 border border-indigo-500/20">--</span>
       </div>
     </div>
   </header>
@@ -349,6 +434,17 @@
           <p class="text-slate-500">Loading...</p>
         </div>
       </div>
+      <!-- System Pulse Feed -->
+      <div class="metric-card border-t-4 border-t-blue-500">
+        <h2 class="text-xl font-semibold text-blue-400 mb-4 flex items-center">
+          <span class="mr-2">⚡</span> System Pulse
+          <span
+            class="ml-auto text-[10px] bg-blue-900/30 text-blue-400 px-2 py-0.5 rounded font-mono uppercase">Milestones</span>
+        </h2>
+        <div id="pulse-feed" class="space-y-3 max-h-80 overflow-y-auto pr-2 custom-scrollbar">
+          <p class="text-slate-500 italic text-center py-4">Waiting for first pulse...</p>
+        </div>
+      </div>
 
       <!-- Hive Mind Feed -->
       <div class="metric-card">
@@ -382,7 +478,19 @@
     </div>
 
     <!-- Right Column: Active Agents -->
-    <div class="lg:col-span-2">
+    <div class="lg:col-span-2 space-y-4">
+
+      <!-- Tool Output Console -->
+      <div class="metric-card relative">
+        <h2 class="text-xl font-semibold text-emerald-400 mb-2">Tool Console</h2>
+        <div class="absolute top-4 right-4">
+          <button onclick="document.getElementById('tool-output-content').textContent='Ready...'"
+            class="text-xs text-slate-500 hover:text-slate-300">Clear</button>
+        </div>
+        <pre id="tool-output-content"
+          class="bg-black/50 p-4 rounded text-xs text-green-300 font-mono h-48 overflow-auto whitespace-pre-wrap border border-slate-700">Ready...</pre>
+      </div>
+
       <div class="metric-card">
         <div class="flex justify-between items-center mb-6">
           <h2 class="text-2xl font-semibold text-cyan-400">Active Agents</h2>
@@ -444,11 +552,13 @@
           this.fetchTrends();
           this.fetchOrganismStatus();
           this.fetchEvolutionStatus();
+          this.fetchPulse();
         }, 5000);
 
         // Initial organism status fetch
         this.fetchOrganismStatus();
         this.fetchEvolutionStatus();
+        this.fetchPulse();
       },
 
       async fetchEvolutionStatus() {
@@ -533,9 +643,14 @@
                `;
             } else {
               return `
-                 <div class="text-xs border-l-2 border-pink-500 pl-2 py-1 bg-pink-900/10">
-                   <div class="text-pink-400">✨ Evolved: ${item.data.tool_name}</div>
-                   <div class="text-slate-400">Now able to: ${item.data.description}</div>
+                 <div class="text-xs border-l-2 border-pink-500 pl-2 py-1 bg-pink-900/10 flex justify-between items-center">
+                   <div>
+                     <div class="text-pink-400">✨ Evolved: ${item.data.tool_name}</div>
+                     <div class="text-slate-400">Now able to: ${item.data.description}</div>
+                   </div>
+                   <button onclick="App.runTool('${item.data.tool_name}')" class="bg-indigo-600 hover:bg-indigo-500 text-white px-2 py-1 rounded ml-2 text-[10px] uppercase font-bold">
+                     Run ▷
+                   </button>
                  </div>
                `;
             }
@@ -564,6 +679,42 @@
         }
       },
 
+      formatLog(event) {
+        if (!event) return '';
+        let type = event.type || 'INFO';
+        let msg = event.message || event.description || '';
+
+        // Scrub JSON noise
+        if (msg.trim().startsWith('{')) {
+          try {
+            const parsed = JSON.parse(msg);
+            if (parsed.description) msg = parsed.description;
+            if (parsed.event_type) type = parsed.event_type;
+          } catch (e) { }
+        }
+
+        const colors = {
+          'AGENT_TASK_PERFORMED': 'text-green-400',
+          'TOOL_CALL': 'text-blue-400/80',
+          'TOOL_OK': 'text-emerald-400',
+          'ERROR': 'text-red-400 font-bold',
+          'WARNING': 'text-yellow-400',
+          'ANNOUNCEMENT': 'text-purple-400 font-bold'
+        };
+
+        const icon = type === 'ERROR' ? '❌' : (type === 'WARNING' ? '⚠️' : '▹');
+        const colorClass = colors[type] || 'text-slate-300';
+        const ts = event.timestamp ? (typeof event.timestamp === 'string' ? event.timestamp.substring(11, 19) : new Date(event.timestamp * 1000).toLocaleTimeString()) : '';
+
+        return `<div class="mb-1 py-1 px-2 rounded hover:bg-white/5 transition-all text-xs border-l-2 border-transparent hover:border-blue-500/50">
+                  <div class="flex justify-between items-center opacity-40 mb-0.5 font-mono text-[9px] uppercase tracking-tighter">
+                    <span>${type}</span>
+                    <span>${ts}</span>
+                  </div>
+                  <div class="${colorClass}">${icon} ${msg}</div>
+                </div>`;
+      },
+
       async approveTool(name) {
         try {
           const r = await fetch('/api/evolution/approve', {
@@ -579,6 +730,120 @@
           }
         } catch (e) {
           this.toast('Approval failed', true);
+        }
+      },
+
+      async fetchPulse() {
+        try {
+          const r = await fetch('/api/pulse');
+          if (!r.ok) return;
+          const data = await r.json();
+          if (data.status === 'ok') {
+            this.renderPulse(data.data);
+          }
+        } catch (e) {
+          console.error('Pulse fetch failed:', e);
+        }
+      },
+
+      renderPulse(events) {
+        const feed = document.getElementById('pulse-feed');
+        if (!feed) return;
+
+        if (!events || events.length === 0) {
+          feed.innerHTML = '<p class="text-slate-500 italic text-center py-4">No major milestones recorded yet.</p>';
+          return;
+        }
+
+        const icons = {
+          "ANNOUNCEMENT": "📢",
+          "SYSTEM_EVOLUTION": "🧬",
+          "CURIOSITY_DISCOVERY": "🔭",
+          "CURIOSITY_GAP": "⚠️",
+          "MEMORY_RECALL": "🧠",
+          "META_EVOLUTION": "⚙️",
+          "MISSION_SELECTED": "🎯",
+          "PLAN_READY_TO_DISPATCH": "📋",
+          "SYSTEM_SAVE_SUCCESS": "💾",
+          "CURIOSITY_START": "🔭",
+          "TASK_PERFORMED": "✅",
+          "AGENT_TASK_PERFORMED": "✅",
+          "PLAN_VALIDATION_OK": "🔍",
+          "PLAN_JSON_OK": "📄",
+          "PLAN_STEP_INJECT": "💉"
+        };
+
+        const colors = {
+          "ANNOUNCEMENT": "text-yellow-400 border-yellow-500/30 bg-yellow-400/5",
+          "SYSTEM_EVOLUTION": "text-purple-400 border-purple-500/30 bg-purple-400/5",
+          "CURIOSITY_DISCOVERY": "text-cyan-400 border-cyan-500/30 bg-cyan-400/5",
+          "CURIOSITY_GAP": "text-red-400 border-red-500/30 bg-red-400/5",
+          "MEMORY_RECALL": "text-blue-400 border-blue-500/30 bg-blue-400/5",
+          "META_EVOLUTION": "text-green-400 border-green-500/30 bg-green-400/5",
+          "MISSION_SELECTED": "text-indigo-400 border-indigo-500/30 bg-indigo-400/5",
+          "PLAN_READY_TO_DISPATCH": "text-emerald-400 border-emerald-500/30 bg-emerald-400/5",
+          "SYSTEM_SAVE_SUCCESS": "text-slate-400 border-slate-500/30 bg-slate-400/5",
+          "CURIOSITY_START": "text-cyan-400 border-cyan-500/30 bg-cyan-400/5",
+          "TASK_PERFORMED": "text-green-400 border-green-500/30 bg-green-400/5",
+          "AGENT_TASK_PERFORMED": "text-green-400 border-green-500/30 bg-green-400/5",
+          "PLAN_VALIDATION_OK": "text-emerald-400 border-emerald-500/30 bg-emerald-400/5",
+          "PLAN_JSON_OK": "text-emerald-400 border-emerald-500/30 bg-emerald-400/5",
+          "PLAN_STEP_INJECT": "text-blue-400 border-blue-500/30 bg-blue-400/5"
+        };
+
+        feed.innerHTML = events.slice().reverse().map(e => {
+          const icon = icons[e.event_type] || "🔹";
+          const colorClass = colors[e.event_type] || "text-slate-400 border-slate-700 bg-slate-800/20";
+          const desc = e.description || e.message || "";
+          const ts = e.timestamp ? (typeof e.timestamp === 'number' ? new Date(e.timestamp * 1000).toLocaleTimeString() : e.timestamp.substring(11, 19)) : "??:??";
+
+          return `
+            <div class="p-3 rounded-lg border ${colorClass} transition-all hover:bg-white/5">
+              <div class="flex justify-between items-start mb-1">
+                <span class="font-bold text-xs uppercase tracking-wider">${icon} ${e.event_type}</span>
+                <span class="text-[10px] opacity-50 font-mono">${ts}</span>
+              </div>
+              <div class="text-sm leading-relaxed">${desc}</div>
+              <div class="text-[10px] mt-1 opacity-60 italic">— ${e.source || 'System'}</div>
+            </div>
+          `;
+        }).join('');
+      },
+
+      async runTool(name) {
+        const consoleEl = document.getElementById('tool-output-content');
+
+        const argsStr = prompt(`Run tool '${name}'? Enter JSON args or leave empty for no args:`, "{}");
+        if (argsStr === null) return; // Cancelled
+
+        let args = {};
+        try {
+          args = JSON.parse(argsStr);
+        } catch (e) {
+          alert("Invalid JSON arguments!");
+          return;
+        }
+
+        consoleEl.textContent = `> Running tool: ${name}...\n> Args: ${JSON.stringify(args)}\n> Waiting for output...`;
+        this.toast(`Running ${name} (check console)...`);
+
+        try {
+          const r = await fetch('/api/tools/execute', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tool_name: name, args: args })
+          });
+          const result = await r.json();
+
+          if (result.status === 'ok') {
+            consoleEl.textContent = `> Tool: ${name}\n> Status: SUCCESS\n\n${JSON.stringify(result.result, null, 2)}`;
+          } else {
+            consoleEl.textContent = `> Tool: ${name}\n> Status: ERROR\n\n${JSON.stringify(result, null, 2)}`;
+          }
+
+        } catch (e) {
+          consoleEl.textContent = `> SYSTEM ERROR: ${e}`;
+          this.toast(`Execution failed`, true);
         }
       },
 
@@ -1260,14 +1525,11 @@
         const feedEl = document.getElementById("log-feed");
         if (feedEl) {
           if (!Array.isArray(feedData) || !feedData.length) {
-            feedEl.innerHTML = '<div class="text-slate-500">No recent logs</div>';
+            feedEl.innerHTML = '<div class="text-slate-500 text-center py-4 italic text-xs">No recent pulses detected</div>';
           } else {
-            feedEl.innerHTML = feedData.slice(-50).reverse().map((entry) => (
-              `<div class="border border-slate-800 rounded-lg px-3 py-2">
-                <div class="text-xs ${statusColor(entry.type)}">${entry.timestamp || ""} ${entry.type || ""}</div>
-                <div class="text-sm text-slate-300">${entry.message || ""}</div>
-              </div>`
-            )).join("");
+            feedEl.innerHTML = feedData.slice(-50).map((entry) => App.formatLog(entry)).join("");
+            // Auto scroll to bottom
+            feedEl.scrollTop = feedEl.scrollHeight;
           }
         }
       } catch (err) {

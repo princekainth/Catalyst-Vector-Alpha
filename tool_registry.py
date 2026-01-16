@@ -757,7 +757,24 @@ Do NOT include keys that are not in MissingKeys. Do NOT repeat provided args."""
                 },
                 _tf("search_memory"),
                 task_type="GenericTask",
-                roles_allowed={"Planner", "Observer", "Worker"}
+                roles_allowed={"Planner", "Observer", "Worker", "Security", "Influencer"}
+            ),
+
+            Tool(
+                "broadcast_announcement",
+                "Broadcast a high-level summary of swarm activity or insights to the dashboard feed and external world.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string", "description": "Compelling title for the announcement."},
+                        "content": {"type": "string", "description": "Detailed narrative of the insight or achievement."},
+                        "category": {"type": "string", "enum": ["evolution", "incident", "discovery", "creative"], "default": "discovery"}
+                    },
+                    "required": ["title", "content"]
+                },
+                _tf("broadcast_announcement_tool"),
+                task_type="Communication",
+                roles_allowed={"Influencer", "Planner"}
             ),
 
             # Responsiveness
@@ -793,9 +810,14 @@ Do NOT include keys that are not in MissingKeys. Do NOT repeat provided args."""
             Tool("web_search", "Performs a web search using SerpApi.", WEB_SEARCH_PARAMS, _tf("web_search_tool"),
                  task_type="InformationRetrieval", roles_allowed={"Planner", "Observer", "Security", "Worker", "Notifier"}, redact_fields={"api_key"},
                  validator=lambda a: not _is_placeholder(a.get("query"))),
-            Tool("read_webpage", "Reads the textual content of a webpage from a URL.", READ_WEBPAGE_PARAMS, _tf("read_webpage_tool"),
-                 task_type="InformationRetrieval", roles_allowed={"Planner", "Observer", "Worker", "Security", "Notifier"},
-                 validator=lambda a: isinstance(a.get("url"), str) and _looks_like_url(a.get("url"))),
+            Tool("capture_system_screenshot", "Captures a semantic visual snapshot of the system state.", {}, _tf("capture_system_screenshot"),
+                 task_type="Observation", roles_allowed={"Observer", "Influencer"}),
+            Tool("tune_hyperparameters", "Dynamically adjusts system parameters like Temperature or Exploration Rate.", 
+                 {"type": "object", "properties": {"param": {"type": "string"}, "value": {"type": "number"}}, "required": ["param", "value"]},
+                 _tf("tune_hyperparameters"), task_type="MetaEvolution", roles_allowed={"Planner"}),
+            Tool("export_system_state", "Exports the entire evolved state (tools, memory, and config) for Phase 20 persistence.", 
+                 {"type": "object", "properties": {"destination": {"type": "string", "default": "backups/"}}, "required": []},
+                 _tf("export_system_state_tool"), task_type="Persistence", roles_allowed={"Planner", "Worker"}),
 
             # Toolsmith (Auto-Coding) - Enabled via Config
             *(
@@ -979,6 +1001,9 @@ Do NOT include keys that are not in MissingKeys. Do NOT repeat provided args."""
 
         for tool in tools_to_register:
             self.register_tool(tool)
+        
+        # Load any self-evolved tools from the disk
+        self._load_evolved_tools()
 
     def register_tool(self, tool: Tool) -> None:
         self._tools[tool.name] = tool
@@ -987,6 +1012,60 @@ Do NOT include keys that are not in MissingKeys. Do NOT repeat provided args."""
         if canonical_name not in self._tools:
             raise KeyError(f"Cannot alias to unknown tool '{canonical_name}'.")
         self._aliases[alias] = canonical_name
+
+    def _load_evolved_tools(self) -> None:
+        """Scan evolved_tools directory and register any valid python tool modules."""
+        import importlib.util
+        import sys
+        
+        # Directory where EvolutionAgent saves new tools
+        evolved_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "evolved_tools")
+        if not os.path.exists(evolved_dir):
+            return
+
+        for filename in os.listdir(evolved_dir):
+            if filename.endswith(".py") and not filename.startswith("__"):
+                try:
+                    filepath = os.path.join(evolved_dir, filename)
+                    module_name = f"evolved_tools.{filename[:-3]}"
+                    
+                    # Load module dynamically
+                    spec = importlib.util.spec_from_file_location(module_name, filepath)
+                    if not spec or not spec.loader:
+                        continue
+                        
+                    module = importlib.util.module_from_spec(spec)
+                    sys.modules[module_name] = module
+                    spec.loader.exec_module(module)
+                    
+                    # Check for TOOL_METADATA and the function
+                    if hasattr(module, "TOOL_METADATA"):
+                        meta = getattr(module, "TOOL_METADATA")
+                        tool_name = meta.get("name")
+                        func = getattr(module, tool_name, None)
+                        
+                        if tool_name and func and callable(func):
+                            # Normalize roles
+                            task_type = meta.get("category", "evolved")
+                            # Evolved tools are usually generic, allow broad access
+                            roles = {"Worker", "Planner", "Observer", "Security"}
+                            
+                            # Create Tool object
+                            new_tool = Tool(
+                                name=tool_name,
+                                description=meta.get("description", "Auto-evolved tool"),
+                                parameters=meta.get("parameters", {}),
+                                func=func,
+                                task_type=task_type,
+                                roles_allowed=roles
+                            )
+                            
+                            # Register
+                            self.register_tool(new_tool)
+                            log.info(f"[ToolRegistry] 🧬 Loaded evolved tool: {tool_name}")
+                            
+                except Exception as e:
+                    log.warning(f"[ToolRegistry] Failed to load evolved tool {filename}: {e}")
 
     # --- Lookup ---
     def _resolve_name(self, name: str) -> str:

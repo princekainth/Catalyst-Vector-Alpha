@@ -38,3 +38,5 @@ credentials.json
 token.json
 
 minikube-linux-amd64
+backups_test/
+backups_test/

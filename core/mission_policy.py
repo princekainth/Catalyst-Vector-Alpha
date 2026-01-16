@@ -160,6 +160,82 @@ MISSION_TOOL_POLICY = {
         "fallback": "kubernetes_pod_metrics_tool",
     },
 
+    "influencer": {
+        "allow": {
+            "broadcast_announcement",
+            "search_memory",
+            "capture_system_screenshot",
+            "web_search",
+            "read_webpage",
+            "create_pdf",
+        },
+        "deny": set(),
+        "fallback": "broadcast_announcement",
+    },
+
+    "meta_evolution": {
+        "allow": {
+            "tune_hyperparameters",
+            "search_memory",
+            "measure_responsiveness",
+            "get_system_resource_usage",
+        },
+        "deny": set(),
+        "fallback": "tune_hyperparameters",
+    },
+
+    "persistence": {
+        "allow": {
+            "export_system_state",
+            "execute_terminal_command",
+            "send_desktop_notification",
+        },
+        "deny": set(),
+        "fallback": "export_system_state",
+    },
+
+    "cybersecurity": {
+        "allow": {
+            "execute_terminal_command",
+            "web_search",
+            "read_webpage",
+            "check_network_connectivity",
+            "watch_k8s_audit_events",
+            "analyze_threat_signature",
+            "send_desktop_notification",
+        },
+        "deny": set(),
+        "fallback": "web_search",
+    },
+
+    "system_architect": {
+        "allow": {
+            "execute_terminal_command",
+            "get_system_resource_usage",
+            "top_processes",
+            "kubernetes_pod_metrics_tool",
+            "get_pod_status",
+            "watch_k8s_events",
+            "measure_responsiveness",
+            "send_desktop_notification",
+        },
+        "deny": set(),
+        "fallback": "get_pod_status",
+    },
+
+    "proactive_dev": {
+        "allow": {
+            "execute_terminal_command",
+            "web_search",
+            "read_webpage",
+            "create_pdf",
+            "generate_report_pdf",
+            "send_desktop_notification",
+        },
+        "deny": set(),
+        "fallback": "execute_terminal_command",
+    },
+
 }
 
 # ==============================================================================
@@ -232,6 +308,12 @@ def candidate_missions() -> List[str]:
         "k8s_monitoring",
         "sandbox_inspection",  # NEW: Terminal inspection mission
         "resource_optimization",
+        "cybersecurity",
+        "system_architect",
+        "proactive_dev",
+        "influencer",
+        "meta_evolution",
+        "persistence",
     ]
 
 def _fetch_recent_outcomes(mem) -> List[Dict[str, Any]]:

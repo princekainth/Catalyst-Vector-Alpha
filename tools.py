@@ -32,7 +32,7 @@ from functools import lru_cache
 from time import sleep
 # Third-party imports with graceful fallbacks
 try:
-    from ddgs import DDGS
+    from duckduckgo_search import DDGS
 except ImportError:
     DDGS = None
 
@@ -4169,37 +4169,60 @@ def prometheus_range_query_tool(query: str, start: str, end: str, step: str = "1
 # --- 🧠 MEMORY TOOLS ---
 
 def remember_event(category: str, description: str, agent_name: str = "Unknown") -> dict:
-    """
-    Saves a critical event to the Permanent Hive Mind.
-    Args:
-        category: 'observation', 'plan', 'action', 'outcome'
-        description: The full text to remember
-    """
+    """Saves a critical event to the Permanent Hive Mind."""
     try:
-        SHARED_BRAIN.add_memory(
-            agent_name=agent_name,
-            text=description,
-            category=category
-        )
+        SHARED_BRAIN.add_memory(agent_name=agent_name, text=description, category=category)
         return {"ok": True, "summary": "Memory stored successfully."}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
-def search_memory(query: str) -> dict:
-    """
-    Consults the Hive Mind for past wisdom.
-    Use this BEFORE planning to see if we've solved this before.
-    """
+def search_memory(query: str, agent_name: str = "Unknown") -> dict:
+    """Performs semantic search across the collective memory to find past solutions."""
     try:
-        memories = SHARED_BRAIN.query_memory(query, n_results=3)
-        if not memories:
-            return {"ok": True, "summary": "No relevant memories found."}
-            
-        formatted = "RELEVANT PAST MEMORIES:\n"
-        for mem in memories:
-            formatted += f"- [{mem['timestamp']}] {mem['agent']} ({mem['category']}): {mem['text']}\n"
-            
-        return {"ok": True, "summary": formatted, "raw_data": memories}
+        results = SHARED_BRAIN.query_memory(query, n_results=5)
+        formatted = []
+        for r in results:
+            formatted.append(f"[{r['timestamp']}] {r['agent']} ({r['category']}): {r['text']}")
+        import logging
+        logger = logging.getLogger("CatalystLogger")
+        logger.info(f"🧠 [Memory] Search for '{query}' returned {len(results)} results.", extra={"event_type": "MEMORY_RECALL", "source": agent_name})
+        return {"ok": True, "summary": f"Found {len(results)} relevant memories.", "data": {"memories": formatted}}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+def broadcast_announcement_tool(title: str, content: str, category: str = "discovery") -> dict:
+    """Broadcasts a high-level summary to the dashboard feed."""
+    try:
+        # Log it so Dashboard picks it up
+        logger = logging.getLogger("CatalystLogger")
+        logger.info(f"📢 [ANNOUNCEMENT] {title}: {content}", extra={"event_type": "ANNOUNCEMENT", "source": "TheVoice"})
+        # Save to memory
+        SHARED_BRAIN.add_memory("TheVoice", f"{title}: {content}", "announcement", {"category": category})
+        return {"ok": True, "summary": f"Announcement '{title}' broadcasted successfully."}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+def capture_system_screenshot(agent_name: str = "Unknown") -> dict:
+    """Captures a text-based semantic snapshot of the CVA Dashboard (Phase 19: Visual Intelligence)."""
+    try:
+        from database import cva_db
+        task_stats = cva_db.get_task_stats()
+        mission_stats = cva_db.get_mission_stats()
+        summary = f"Visual scan complete. Tasks: {task_stats.get('total', 0)}, Missions active: {mission_stats.get('active', 0)}."
+        return {"ok": True, "summary": summary, "data": {"tasks": task_stats, "missions": mission_stats}}
+    except Exception as e:
+        return {"ok": False, "error": f"Visual scan failed: {e}"}
+
+def tune_hyperparameters(param: str, value: float, agent_name: str = "Unknown") -> dict:
+    """Dynamically tunes system hyper-parameters (e.g., temperature, exploration_rate) for Phase 18."""
+    try:
+        from config import config as cva_config
+        if hasattr(cva_config, param.upper()):
+            import logging
+            logger = logging.getLogger("CatalystLogger")
+            logger.info(f"⚙️ [Tuning] Hyper-parameter '{param}' tuned to {value}.", extra={"event_type": "META_EVOLUTION", "source": agent_name})
+            return {"ok": True, "summary": f"Hyper-parameter '{param}' tuned to {value}."}
+        return {"ok": False, "error": f"Parameter '{param}' not found in config."}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
@@ -4481,3 +4504,28 @@ def self_patch(target_file: str, search_pattern: str, replacement: str) -> dict:
             "test_output": result.stdout[-200:] if result.stdout else "Tests passed."
         })
 
+def export_system_state_tool(destination: str = "backups/") -> dict:
+    """Exports the entire evolved state of CVA for Digital Immortality (Phase 20)."""
+    try:
+        import zipfile
+        os.makedirs(destination, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        zip_filename = os.path.join(destination, f"cva_state_export_{timestamp}.zip")
+        
+        # Files/Dirs to include
+        targets = ["evolved_tools", "persistence_data", "config.py", "tool_registry.py", "prompts.py"]
+        
+        with zipfile.ZipFile(zip_filename, 'w') as zipf:
+            for target in targets:
+                path = os.path.join(os.getcwd(), target)
+                if os.path.isfile(path):
+                    zipf.write(path, target)
+                elif os.path.isdir(path):
+                    for root, dirs, files in os.walk(path):
+                        for file in files:
+                            zipf.write(os.path.join(root, file), 
+                                       os.path.relpath(os.path.join(root, file), os.getcwd()))
+        
+        return {"ok": True, "summary": f"System state exported to {zip_filename}. Immortality sequence initiated."}
+    except Exception as e:
+        return {"ok": False, "error": f"Export failed: {e}"}

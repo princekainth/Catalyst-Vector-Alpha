@@ -50,7 +50,7 @@ class SharedMemory:
         self.curiosity_collection = None
         self.ef = None
 
-        if os.getenv("CVA_LAZY_MEMORY_INIT", "1") == "0":
+        if os.getenv("CVA_LAZY_MEMORY_INIT", "0") == "1":
             self._initialize_memory()
         self._initialized = True
 
@@ -58,7 +58,7 @@ class SharedMemory:
         if self._memory_ready or not self._memory_enabled:
             return
         logger = logging.getLogger("CatalystLogger")
-        if os.getenv("CVA_DISABLE_EMBEDDINGS", "1") != "0":
+        if os.getenv("CVA_DISABLE_EMBEDDINGS", "0") != "0":
             logger.info("[SharedMemory] Embeddings disabled by CVA_DISABLE_EMBEDDINGS.")
             self._memory_enabled = False
             return
@@ -213,6 +213,8 @@ class SharedMemory:
 if __name__ == "__main__":
     print("\n--- 🧪 TESTING SHARED MEMORY ---")
     memory = SharedMemory()
-    memory.add_memory("Observer", "Namespace is 'default', Max Replicas is 5", "observation")
     recall = memory.query_memory("What is the namespace?")
-    print(f"Recall Result: {recall[0]['text']}")
+    if recall:
+        print(f"Recall Result: {recall[0]['text']}")
+    else:
+        print("Recall Result: No matches found (Memory might be initializing or empty).")

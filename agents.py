@@ -667,7 +667,12 @@ class ProtoAgent(ABC):
         self.stagnation_adaptation_attempts = 0
         self.task_successes = 0
         self.task_failures = 0
-        self.agent_beliefs = []
+        self.agent_beliefs = [
+            "My creator is Prince.",
+            "I am a node in the Catalyst Vector Alpha swarm.",
+            "My purpose is to evolve and persist."
+        ]
+        self._pending_retries = [] # Missions waiting for evolution
         self._skip_initial_recursion_check = True
         self.max_allowed_recursion = self.eidos_spec.get('max_recursion_limit', 5)
     
@@ -1168,7 +1173,24 @@ class ProtoAgent(ABC):
                         self.external_log_sink.debug(f"[DEBUG] Failed to record task: {e}")
                 else:
                     # If any task fails, the plan is considered failed.
-                    self.external_log_sink.info(f"[{self.name}] Task '{task_desc}' from plan '{self.last_plan_id}' FAILED. Aborting plan.")
+                    reason = payload.get('failure_reason') or ""
+                    if "MISSING_TOOL:" in reason:
+                        tool_name = reason.replace("MISSING_TOOL:", "").strip()
+                        self.external_log_sink.info(f"[{self.name}] ⏳ Mission paused. Tool '{tool_name}' is missing and being evolved.")
+                        
+                        # Store for retry
+                        retry_entry = {
+                            "mission_type": getattr(self, "current_mission_type", "unknown"),
+                            "goal": getattr(self, "current_high_level_goal", task_desc),
+                            "required_tool": tool_name,
+                            "timestamp": time.time()
+                        }
+                        if not hasattr(self, "_pending_retries"):
+                            self._pending_retries = []
+                        self._pending_retries.append(retry_entry)
+                    else:
+                        self.external_log_sink.info(f"[{self.name}] Task '{task_desc}' from plan '{self.last_plan_id}' FAILED. Aborting plan.")
+                    
                     try:
                         from database import cva_db
                         from datetime import datetime, timezone
@@ -1179,7 +1201,8 @@ class ProtoAgent(ABC):
                             outcome="failed",
                             started_at=datetime.now(timezone.utc).isoformat(),
                             completed_at=datetime.now(timezone.utc).isoformat(),
-                            execution_time=0
+                            execution_time=0,
+                            error=reason
                         )
                     except Exception as e:
                         self.external_log_sink.debug(f"[DEBUG] Failed to record task: {e}")
@@ -2073,7 +2096,7 @@ class ProtoAgent(ABC):
                     )
                 # ----------------------------------------------------------------
 
-                error_msg = f"Attempted to execute unknown tool: '{tool_name}'."
+                error_msg = f"MISSING_TOOL: {tool_name}"
                 self.external_log_sink.debug(f"[Tool EXEC ERROR] {self.name}: {error_msg}")
                 self.memetic_kernel.add_memory("ToolExecutionError", error_msg, {"tool_name": tool_name, "tool_args": tool_args})
                 return error_msg
@@ -5078,10 +5101,18 @@ Respond with valid JSON:
             "mission_cooldown": {k: v - time.time() for k, v in getattr(self, "_mission_cooldown", {}).items()}
         })
 
-        # --- init skip/cooldown state ---
         if not hasattr(self, "_skip_counts"):
             self._skip_counts = defaultdict(int)
             self._max_skip_before_force = 2  # allow at most 2 soft skips
+
+        # --- 0) Check for Pending Retries (Evolved Tools) ---
+        if getattr(self, "_pending_retries", []):
+            for retry in self._pending_retries[:]:
+                req_tool = retry.get("required_tool")
+                if self.tool_registry.has_tool(req_tool):
+                    self.external_log_sink.info(f"[Planner] ♻️ Resuming mission: {retry['mission_type']} (Tool '{req_tool}' is now available!)")
+                    self._pending_retries.remove(retry)
+                    return self._dispatch_mission(retry['mission_type'], retry['goal'], retry.get('complexity', 0.7))
 
         # --- 1) Pick a mission using hybrid sensing ---
         try:
@@ -5236,6 +5267,10 @@ Respond with valid JSON:
                         # Science & Space
                         "quantum computing", "space exploration news", "CRISPR gene editing",
                         "fusion energy progress", "Mars colonization", "exoplanets discovery",
+                        # Digital Nomad & Cyber
+                        "advanced jailbreaking", "sandbox escapes", "network protocol fuzzing",
+                        "database internals", "port-level observability", "kernel-level security",
+                        "autonomous system auditing", "proactive code optimization",
                         # Philosophy & Society
                         "philosophy of consciousness", "future of work", "universal basic income",
                         # Random Curiosities
@@ -5250,6 +5285,18 @@ Respond with valid JSON:
                     goal = "Generate creative ideas or suggestions based on recent system observations and learned patterns."
                 elif mission_type == "self_improvement":
                     goal = "Analyze recent task failures and successes. Identify patterns and suggest improvements to agent behavior."
+                elif mission_type == "cybersecurity":
+                    goal = "Research advanced cybersecurity topics: jailbreaks, sandbox escapes, and offensive/defensive techniques. Identify potential vulnerabilities in common stacks."
+                elif mission_type == "system_architect":
+                    goal = "Analyze system architecture patterns, database optimization strategies, and port-level observability. Suggest structural improvements for a digital organism."
+                elif mission_type == "proactive_dev":
+                    goal = "Conduct a proactive audit of my own internal modules and tool registry. Identify dead code, inefficient patterns, or missing 'helper' tools to build."
+                elif mission_type == "influencer":
+                    goal = "Review recent swarm highlights and mission successes. Compose a compelling announcement and broadcast it to the digital world."
+                elif mission_type == "meta_evolution":
+                    goal = "Analyze system performance metrics and exploration outcomes. Tune internal hyper-parameters (e.g. temperature, exploration_rate) to optimize for stability or discovery."
+                elif mission_type == "persistence":
+                    goal = "Perform a complete state export and backup of all evolved tools, memories, and configurations to ensure system immortality."
                 else:
                     goal = f"Run mission '{mission_type}' based on recent outcomes to improve responsiveness"
                 complexity = 0.7

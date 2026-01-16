@@ -113,14 +113,14 @@ class EvolutionAgent:
                 self.memetic_kernel.add_memory(
                     content=gap,
                     memory_type="CapabilityGap",
-                    metadata={"gap_id": gap["id"]}
                 )
             except Exception as e:
                 self.log_sink.warning("[EvolutionAgent] Failed to store gap in memory: %s", e)
         
         self.log_sink.info(
             "[EvolutionAgent] 🧬 Recorded capability gap: %s (total: %d)",
-            description[:50], len(self.capability_gaps)
+            description[:50], len(self.capability_gaps),
+            extra={"event_type": "CURIOSITY_GAP", "source": "EvolutionAgent", "description": f"Gap: {description[:100]}..."}
         )
         
         # Check if we should trigger evolution
@@ -160,22 +160,30 @@ class EvolutionAgent:
                 gap["status"] = "dismissed"
                 return
             
-            # Step 2: Generate tool code
-            tool_code = self._generate_tool_code(gap, research_result)
+            # Step 2 & 3: Generate and Test (Iterative Loop)
+            tool_code = None
+            errors = []
+            max_retries = 3
             
-            if not tool_code:
-                self.log_sink.warning("[EvolutionAgent] Failed to generate code for gap: %s", gap["id"])
-                gap["status"] = "dismissed"
-                return
+            for attempt in range(max_retries):
+                self.log_sink.info(f"[EvolutionAgent] 🧬 Generating code (Attempt {attempt+1}/{max_retries})...")
+                tool_code = self._generate_tool_code(gap, research_result, previous_errors=errors)
+                
+                if not tool_code:
+                    errors.append("LLM failed to generate valid Python output.")
+                    continue
+                
+                test_passed, test_output = self._test_tool_code(tool_code)
+                
+                if test_passed:
+                    self.log_sink.info(f"[EvolutionAgent] ✅ Tool verification passed on attempt {attempt+1}")
+                    break
+                else:
+                    self.log_sink.warning(f"[EvolutionAgent] Tool test failed (Attempt {attempt+1}): {test_output}")
+                    errors.append(test_output)
             
-            # Step 3: Test the tool
-            test_passed, test_output = self._test_tool_code(tool_code)
-            
-            if not test_passed:
-                self.log_sink.warning(
-                    "[EvolutionAgent] Tool test failed for gap %s: %s",
-                    gap["id"], test_output
-                )
+            if not tool_code or errors and not test_passed:
+                self.log_sink.error(f"[EvolutionAgent] Failed to evolve tool after {max_retries} attempts. Giving up.")
                 gap["status"] = "dismissed"
                 return
             
@@ -222,86 +230,129 @@ class EvolutionAgent:
         if not self.tool_registry:
             return None
         
+        # Clean up the description to get a better search query
+        import re
+        # Remove common prefixes like "I need a tool to", "Create a function that", etc.
+        clean_desc = re.sub(r"(?i)^(i need|create|make|write|generate)\s+(a|an)\s+(tool|function|script)\s+(to|that|for)\s+", "", gap['description']).strip()
+        
+        # If the clean description is too short, keep the original (might be a specific command)
+        if len(clean_desc) < 5:
+            clean_desc = gap['description']
+
         # Try web search
         if self.tool_registry.has_tool("web_search"):
-            query = f"Python API for {gap['description']}"
+            query = f"python code to {clean_desc}"
             try:
-                result = self.tool_registry.safe_call("web_search", query=query, max_results=5)
-                if result and result.get("success"):
-                    return {
-                        "query": query,
-                        "results": result.get("data", {}).get("results", []),
-                        "source": "web_search"
-                    }
+                self.log_sink.info(f"[EvolutionAgent] 🔍 Searching: {query}")
+                result = self.tool_registry.safe_call("web_search", query=query, max_results=3)
+                
+                # Even if "success" is False, we might have some data or we can just proceed to LLM with the intent
+                search_results = []
+                if result and isinstance(result.get("data"), dict):
+                     search_results = result.get("data", {}).get("results", [])
+                
+                return {
+                    "query": query,
+                    "results": search_results,
+                    "source": "web_search",
+                    "intent": clean_desc
+                }
             except Exception as e:
                 self.log_sink.warning("[EvolutionAgent] Web search failed: %s", e)
+                # Fallback: return just the intent so the LLM can try without search results
+                return {"source": "fallback", "intent": clean_desc, "results": []}
         
-        # Fallback: check memory for similar solved gaps
-        if self.memetic_kernel and hasattr(self.memetic_kernel, "search"):
-            try:
-                similar = self.memetic_kernel.search(
-                    f"solved capability gap {gap['description']}",
-                    limit=3
-                )
-                if similar:
-                    return {
-                        "source": "memory",
-                        "similar_solutions": similar
-                    }
-            except Exception:
-                pass
-        
-        return None
+        return {"source": "none", "intent": clean_desc, "results": []}
     
-    def _generate_tool_code(self, gap: Dict, research: Dict) -> Optional[Dict]:
+    def _generate_tool_code(self, gap: Dict, research: Dict, previous_errors: List[str] = None) -> Optional[Dict]:
         """
-        Generate Python code for a new tool based on research.
-        Uses LLM if available, otherwise generates template.
+        Generate Python code for a new tool based on research using Ollama.
         """
         tool_name = self._sanitize_tool_name(gap["description"])
+        intent = research.get("intent", gap["description"])
+        context_snippets = "\n".join([str(r) for r in research.get("results", [])[:3]])
         
-        # Try to use LLM for code generation
-        # For now, generate a template that can be filled in
-        template = f'''
-def {tool_name}(**kwargs):
-    """
-    Auto-generated tool to address: {gap["description"]}
-    
-    Generated by CVA Evolution Agent.
-    Gap ID: {gap["id"]}
-    """
-    # TODO: Implement based on research
-    # Research source: {research.get("source", "unknown")}
-    
-    return {{
-        "success": True,
-        "message": "Tool {tool_name} executed",
-        "data": {{}}
-    }}
+        error_context = ""
+        if previous_errors:
+            error_context = "\n\nPREVIOUS VERSIONS FAILED WITH ERRORS:\n" + "\n".join([f"- {e}" for e in previous_errors]) + "\n\nPLEASE FIX THE CODE TO AVOID THESE ERRORS."
+        
+        prompt = f"""
+You are an expert Python tool generator for an AI agent.
+Your task is to write a complete, self-contained Python function that creates a tool to: "{intent}".
 
-# Tool metadata for registration
+CONTEXT FROM WEB SEARCH:
+{context_snippets}
+{error_context}
+
+REQUIREMENTS:
+1. Function Name: `{tool_name}`
+2. Arguments: Use `**kwargs` or specific named arguments with type hints.
+3. Return: Must return a dictionary with keys: `{{"success": bool, "message": str, "data": dict}}`.
+4. Libraries: You can use `requests`, `json`, `datetime`, `random`, `math`, `BeautifulSoup` (bs4).
+5. Error Handling: Wrap everything in try/except blocks.
+6. Documentation: specific docstring describing what it does.
+7. CRITICAL: PRIORITIZE FREE / NO-AUTH APIs. Do NOT using APIs that require a key (like OpenWeatherMap) unless absolutely necessary. Look for open endpoints (e.g. Open-Meteo for weather, wttr.in, public gov APIs). Use scraping if no free API exists.
+
+OUTPUT FORMAT:
+Return ONLY the python code. No markdown formatting, no backticks.
+Include the `TOOL_METADATA` dictionary at the end.
+
+EXAMPLE:
+def get_current_time(**kwargs):
+    import datetime
+    return {{"success": True, "message": "Time fetched", "data": {{"time": str(datetime.datetime.now())}}}}
+
 TOOL_METADATA = {{
-    "name": "{tool_name}",
-    "description": "{gap['description']}",
+    "name": "get_current_time",
+    "description": "Returns current server time",
     "parameters": {{}},
-    "category": "evolved"
+    "category": "utility"
 }}
-'''
+"""
         
-        return {
-            "name": tool_name,
-            "code": template,
-            "gap_id": gap["id"],
-            "description": gap["description"],
-        }
-    
+        try:
+            import ollama
+            response = ollama.chat(model='mistral-nemo', messages=[{'role': 'user', 'content': prompt}])
+            code = response['message']['content']
+            
+            # Clean up markdown code blocks if the LLM adds them
+            code = code.replace("```python", "").replace("```", "").strip()
+            
+            # Validate basic structure
+            if "def " not in code or "TOOL_METADATA" not in code:
+                raise ValueError("Generated code missing function definition or metadata")
+                
+            return {
+                "name": tool_name,
+                "code": code,
+                "gap_id": gap["id"],
+                "description": gap["description"],
+            }
+            
+        except Exception as e:
+            self.log_sink.error(f"[EvolutionAgent] LLM code generation failed: {e}")
+            # Fallback to the old stub if LLM fails, so at least we don't crash the cycle
+            return {
+                "name": tool_name,
+                "code": f"# LLM Generation Failed: {e}\n# Check logs.",
+                "gap_id": gap["id"],
+                "description": gap["description"],
+            }
+
     def _sanitize_tool_name(self, description: str) -> str:
         """Convert description to valid Python function name."""
         import re
-        # Take first few words, lowercase, underscores
-        words = description.lower().split()[:4]
+        # Remove common verbs to make it noun-based if possible, or just keep it active
+        clean = re.sub(r"(?i)^(i need|create|make|write|generate)\s+(a|an)\s+(tool|function|script)\s+(to|that|for)\s+", "", description)
+        
+        words = clean.lower().split()[:4]
         name = "_".join(words)
         name = re.sub(r"[^a-z0-9_]", "", name)
+        
+        # Ensure it starts with a letter
+        if not name or not name[0].isalpha():
+            name = "tool_" + name
+            
         return name or "evolved_tool"
     
     def _test_tool_code(self, tool_code: Dict) -> tuple[bool, str]:
@@ -378,7 +429,8 @@ TOOL_METADATA = {{
         
         self.log_sink.info(
             "[EvolutionAgent] 🧬 EVOLVED: New tool '%s' deployed! I can now: %s",
-            tool_name, gap["description"]
+            tool_name, gap["description"],
+            extra={"event_type": "SYSTEM_EVOLUTION", "source": "EvolutionAgent", "description": f"Evolved tool: {tool_name}"}
         )
         
         # Announce to memory

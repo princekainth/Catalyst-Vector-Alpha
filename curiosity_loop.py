@@ -54,6 +54,23 @@ class CuriosityLoop:
             "AI SRE automation",
             "cost optimization kubernetes",
             "predictive autoscaling",
+            "advanced jailbreaking techniques",
+            "sandbox escape payloads",
+            "database internal performance",
+            "network port exploitation",
+            "offensive AI security",
+            "neural network evolution",
+            "quantum computing breakthroughs",
+            "zero-day vulnerability research",
+            "autonomous code optimization",
+            "digital organism philosophy",
+            "multi-agent swarm coordination",
+            "algorithmic trading ethics",
+            "space exploration robotics",
+            "CRISPR gene editing ethics",
+            "fusion energy 2025 progress",
+            "meta-learning in LLMs",
+            "distributed vector databases",
         ]
         
         self.explored = set()
@@ -137,7 +154,8 @@ class CuriosityLoop:
     def _explore(self):
         """One exploration cycle."""
         self.external_log_sink.info(
-            f"[Curiosity] 🔭 Exploring... ({datetime.now().strftime('%H:%M:%S')})"
+            f"[Curiosity] 🔭 Exploring... ({datetime.now().strftime('%H:%M:%S')})",
+            extra={"event_type": "CURIOSITY_START", "source": "CuriosityLoop"}
         )
         
         # 1. Pick a topic
@@ -205,6 +223,15 @@ class CuriosityLoop:
         )
         if gaps:
             self.external_log_sink.info(f"[Curiosity] 💡 Capability gap found: {headline_gap[:100]}")
+            # --- NEW: Report to Evolution Agent ---
+            if self.orchestrator and hasattr(self.orchestrator, "evolution_agent") and self.orchestrator.evolution_agent:
+                for gap in gaps:
+                    self.orchestrator.evolution_agent.record_capability_gap(
+                        description=gap,
+                        context=f"Discovered during curiosity exploration on topic: {topic}",
+                        source_agent="CuriosityLoop"
+                    )
+            # --------------------------------------
     
     def _pick_topic(self) -> str:
         """Pick next topic to explore."""

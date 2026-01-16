@@ -612,6 +612,58 @@ def dashboard_feed():
         events = list(ui_events)
     return jsonify(events), 200
 
+@app.get("/api/pulse")
+def api_pulse():
+    """Returns the last 30 high-level system milestones for the consolidated feed."""
+    try:
+        events = []
+        # Pulse-worthy events that represent major swarm actions
+        MILESTONE_TYPES = [
+            "ANNOUNCEMENT", "SYSTEM_EVOLUTION", "CURIOSITY_DISCOVERY", 
+            "CURIOSITY_GAP", "MEMORY_RECALL", "META_EVOLUTION",
+            "MISSION_SELECTED", "PLAN_READY_TO_DISPATCH", "SYSTEM_SAVE_SUCCESS",
+            "CURIOSITY_START", "CURIOSITY_END", "MISSION_OUTCOME_RECORDED",
+            "AGENT_TASK_PERFORMED", "TASK_PERFORMED", "PLAN_JSON_OK",
+            "PLAN_VALIDATION_OK", "PLAN_READY_TO_DISPATCH", "PLAN_STEP_INJECT"
+        ]
+        
+        if os.path.exists("logs/catalyst.jsonl"):
+            with open("logs/catalyst.jsonl", "r") as f:
+                # Read last 10MB of logs to find milestones (swarms are chatty!)
+                f.seek(0, os.SEEK_END)
+                size = f.tell()
+                f.seek(max(0, size - 10 * 1024 * 1024))
+                lines = f.readlines()
+                # If we skipped the very first line of the chunk, it might be partial
+                if len(lines) > 1: lines = lines[1:] 
+
+                for line in lines:
+                    try:
+                        e = json.loads(line)
+                        # Check for event_type directly or nested in message
+                        etype = e.get("event_type")
+                        if not etype:
+                            try:
+                                msg_str = e.get("message", "")
+                                if isinstance(msg_str, str) and msg_str.strip().startswith("{"):
+                                    msg = json.loads(msg_str)
+                                    if isinstance(msg, dict) and "event_type" in msg:
+                                        # Use the nested data
+                                        nested_etype = msg.get("event_type")
+                                        if nested_etype in MILESTONE_TYPES:
+                                            e = msg
+                                            etype = nested_etype
+                            except: pass
+                        
+                        if etype in MILESTONE_TYPES:
+                            events.append(e)
+                    except: continue
+        
+        # Return last 30 milestones
+        return jsonify({"status": "ok", "data": events[-30:]}), 200
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e)}), 500
+
 # --- Routes: System Metrics & Insights ---------------------------------------
 @app.route('/api/system_metrics')
 def system_metrics():
@@ -802,6 +854,41 @@ def evolution_report_gap():
         
     except Exception as e:
         logger.error(f"/api/evolution/report-gap failed: {e}")
+        return jsonify({"status": "error", "error": str(e)}), 500
+
+
+
+@app.route('/api/tools/execute', methods=['POST'])
+def execute_tool_endpoint():
+    """
+    Execute any registered tool via the dashboard.
+    JSON Body: {"tool_name": str, "args": dict}
+    """
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"status": "error", "error": "Missing JSON body"}), 400
+            
+        tool_name = data.get("tool_name")
+        args = data.get("args", {})
+        
+        if not tool_name:
+            return jsonify({"status": "error", "error": "tool_name is required"}), 400
+            
+        logger.info(f"[API] Executing tool '{tool_name}' with args {args}")
+        
+        result = tool_registry.safe_call(tool_name, **args, _context={"source": "dashboard_user"})
+        
+        return jsonify({
+            "status": "ok",
+            "tool_name": tool_name,
+            "result": result
+        }), 200
+        
+    except KeyError:
+        return jsonify({"status": "error", "error": f"Tool '{tool_name}' not found"}), 404
+    except Exception as e:
+        logger.error(f"[API] Tool execution failed: {e}")
         return jsonify({"status": "error", "error": str(e)}), 500
 
 
