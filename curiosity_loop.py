@@ -221,8 +221,8 @@ Reply with just the search query, nothing else."""
                     topic = self.llm.generate_text(prompt).strip()
                     if topic and topic not in self.explored and len(topic) < 100:
                         return topic
-        except:
-            pass
+        except Exception:
+            pass  # LLM generation failed, fall back to base interests
         
         # Otherwise pick from base interests
         for topic in self.base_interests:
@@ -411,8 +411,8 @@ Be specific. Reply in one sentence."""
                     continue
                 gaps.append(cleaned)
             return gaps
-        except:
-            return []
+        except Exception:
+            return []  # Gap parsing failed
 
     def _build_patch_proposal(self, topic: str, search_result: dict, gaps: list[str]) -> dict:
         proposal_id = f"pp-{int(time.time())}-{uuid.uuid4().hex[:6]}"

@@ -131,8 +131,8 @@ Give a brief, direct answer about the cluster status."""
         try:
             if hasattr(self.memory, 'search'):
                 failures = self.memory.search("failed error", limit=5)
-        except:
-            pass
+        except Exception:
+            pass  # Memory search failed
         
         # Check what tools exist
         available_tools = self.tools.list_tool_names() if hasattr(self.tools, 'list_tool_names') else []

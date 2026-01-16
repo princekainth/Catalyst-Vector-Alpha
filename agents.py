@@ -398,13 +398,31 @@ class ProtoAgent(ABC):
             return agent_names[0] if agent_names else self.name
 
         steps = []
-        # Safe/default sequence
-        tool_order = [
-            ("watch_k8s_events", {"namespace": "all", "minutes": 10}, "observer"),
-            ("get_pod_status", {"namespace": "all"}, "observer"),
-            ("measure_responsiveness", {}, "observer"),
-            ("send_desktop_notification", {"title": "Plan fallback", "message": f"{mission_type} fallback executed"}, "observer"),
-        ]
+        
+        # === MISSION-SPECIFIC FALLBACKS ===
+        # Use appropriate tools based on mission type instead of always K8s
+        if mission_type in ("research", "web_exploration", "creative", "self_improvement"):
+            # Research/Creative missions should use web search, not K8s tools
+            import random
+            search_topics = [
+                "latest AI news", "cybersecurity trends", "quantum computing breakthroughs",
+                "cryptocurrency market update", "space exploration news", "tech innovation 2026"
+            ]
+            tool_order = [
+                ("web_search", {"query": random.choice(search_topics), "max_results": 5}, "observer"),
+                ("measure_responsiveness", {}, "observer"),
+                ("send_desktop_notification", {"title": f"{mission_type.title()} Complete", "message": f"Explored web for insights"}, "observer"),
+            ]
+        else:
+            # Infrastructure missions use K8s tools (original behavior)
+            tool_order = [
+                ("watch_k8s_events", {"namespace": "all", "minutes": 10}, "observer"),
+                ("get_pod_status", {"namespace": "all"}, "observer"),
+                ("measure_responsiveness", {}, "observer"),
+                ("send_desktop_notification", {"title": "Plan fallback", "message": f"{mission_type} fallback executed"}, "observer"),
+            ]
+        # === END MISSION-SPECIFIC FALLBACKS ===
+        
         k8s_student = getattr(getattr(self, "orchestrator", None), "k8s_student", None)
         k8s_student_active = bool(k8s_student and getattr(k8s_student, "running", False))
 
@@ -1545,7 +1563,10 @@ class ProtoAgent(ABC):
                 self._current_memory_context = ""
 
         # K8S MONITORING - Run for Observer before task execution
-        if self.name and "Observer" in self.name:
+        # Set to False to disable automatic K8s monitoring (agents will focus on diverse tasks)
+        K8S_MONITORING_ENABLED = False  # ← Change to True to re-enable K8s monitoring
+        
+        if K8S_MONITORING_ENABLED and self.name and "Observer" in self.name:
             _registry = getattr(self, "tool_registry", None)
             if not self._is_k8s_student_active() and _registry and _registry.has_tool("watch_k8s_events"):
                 now_ts = time.time()
@@ -3361,9 +3382,12 @@ class ProtoAgent_Observer(ProtoAgent):
 
         try:
             # AUTO K8S MONITORING - Check every Observer cycle
+            # Set to False to disable (matches flag in ProtoAgent._run_task_internal)
+            K8S_MONITORING_ENABLED = False  # ← Change to True to re-enable
+            
             # print("[DEBUG] Observer: Checking for watch_k8s_events tool...")
             _registry = getattr(self, "tool_registry", None)
-            if not self._is_k8s_student_active() and _registry and _registry.has_tool("watch_k8s_events"):
+            if K8S_MONITORING_ENABLED and not self._is_k8s_student_active() and _registry and _registry.has_tool("watch_k8s_events"):
                 now_ts = time.time()
                 cached = self._k8s_cache.get("result")
                 cached_ts = self._k8s_cache.get("ts", 0)
@@ -5020,7 +5044,11 @@ Respond with valid JSON:
         Returns a planner-style tuple: (status, err, metrics, confidence).
         """
         # === EVENT-DRIVEN GATE ===
-        if self._should_be_idle():
+        # DISABLED: When K8s monitoring is off, agents should still do diverse missions (research, creative, etc.)
+        # Set to True to re-enable event-driven behavior (only work when K8s has problems)
+        EVENT_DRIVEN_GATE_ENABLED = False  # ← Change to True to make agents idle when system is "healthy"
+        
+        if EVENT_DRIVEN_GATE_ENABLED and self._should_be_idle():
             self._consecutive_idle = getattr(self, "_consecutive_idle", 0) + 1
             self.external_log_sink.info(f"[Planner] 😴 System healthy - skipping idle synthesis (cycle #{self._consecutive_idle})")
             proposal = self._schedule_patch_proposal()
@@ -5054,9 +5082,57 @@ Respond with valid JSON:
                 try:
                     from core.mission_runner import MissionRunner
                     from core.mission_policy import select_next_mission
+                    import random
                     
                     memh = getattr(self, "memdb", None)
-                    mission_type = select_next_mission(memh)
+                    
+                    # === MISSION DIVERSIFICATION ===
+                    # Weighted random selection across mission categories
+                    MISSION_WEIGHTS = {
+                        # K8s Infrastructure (reduced from ~80% to 20%)
+                        "health_audit": 0.05,
+                        "security_audit": 0.05,
+                        "scale_on_cpu_threshold": 0.05,
+                        "performance_optimization": 0.05,
+                        # Research & Learning (new, 30%)
+                        "research": 0.15,
+                        "web_exploration": 0.15,
+                        # Creative & Self-Improvement (new, 30%)
+                        "creative": 0.15,
+                        "self_improvement": 0.15,
+                        # General planning (20%)
+                        "general_planning": 0.20,
+                    }
+                    
+                    # Check cooldowns and filter available missions
+                    available_missions = []
+                    for m, weight in MISSION_WEIGHTS.items():
+                        if not self._is_on_cooldown(m)[0]:
+                            available_missions.append((m, weight))
+                    
+                    if available_missions:
+                        # Weighted random choice
+                        total_weight = sum(w for _, w in available_missions)
+                        r = random.random() * total_weight
+                        cumulative = 0
+                        for m, w in available_missions:
+                            cumulative += w
+                            if r <= cumulative:
+                                mission_type = m
+                                break
+                        else:
+                            mission_type = available_missions[0][0]
+                        
+                        self._log_agent_activity("MISSION_SELECTED", self.name, {
+                            "mission": mission_type,
+                            "available": len(available_missions),
+                            "method": "weighted_random"
+                        })
+                    else:
+                        # All on cooldown, use fallback
+                        mission_type = select_next_mission(memh)
+                    # === END MISSION DIVERSIFICATION ===
+                    
                     original_mission = mission_type  # Store for avoidance logic
                     
                     # === MEMORY-DRIVEN MISSION SELECTION ===
@@ -5135,6 +5211,34 @@ Respond with valid JSON:
                 # If it wasn't a mission_runner task, use the selected mission_type
                 if mission_type == "k8s_monitoring":
                     goal = "Monitor Kubernetes cluster for incidents, pod failures, and unhealthy states. Alert on critical events."
+                elif mission_type == "research":
+                    # Truly diverse topics - agents can research ANYTHING
+                    topics = [
+                        # Technology & AI
+                        "AI breakthroughs", "machine learning trends", "neural networks",
+                        # Cybersecurity & Hacking
+                        "cybersecurity threats 2026", "ethical hacking techniques", "zero-day vulnerabilities",
+                        "penetration testing methods", "ransomware defense", "bug bounty programs",
+                        # Finance & Economics
+                        "cryptocurrency trends", "stock market analysis", "DeFi protocols",
+                        "algorithmic trading", "economic indicators", "fintech innovations",
+                        # Science & Space
+                        "quantum computing", "space exploration news", "CRISPR gene editing",
+                        "fusion energy progress", "Mars colonization", "exoplanets discovery",
+                        # Philosophy & Society
+                        "philosophy of consciousness", "future of work", "universal basic income",
+                        # Random Curiosities
+                        "strangest facts today", "breakthrough inventions", "viral trends",
+                    ]
+                    import random as rnd
+                    topic = rnd.choice(topics)
+                    goal = f"Research '{topic}' using web search. Learn something new and store insights for future reference."
+                elif mission_type == "web_exploration":
+                    goal = "Explore the web freely. Search for something interesting - news, science, technology, culture, or anything curious. Summarize findings."
+                elif mission_type == "creative":
+                    goal = "Generate creative ideas or suggestions based on recent system observations and learned patterns."
+                elif mission_type == "self_improvement":
+                    goal = "Analyze recent task failures and successes. Identify patterns and suggest improvements to agent behavior."
                 else:
                     goal = f"Run mission '{mission_type}' based on recent outcomes to improve responsiveness"
                 complexity = 0.7

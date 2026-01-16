@@ -36,7 +36,7 @@ def check_memory_status():
         try:
             col = client.get_collection(col_name)
             print(f"  {agent.capitalize():12} {col.count():5} memories")
-        except:
+        except Exception:
             print(f"  {agent.capitalize():12}     0 memories (not found)")
     
     # Dynamic agents

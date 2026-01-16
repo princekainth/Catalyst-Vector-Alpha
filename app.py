@@ -639,6 +639,172 @@ def get_latest_insight():
     msg = insight or "No recent insights available. The system may be busy or has just started."
     return jsonify({"status": "ok", "data": {"insight": msg}}), 200
 
+# --- PHASE 9: Digital Organism Status Endpoint ---
+@app.route('/api/organism/status')
+def organism_status():
+    """Returns the Digital Organism's vital signs (Energy, Hive Mind, Dreams, Personas)."""
+    try:
+        # Collect agent data with energy and personas
+        agents_data = []
+        if system_instance and hasattr(system_instance, 'agent_instances'):
+            for name, agent in system_instance.agent_instances.items():
+                # Handle is_paused which might be a method or property
+                is_paused_val = getattr(agent, 'is_paused', False)
+                if callable(is_paused_val):
+                    is_paused_val = False  # Skip calling methods
+                
+                agent_info = {
+                    "name": name,
+                    "energy": float(getattr(agent, 'energy', 100.0)),
+                    "max_energy": float(getattr(agent, 'max_energy', 100.0)),
+                    "persona": str(agent.eidos_spec.get('persona_name', 'Standard Agent')) if hasattr(agent, 'eidos_spec') else 'Agent',
+                    "role": str(agent.eidos_spec.get('role', 'worker')) if hasattr(agent, 'eidos_spec') else 'worker',
+                    "is_paused": bool(is_paused_val),
+                }
+                agents_data.append(agent_info)
+        
+        # Hive Mind insights
+        hive_mind_data = {"insight_count": 0, "recent_insights": []}
+        if system_instance and hasattr(system_instance, 'world_model'):
+            wm = system_instance.world_model
+            if hasattr(wm, 'knowledge_base'):
+                kb = wm.knowledge_base
+                hive_mind_data["insight_count"] = len(kb) if kb else 0
+                # Ensure insights are serializable
+                insights = kb[-5:] if kb else []
+                hive_mind_data["recent_insights"] = [
+                    {"task": str(i.get("task", "")), "tool": str(i.get("tool", "")), "agent": str(i.get("agent", ""))}
+                    for i in insights if isinstance(i, dict)
+                ]
+        
+        # Dream state
+        dream_state = {"is_dreaming": False, "last_dream": None}
+        if system_instance and hasattr(system_instance, 'curiosity_loop'):
+            cl = system_instance.curiosity_loop
+            is_dreaming = getattr(cl, 'is_dreaming', False)
+            if callable(is_dreaming):
+                is_dreaming = False  # Skip calling methods
+            dream_state["is_dreaming"] = bool(is_dreaming)
+            last_dream = getattr(cl, 'last_dream_time', None)
+            dream_state["last_dream"] = str(last_dream) if last_dream and not callable(last_dream) else None
+        
+        # Calculate system mood based on average energy
+        avg_energy = sum(a["energy"] for a in agents_data) / len(agents_data) if agents_data else 100
+        if avg_energy > 80:
+            system_mood = "Thriving 🌟"
+        elif avg_energy > 50:
+            system_mood = "Healthy ✓"
+        elif avg_energy > 25:
+            system_mood = "Stressed ⚠️"
+        else:
+            system_mood = "Critical 🔴"
+        
+        return jsonify({
+            "status": "ok",
+            "data": {
+                "agents": agents_data,
+                "hive_mind": hive_mind_data,
+                "dream_state": dream_state,
+                "system_mood": system_mood,
+                "timestamp": timestamp_now()
+            }
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"/api/organism/status failed: {e}")
+        return jsonify({"status": "error", "error": str(e)}), 500
+
+
+@app.route('/api/evolution/status')
+def evolution_status():
+    """Get CVA Evolution Agent status - self-modification capability."""
+    try:
+        evolution_data = {
+            "enabled": False,
+            "running": False,
+            "approval_mode": "supervised",
+            "total_gaps": 0,
+            "pending_gaps": 0,
+            "solved_gaps": 0,
+            "evolved_tools": 0,
+            "pending_tools": [],
+            "recent_evolutions": [],
+        }
+        
+        if system_instance and hasattr(system_instance, 'evolution_agent') and system_instance.evolution_agent:
+            ea = system_instance.evolution_agent
+            evolution_data = {
+                "enabled": True,
+                "running": ea.running,
+                "approval_mode": ea.approval_mode,
+                "total_gaps": len(ea.capability_gaps),
+                "pending_gaps": len([g for g in ea.capability_gaps if g.get("status") == "pending"]),
+                "solved_gaps": len([g for g in ea.capability_gaps if g.get("status") == "solved"]),
+                "evolved_tools": len(ea.evolution_history),
+                "pending_tools": [
+                    {"name": p["code"]["name"], "description": p["gap"]["description"]}
+                    for p in ea.pending_tools
+                ],
+                "recent_evolutions": ea.evolution_history[-5:] if ea.evolution_history else [],
+                "recent_gaps": ea.capability_gaps[-5:] if ea.capability_gaps else [],
+            }
+        
+        return jsonify({"status": "ok", "data": evolution_data}), 200
+        
+    except Exception as e:
+        logger.error(f"/api/evolution/status failed: {e}")
+        return jsonify({"status": "error", "error": str(e)}), 500
+
+
+@app.route('/api/evolution/approve', methods=['POST'])
+def evolution_approve():
+    """Approve a pending evolved tool."""
+    try:
+        data = request.get_json() or {}
+        tool_name = data.get("tool_name")
+        
+        if not tool_name:
+            return jsonify({"status": "error", "error": "tool_name required"}), 400
+        
+        if system_instance and hasattr(system_instance, 'evolution_agent') and system_instance.evolution_agent:
+            if system_instance.evolution_agent.approve_tool(tool_name):
+                return jsonify({"status": "ok", "message": f"Tool '{tool_name}' approved and deployed"}), 200
+            else:
+                return jsonify({"status": "error", "error": f"Tool '{tool_name}' not found"}), 404
+        
+        return jsonify({"status": "error", "error": "Evolution agent not available"}), 503
+        
+    except Exception as e:
+        logger.error(f"/api/evolution/approve failed: {e}")
+        return jsonify({"status": "error", "error": str(e)}), 500
+
+
+@app.route('/api/evolution/report-gap', methods=['POST'])
+def evolution_report_gap():
+    """Manually report a capability gap for the evolution agent to address."""
+    try:
+        data = request.get_json() or {}
+        description = data.get("description")
+        context = data.get("context", "Manual report")
+        
+        if not description:
+            return jsonify({"status": "error", "error": "description required"}), 400
+        
+        if system_instance and hasattr(system_instance, 'evolution_agent') and system_instance.evolution_agent:
+            system_instance.evolution_agent.record_capability_gap(
+                description=description,
+                context=context,
+                source_agent="user"
+            )
+            return jsonify({"status": "ok", "message": f"Capability gap recorded: {description}"}), 200
+        
+        return jsonify({"status": "error", "error": "Evolution agent not available"}), 503
+        
+    except Exception as e:
+        logger.error(f"/api/evolution/report-gap failed: {e}")
+        return jsonify({"status": "error", "error": str(e)}), 500
+
+
 @app.route('/api/debug/tasks')
 def debug_tasks():
     with tasks_lock:
@@ -1278,7 +1444,7 @@ def get_system_uptime():
     try:
         import psutil
         return psutil.boot_time()
-    except:
+    except Exception:
         return time.time() - 3600  # Default to 1 hour if unavailable
 
 # --- Enhanced Health Endpoint -----------------------------------------------

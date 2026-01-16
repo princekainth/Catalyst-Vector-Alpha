@@ -451,6 +451,16 @@ SPAWN_AGENT_PARAMS = {
     "required": ["purpose"]
 }
 
+SELF_PATCH_PARAMS = {
+    "type": "object",
+    "properties": {
+        "target_file": {"type": "string", "description": "Basename of file to patch (e.g., 'agents.py')."},
+        "search_pattern": {"type": "string", "description": "Exact string to find in the file."},
+        "replacement": {"type": "string", "description": "String to replace the pattern with."}
+    },
+    "required": ["target_file", "search_pattern", "replacement"]
+}
+
 # Tool-specific normalizers
 def _normalize_pdf_args(a: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(a or {})
@@ -817,6 +827,21 @@ Do NOT include keys that are not in MissingKeys. Do NOT repeat provided args."""
                 task_type="TaskDelegation",
                 roles_allowed={"Planner", "Worker"},
                 validator=lambda a: not _is_placeholder(a.get("purpose")) and len(a.get("purpose", "")) >= 10
+            ),
+
+            # --- PHASE 8: SELF-MODIFICATION (The Singularity) ---
+            Tool(
+                "self_patch",
+                "[SINGULARITY] Patches source code with safety gates (backup, test, revert).",
+                SELF_PATCH_PARAMS,
+                _tf("self_patch"),
+                task_type="SelfModification",
+                roles_allowed={"Architect"},  # ONLY Architect can use this
+                validator=lambda a: (
+                    not _is_placeholder(a.get("target_file")) and
+                    not _is_placeholder(a.get("search_pattern")) and
+                    not _is_placeholder(a.get("replacement"))
+                )
             ),
 
             Tool("redact_pii", "Redact PII from text.", REDACT_PII_PARAMS, _tf("redact_pii_tool"),

@@ -4301,7 +4301,6 @@ __all__ = [
     "tool_health_check_tool", "list_available_tools_tool",
     
     # Utility functions
-    # Utility functions
     "standardize_response", "ToolConfig",
     "spawn_agent"
 ]
@@ -4351,3 +4350,134 @@ def spawn_agent(purpose: str, context: Optional[Dict[str, Any]] = None, ttl_hour
     except Exception as e:
         _usage_tracker.track_usage("spawn_agent", success=False)
         return standardize_response("error", error=str(e))
+
+# --- PHASE 8: SELF-MODIFICATION (The Singularity) ---
+# Safety: Allowlist of files that CAN be modified
+SELF_PATCH_ALLOWLIST = [
+    "agents.py",
+    "curiosity_loop.py",
+    "prompts.py",
+    "shared_models.py",
+    # Explicitly FORBIDDEN: app.py, start.sh, catalyst_vector_alpha.py
+]
+
+def self_patch(target_file: str, search_pattern: str, replacement: str) -> dict:
+    """
+    [PHASE 8: SINGULARITY] Patches a source file with safety gates.
+    
+    Args:
+        target_file: Basename of file to patch (e.g., "agents.py")
+        search_pattern: Exact string to find and replace
+        replacement: String to replace with
+    
+    Returns:
+        {"ok": True/False, "diff": "...", "reason": "..."}
+    
+    Safety Protocol:
+        1. Only files in SELF_PATCH_ALLOWLIST can be edited.
+        2. A backup is created before any change.
+        3. After patching, `pytest tests/` is run.
+        4. If tests FAIL, the backup is restored automatically.
+    """
+    import shutil
+    import subprocess
+    from datetime import datetime
+    
+    _usage_tracker.track_usage("self_patch")
+    
+    # --- Security Gate 1: Allowlist Check ---
+    basename = os.path.basename(target_file)
+    if basename not in SELF_PATCH_ALLOWLIST:
+        return standardize_response("error", 
+            error=f"SECURITY: '{basename}' is not in the modification allowlist. "
+                  f"Allowed: {SELF_PATCH_ALLOWLIST}")
+    
+    # Resolve full path relative to project root
+    project_root = os.path.dirname(os.path.abspath(__file__))
+    full_path = os.path.join(project_root, basename)
+    
+    if not os.path.exists(full_path):
+        return standardize_response("error", error=f"File not found: {full_path}")
+    
+    # --- Safety Gate 2: Backup ---
+    backup_dir = "/tmp/cva_backup"
+    os.makedirs(backup_dir, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_path = os.path.join(backup_dir, f"{basename}.{timestamp}.bak")
+    
+    try:
+        shutil.copy2(full_path, backup_path)
+    except Exception as e:
+        return standardize_response("error", error=f"Backup failed: {e}")
+    
+    # --- Read and Patch ---
+    try:
+        with open(full_path, 'r') as f:
+            original_content = f.read()
+        
+        if search_pattern not in original_content:
+            return standardize_response("error", 
+                error=f"Search pattern not found in {basename}. No changes made.",
+                data={"backup_path": backup_path})
+        
+        patched_content = original_content.replace(search_pattern, replacement, 1)
+        
+        # Calculate diff preview
+        diff_preview = f"--- {basename} (original)\n+++ {basename} (patched)\n"
+        diff_preview += f"-{search_pattern[:100]}...\n+{replacement[:100]}...\n"
+        
+        # --- Apply Patch ---
+        with open(full_path, 'w') as f:
+            f.write(patched_content)
+            
+    except Exception as e:
+        # Restore from backup on write failure
+        shutil.copy2(backup_path, full_path)
+        return standardize_response("error", error=f"Patch write failed, restored backup: {e}")
+    
+    # --- Safety Gate 3: Run Regression Tests ---
+    try:
+        result = subprocess.run(
+            ["python3", "-m", "pytest", "tests/", "-q", "--tb=no"],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            timeout=120
+        )
+        
+        tests_passed = result.returncode == 0
+        
+    except subprocess.TimeoutExpired:
+        # Restore on timeout
+        shutil.copy2(backup_path, full_path)
+        return standardize_response("error", 
+            error="Test suite timed out. Patch reverted.",
+            data={"backup_path": backup_path})
+    except Exception as e:
+        # Restore on any test failure
+        shutil.copy2(backup_path, full_path)
+        return standardize_response("error", 
+            error=f"Test execution failed. Patch reverted: {e}",
+            data={"backup_path": backup_path})
+    
+    # --- Safety Gate 4: Revert if Tests Failed ---
+    if not tests_passed:
+        shutil.copy2(backup_path, full_path)
+        return standardize_response("error",
+            error="Regression tests FAILED. Patch automatically reverted.",
+            data={
+                "backup_path": backup_path,
+                "test_stdout": result.stdout[-500:] if result.stdout else "",
+                "test_stderr": result.stderr[-500:] if result.stderr else "",
+            })
+    
+    # --- SUCCESS ---
+    return standardize_response("ok",
+        summary=f"Patch applied to {basename} and tests passed!",
+        data={
+            "file": basename,
+            "backup_path": backup_path,
+            "diff_preview": diff_preview,
+            "test_output": result.stdout[-200:] if result.stdout else "Tests passed."
+        })
+

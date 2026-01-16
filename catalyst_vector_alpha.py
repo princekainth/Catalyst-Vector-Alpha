@@ -404,18 +404,25 @@ class CatalystVectorAlpha:
         except Exception as _e:
             self.external_log_sink.warning(f"[SwarmHealthMonitor] failed to start: {_e}")
         # --- K8s Student Agent (autonomous, runs in own thread) ---
-        try:
-            from students import K8sStudent
-            self.k8s_student = K8sStudent(
-                shared_memory=self.memetic_kernel,
-                tool_registry=self.tool_registry,
-                cycle_time=30
-            )
-            self.k8s_student.start()
-            self.external_log_sink.info("[K8sStudent] Started autonomous K8s remediation agent")
-        except Exception as _e:
-            self.external_log_sink.warning(f"[K8sStudent] failed to start: {_e}")
+        # Set to False to disable K8s-focused autonomous remediation
+        K8S_STUDENT_ENABLED = False  # ← Change to True to enable K8s monitoring
+        
+        if K8S_STUDENT_ENABLED:
+            try:
+                from students import K8sStudent
+                self.k8s_student = K8sStudent(
+                    shared_memory=self.memetic_kernel,
+                    tool_registry=self.tool_registry,
+                    cycle_time=60  # Increased from 30s to 60s
+                )
+                self.k8s_student.start()
+                self.external_log_sink.info("[K8sStudent] Started autonomous K8s remediation agent")
+            except Exception as _e:
+                self.external_log_sink.warning(f"[K8sStudent] failed to start: {_e}")
+                self.k8s_student = None
+        else:
             self.k8s_student = None
+            self.external_log_sink.info("[K8sStudent] Disabled - agents will focus on diverse missions")
 
         # --- Start Curiosity Loop (idle-time learning) ---
         try:
@@ -440,6 +447,23 @@ class CatalystVectorAlpha:
         except Exception as _e:
             self.external_log_sink.warning(f"[Curiosity] failed to start: {_e}")
             self.curiosity_loop = None
+
+        # --- Start Evolution Agent (self-modification capability) ---
+        try:
+            from evolution_agent import EvolutionAgent
+            self.evolution_agent = EvolutionAgent(
+                memetic_kernel=self.memetic_kernel,
+                tool_registry=self.tool_registry,
+                log_sink=self.external_log_sink,
+                approval_mode="supervised",  # supervised, sandboxed, or autonomous
+                gap_threshold=3,  # Trigger evolution after 3 capability gaps
+                cycle_interval=300,  # Check every 5 minutes
+            )
+            self.evolution_agent.start()
+            self.external_log_sink.info("[EvolutionAgent] 🧬 Started self-evolution monitoring")
+        except Exception as _e:
+            self.external_log_sink.warning(f"[EvolutionAgent] failed to start: {_e}")
+            self.evolution_agent = None
 
         # --- Log initial setup completion ---
         self._log_swarm_activity(
@@ -3306,7 +3330,7 @@ class CatalystVectorAlpha:
                 f"• CPU Usage: {cpu_usage:.1f}%\n" + \
                 f"• Memory Usage: {memory_usage:.1f}%\n" + \
                 f"• System Load: {'Normal' if cpu_usage < 80 else 'High'}"
-        except:
+        except Exception:
             return "Resource status temporarily unavailable"
 
     def _generate_security_status_response(self):
@@ -3489,8 +3513,8 @@ class CatalystVectorAlpha:
         if hasattr(self, "meta_monitor") and hasattr(self.meta_monitor, "start"):
             try:
                 self.meta_monitor.start()
-            except:
-                pass
+            except Exception:
+                pass  # Meta monitor start is optional
 
         # Main loop
         while self.is_running:
@@ -3636,16 +3660,16 @@ class CatalystVectorAlpha:
                         if hasattr(agent, "analyze_and_adapt"):
                             try:
                                 agent.analyze_and_adapt(self.agent_instances)
-                            except:
-                                pass
+                            except Exception:
+                                pass  # Adaptation is optional
                         
                         # Periodic memory compression (every 5 cycles)
                         if loop_cycle_count % 5 == 0:
                             if hasattr(agent, "trigger_memory_compression"):
                                 try:
                                     agent.trigger_memory_compression()
-                                except:
-                                    pass
+                                except Exception:
+                                    pass  # Memory compression is optional
                         
                         # Guardian health check (every 5 cycles)
                         if loop_cycle_count % 5 == 0 and hasattr(self, 'guardian'):
