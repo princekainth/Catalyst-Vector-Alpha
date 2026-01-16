@@ -2062,6 +2062,17 @@ class ProtoAgent(ABC):
 
             tool_instance = self.tool_registry.get_tool(tool_name)
             if not tool_instance:
+                # --- EVOLUTION HOOK: Record capability gap if tool is missing ---
+                if self.orchestrator and hasattr(self.orchestrator, "evolution_agent") and self.orchestrator.evolution_agent:
+                    self.orchestrator.evolution_agent.record_capability_gap(
+                        description=f"Need tool: {tool_name}",
+                        context=f"Agent '{self.name}' attempted to use missing tool '{tool_name}'",
+                        attempted_tool=tool_name,
+                        failure_reason="Tool not found in registry",
+                        source_agent=self.name
+                    )
+                # ----------------------------------------------------------------
+
                 error_msg = f"Attempted to execute unknown tool: '{tool_name}'."
                 self.external_log_sink.debug(f"[Tool EXEC ERROR] {self.name}: {error_msg}")
                 self.memetic_kernel.add_memory("ToolExecutionError", error_msg, {"tool_name": tool_name, "tool_args": tool_args})

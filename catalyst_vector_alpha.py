@@ -455,7 +455,7 @@ class CatalystVectorAlpha:
                 memetic_kernel=self.memetic_kernel,
                 tool_registry=self.tool_registry,
                 log_sink=self.external_log_sink,
-                approval_mode="supervised",  # supervised, sandboxed, or autonomous
+                approval_mode="autonomous",  # Changed to autonomous by user request
                 gap_threshold=3,  # Trigger evolution after 3 capability gaps
                 cycle_interval=300,  # Check every 5 minutes
             )

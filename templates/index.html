@@ -294,6 +294,54 @@
         </div>
       </div>
 
+      <!-- Evolution Status -->
+      <div class="metric-card">
+        <h2 class="text-xl font-semibold text-pink-400 mb-4 flex items-center justify-between">
+          <span>🧬 Self-Evolution</span>
+          <span id="cva-mode"
+            class="text-xs bg-pink-900/50 text-pink-300 px-2 py-1 rounded border border-pink-700">Checking...</span>
+        </h2>
+
+        <div class="space-y-4">
+          <!-- Stats Grid -->
+          <div class="grid grid-cols-2 gap-2 text-center">
+            <div class="bg-slate-800/50 rounded p-2 border border-slate-700">
+              <div class="text-xs text-slate-400">Capabilities Gained</div>
+              <div id="cva-evolved-count" class="text-xl font-bold text-pink-400">0</div>
+            </div>
+            <div class="bg-slate-800/50 rounded p-2 border border-slate-700">
+              <div class="text-xs text-slate-400">Gaps Detected</div>
+              <div id="cva-gap-count" class="text-xl font-bold text-yellow-400">0</div>
+            </div>
+          </div>
+
+          <!-- Pending Approvals (Supervised Mode) -->
+          <div id="cva-pending-section" class="hidden">
+            <div class="text-sm font-semibold text-slate-300 mb-2">My Proposals (Requires Approval)</div>
+            <div id="cva-pending-list" class="space-y-2 max-h-32 overflow-y-auto">
+              <!-- Inserted by JS -->
+            </div>
+          </div>
+
+          <!-- Recent Evolutions -->
+          <div>
+            <div class="text-xs text-slate-500 mb-2 uppercase tracking-wide">Recent Upgrades</div>
+            <div id="cva-evolution-feed" class="space-y-2 text-sm max-h-40 overflow-y-auto">
+              <p class="text-slate-500 italic">No self-modifications yet.</p>
+            </div>
+          </div>
+
+          <!-- Manual Gap Report -->
+          <div class="pt-2 border-t border-slate-700">
+            <input type="text" id="gap-description" placeholder="Report a limitation (e.g., 'Can't access Twitter')"
+              class="input text-xs w-full mb-2" onkeydown="if(event.key==='Enter') App.reportGap()">
+            <button onclick="App.reportGap()" class="btn btn-secondary w-full btn-sm text-xs">
+              Report Missing Capability
+            </button>
+          </div>
+        </div>
+      </div>
+
       <!-- System Health -->
       <div class="metric-card">
         <h2 class="text-xl font-semibold text-blue-300 mb-4">System Health</h2>
@@ -395,10 +443,143 @@
           this.fetchSummary();
           this.fetchTrends();
           this.fetchOrganismStatus();
+          this.fetchEvolutionStatus();
         }, 5000);
 
         // Initial organism status fetch
         this.fetchOrganismStatus();
+        this.fetchEvolutionStatus();
+      },
+
+      async fetchEvolutionStatus() {
+        try {
+          const r = await fetch('/api/evolution/status');
+          if (!r.ok) return;
+          const data = await r.json();
+          if (data.status === 'ok') {
+            this.renderEvolutionUI(data.data);
+          }
+        } catch (e) {
+          console.error('Evolution status fetch failed:', e);
+        }
+      },
+
+      renderEvolutionUI(data) {
+        if (!data || !data.enabled) {
+          document.getElementById('cva-mode').textContent = 'OFF';
+          document.getElementById('cva-mode').className = 'text-xs bg-slate-800 text-slate-500 px-2 py-1 rounded';
+          return;
+        }
+
+        // Mode Badge
+        const modeBadge = document.getElementById('cva-mode');
+        if (data.approval_mode === 'autonomous') {
+          modeBadge.textContent = 'AUTONOMOUS 🚀';
+          modeBadge.className = 'text-xs bg-red-900/50 text-red-300 px-2 py-1 rounded border border-red-700 animate-pulse';
+        } else {
+          modeBadge.textContent = 'SUPERVISED 🛡️';
+          modeBadge.className = 'text-xs bg-blue-900/50 text-blue-300 px-2 py-1 rounded border border-blue-700';
+        }
+
+        // Stats
+        document.getElementById('cva-evolved-count').textContent = data.evolved_tools || 0;
+        document.getElementById('cva-gap-count').textContent = (data.total_gaps || 0);
+
+        // Pending Section
+        const pendingSection = document.getElementById('cva-pending-section');
+        const pendingList = document.getElementById('cva-pending-list');
+
+        if (data.pending_tools && data.pending_tools.length > 0) {
+          pendingSection.classList.remove('hidden');
+          pendingList.innerHTML = data.pending_tools.map(tool => `
+            <div class="bg-slate-800/80 p-2 rounded border border-blue-500/30 flex justify-between items-center text-xs">
+              <div>
+                <div class="font-bold text-blue-300">${tool.name}</div>
+                <div class="text-slate-400 truncate max-w-[120px]">${tool.description}</div>
+              </div>
+              <button onclick="App.approveTool('${tool.name}')" class="bg-green-600 hover:bg-green-500 text-white px-2 py-1 rounded ml-2">
+                Approve
+              </button>
+            </div>
+          `).join('');
+        } else {
+          pendingSection.classList.add('hidden');
+        }
+
+        // Recent Evolutions Feed
+        const feed = document.getElementById('cva-evolution-feed');
+        const items = [];
+
+        // Combine gaps and evolutions for a timeline view
+        if (data.recent_gaps) {
+          data.recent_gaps.forEach(g => items.push({ type: 'gap', data: g, time: g.timestamp }));
+        }
+        if (data.recent_evolutions) {
+          data.recent_evolutions.forEach(e => items.push({ type: 'evolution', data: e, time: e.deployed_at }));
+        }
+
+        items.sort((a, b) => new Date(b.time) - new Date(a.time)); // Newest first
+
+        if (items.length === 0) {
+          feed.innerHTML = '<p class="text-slate-500 italic">No activity yet.</p>';
+        } else {
+          feed.innerHTML = items.slice(0, 5).map(item => {
+            if (item.type === 'gap') {
+              return `
+                 <div class="text-xs border-l-2 border-yellow-500 pl-2 py-1">
+                   <div class="text-yellow-400">⚠️ Capability Gap</div>
+                   <div class="text-slate-400">${item.data.description}</div>
+                 </div>
+               `;
+            } else {
+              return `
+                 <div class="text-xs border-l-2 border-pink-500 pl-2 py-1 bg-pink-900/10">
+                   <div class="text-pink-400">✨ Evolved: ${item.data.tool_name}</div>
+                   <div class="text-slate-400">Now able to: ${item.data.description}</div>
+                 </div>
+               `;
+            }
+          }).join('');
+        }
+      },
+
+      async reportGap() {
+        const input = document.getElementById('gap-description');
+        const desc = input.value.trim();
+        if (!desc) return;
+
+        try {
+          const r = await fetch('/api/evolution/report-gap', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ description: desc })
+          });
+          if (r.ok) {
+            this.toast('Gap reported to Evolver');
+            input.value = '';
+            this.fetchEvolutionStatus();
+          }
+        } catch (e) {
+          this.toast('Failed to report gap', true);
+        }
+      },
+
+      async approveTool(name) {
+        try {
+          const r = await fetch('/api/evolution/approve', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tool_name: name })
+          });
+          if (r.ok) {
+            this.toast(`Approved ${name}`);
+            this.fetchEvolutionStatus();
+          } else {
+            this.toast('Approval failed', true);
+          }
+        } catch (e) {
+          this.toast('Approval failed', true);
+        }
       },
 
       async fetchOrganismStatus() {
