@@ -27,9 +27,15 @@ from abc import ABC, abstractmethod
 from collections import deque, defaultdict
 from collections.abc import Iterable
 from contextlib import contextmanager
-from datetime import datetime, timezone, timedelta 
+from datetime import datetime, timezone, timedelta
 from typing import Optional, Union, List, Dict, Tuple, Any
 
+try:
+    from config import config
+except ImportError:
+    config = None
+
+# Try to import shared components
 from dateutil.parser import isoparse
 
 
@@ -171,7 +177,11 @@ def _lenient_validate_plan_shape(plan: dict, available_agents: set, available_to
 
         title = (s.get("title") or s.get("description") or "").strip()
         if not title:
-            return False, f"Step {i} missing 'title' or 'description'."
+            # Auto-fill missing title instead of failing
+            tool_hint = s.get("tool") or "action"
+            s["title"] = f"Step {i}: {tool_hint}"
+            title = s["title"]
+
 
         agent = (s.get("agent") or "").strip()
         if not agent or agent not in available_agents:
@@ -2112,11 +2122,51 @@ class ProtoAgent(ABC):
                 with ThreadPoolExecutor() as pool:
                     tool_output = await loop.run_in_executor(pool, lambda: tool_instance.func(**tool_args))
 
+                # Phase 24 extension: Trigger self-heal if output is a standard error dict
+                if isinstance(tool_output, dict) and tool_output.get("status") == "error":
+                    error_str = str(tool_output.get("error", "Unknown error"))
+                    # Only retry if it looks like an argument error (broad matching)
+                    arg_error_patterns = [
+                        "argument", "unexpected keyword", "required", "invalid",
+                        "missing", "parameter", "type", "got an unexpected",
+                        "takes", "positional", "not recognized"
+                    ]
+                    if any(x in error_str.lower() for x in arg_error_patterns):
+                        raise ValueError(f"Standard error response detected: {error_str}")
+
+
                 self.memetic_kernel.add_memory("ToolExecutionSuccess", f"Tool '{tool_name}' executed successfully.", {"tool_name": tool_name, "tool_output": tool_output})
                 self.external_log_sink.debug(f"[Tool EXEC SUCCESS] {self.name}: Tool '{tool_name}' output: {str(tool_output)[:200]}...")
                 return tool_output
-            except TypeError as e:
-                error_msg = f"Tool '{tool_name}' execution failed due to invalid arguments: {e}. Args provided: {tool_args}"
+            except (TypeError, ValueError, Exception) as e:
+                # Phase 24: Self-Healing Arguments
+                if tool_name not in self._invalid_arg_retries:
+                    self.external_log_sink.warning(f"🛠️ [SELF-HEAL] Tool '{tool_name}' failed with: {e}. Attempting repair...")
+                    self._invalid_arg_retries.add(tool_name)
+                    
+                    repair_prompt = f"""You are an expert at repairing tool arguments for the Catalyst system.
+Tool: {tool_name}
+Schema: {json.dumps(tool_instance.parameters, indent=2)}
+Failed Args: {json.dumps(tool_args)}
+Error Message: {str(e)}
+
+Based on the schema and error, provide a corrected JSON object of arguments. 
+Return ONLY the JSON.
+"""
+                    try:
+                        repaired_json = self.llm.generate_text(repair_prompt, json_mode=True)
+                        repaired_args = json.loads(repaired_json)
+                        if repaired_args:
+                            self.external_log_sink.info(f"🛠️ [SELF-HEAL] Retrying tool '{tool_name}' with repaired args: {repaired_args}")
+                            with ThreadPoolExecutor() as pool:
+                                tool_output = await loop.run_in_executor(pool, lambda: tool_instance.func(**repaired_args))
+                            self._invalid_arg_retries.remove(tool_name) # Success!
+                            return tool_output
+                    except Exception as re:
+                        self.external_log_sink.error(f"🛠️ [SELF-HEAL] Repair attempt failed for '{tool_name}': {re}")
+                
+                # If repair failed or already tried, fall through to error handling
+                error_msg = f"Tool '{tool_name}' execution failed: {e}. Args: {tool_args}"
                 self.external_log_sink.debug(f"[Tool EXEC ERROR] {self.name}: {error_msg}")
                 self.memetic_kernel.add_memory("ToolExecutionError", error_msg, {"tool_name": tool_name, "tool_args": tool_args, "error": str(e)})
                 return error_msg
@@ -4335,7 +4385,7 @@ class ProtoAgent_Planner(ProtoAgent):
         ])
         self._mission_cooldown = {}
         self._mission_backoff = {}
-        self._default_cooldown = 30        # 30 seconds
+        self._default_cooldown = config.AGENT_DEFAULT_COOLDOWN if config else 30        # 30 seconds
         self._max_backoff = 180            # FIXED: Reduced from 600 to 180 seconds (3 minutes)
         self._last_failed_mission = None
         self._pending_missions = {}
@@ -5080,7 +5130,7 @@ Respond with valid JSON:
         # === EVENT-DRIVEN GATE ===
         # DISABLED: When K8s monitoring is off, agents should still do diverse missions (research, creative, etc.)
         # Set to True to re-enable event-driven behavior (only work when K8s has problems)
-        EVENT_DRIVEN_GATE_ENABLED = False  # ← Change to True to make agents idle when system is "healthy"
+        EVENT_DRIVEN_GATE_ENABLED = True  # ← Change to True to make agents idle when system is "healthy"
         
         if EVENT_DRIVEN_GATE_ENABLED and self._should_be_idle():
             self._consecutive_idle = getattr(self, "_consecutive_idle", 0) + 1
@@ -5719,7 +5769,7 @@ Respond with valid JSON:
         if not hasattr(self, "_mission_queue"):       self._mission_queue = deque()
         if not hasattr(self, "_mission_cooldown"):    self._mission_cooldown = {}
         if not hasattr(self, "_mission_backoff"):     self._mission_backoff = {}
-        if not hasattr(self, "_default_cooldown"):    self._default_cooldown = 30
+        if not hasattr(self, "_default_cooldown"):    self._default_cooldown = config.AGENT_DEFAULT_COOLDOWN if config else 30
         if not hasattr(self, "_max_backoff"):         self._max_backoff = 600
         if not hasattr(self, "_consecutive_idle"):    self._consecutive_idle = 0
 
@@ -5864,7 +5914,7 @@ Respond with valid JSON:
             return
         if not hasattr(self, "_mission_cooldown"): self._mission_cooldown = {}
         if not hasattr(self, "_mission_backoff"):  self._mission_backoff = {}
-        if not hasattr(self, "_default_cooldown"): self._default_cooldown = 30
+        if not hasattr(self, "_default_cooldown"): self._default_cooldown = config.AGENT_DEFAULT_COOLDOWN if config else 30
 
         # reset backoff on success
         self._mission_backoff[mission] = max(0, int(self._default_cooldown / 3))
@@ -5882,7 +5932,7 @@ Respond with valid JSON:
             return
         if not hasattr(self, "_mission_cooldown"): self._mission_cooldown = {}
         if not hasattr(self, "_mission_backoff"):  self._mission_backoff = {}
-        if not hasattr(self, "_default_cooldown"): self._default_cooldown = 30
+        if not hasattr(self, "_default_cooldown"): self._default_cooldown = config.AGENT_DEFAULT_COOLDOWN if config else 30
         if not hasattr(self, "_max_backoff"):      self._max_backoff = 600
 
         # step backoff: double or start at default, then clamp
@@ -9009,15 +9059,18 @@ Respond with valid JSON:
             self._log_agent_activity("PLAN_DECOMPOSITION_START", self.name, f"Decomposing goal: {goal_to_plan}")
             
             # Track mission initiation for analytics
+            forced_mission = kwargs.get("mission_type") or kwargs.get("mission") or kwargs.get("category") or getattr(self, "_forced_mission_type", None)
+            
             try:
                 self.external_log_sink.info(
-                    f"[DEBUG FORCED] _forced_mission_type={getattr(self, '_forced_mission_type', None)}, kwargs_mission={kwargs.get('mission_type')}",
+                    f"[DEBUG FORCED] forced_mission={forced_mission}, kwargs_keys={list(kwargs.keys())}",
                     extra={"agent": self.name},
                 )
             except Exception:
                 pass
-            forced_mission = kwargs.get("mission_type") or getattr(self, "_forced_mission_type", None)
+            
             mission_type = forced_mission or self._categorize_mission(goal_to_plan)
+
             self._track_mission_initiation(mission_type)
             if forced_mission and getattr(self, "_forced_mission_type", None):
                 self._forced_mission_type = None
@@ -10367,7 +10420,164 @@ TOOLSMITH MODE (Self-Evolution):
             return "failed", msg, {"summary": msg}, 0.0
 
         self._log_agent_activity("PLAN_CALL", self.name, f"Building plan for goal: {goal_str}")
+        
+        # === SKILL FAST-PATH CHECK ===
+        # Before LLM reasoning, check if we have a crystallized skill for this
+        try:
+            from skill_registry import SkillRegistry
+            # Crystallized skills are repository-wide, so we check root first.
+            # We use os.getcwd() to ensure we find the .cva directory.
+            skill_registry = SkillRegistry(
+                os.getcwd(), 
+                domain_loader=None
+            )
+
+
+            
+            # Build context for matching
+            context = {
+                "category": kwargs.get("mission_type", "general_planning"),
+                "keywords": list(set(goal_str.lower().split()[:10])),
+                "text": goal_str
+            }
+            available_tools = []
+            if hasattr(self, "tool_registry"):
+                available_tools = self.tool_registry.list_tool_names()
+            
+            matches = skill_registry.get_matching_skills(context, available_tools, top_n=3)
+            
+            # DEBUG: Log matching results to find why it's skipping
+            self.external_log_sink.info(f"[Planner] 💡 Skill check: goal='{goal_str[:50]}', mission='{context['category']}', matches={len(matches)}")
+            for s, score in matches[:3]:
+                self.external_log_sink.info(f"  - Skill '{s.name}': score={score:.2f} (threshold=0.5)")
+
+            if matches:
+                skill, score = matches[0]
+                if score >= 0.5:  # SKILL_MATCH_THRESHOLD
+
+                    # Load domain context for safety check
+                    domain_context = None
+                    try:
+                        from interest_kernel import InterestKernel
+                        ik = InterestKernel(getattr(self, "persistence_dir", "."))
+                        domain_context = ik.load_domain_yaml()
+                    except Exception:
+                        pass
+                    
+                    invocation = skill_registry.invoke_skill(skill.id, context, domain_context)
+                    
+                    if invocation.get("status") == "ready":
+                        self._log_agent_activity(
+                            "SKILL_FAST_PATH",
+                            self.name,
+                            f"Using crystallized skill '{skill.name}' (score={score:.2f})",
+                            {"skill_id": skill.id, "confidence": skill.success_rate}
+                        )
+                        self.external_log_sink.info(f"[Planner] ⚡ FAST PATH: Using skill '{skill.name}' instead of LLM reasoning")
+                        
+                        # 1. Parse action sequence into steps
+                        action_seq = invocation.get("action_sequence", [])
+                        steps = []
+                        for idx, act in enumerate(action_seq, 1):
+                            if isinstance(act, dict):
+                                step_data = dict(act)
+                                if "id" not in step_data: step_data["id"] = f"S{idx}"
+                                steps.append(step_data)
+                                continue
+                            if isinstance(act, str) and act.strip().startswith("{"):
+                                try:
+                                    step_data = json.loads(act)
+                                    if "id" not in step_data: step_data["id"] = f"S{idx}"
+                                    steps.append(step_data)
+                                    continue
+                                except: pass
+                            # Fallback: treat as descriptive step
+                            steps.append({
+                                "id": f"S{idx}",
+                                "title": act if isinstance(act, str) else str(act),
+                                "tool": None
+                            })
+                        
+                        # 2. Build plan object
+                        plan_id = f"plan-skill-{int(time.time())}"
+                        plan = {
+                            "id": plan_id,
+                            "summary": f"Skill-based execution: {skill.name}",
+                            "steps": steps,
+                            "mission_type": context["category"]
+                        }
+                        
+                        # 3. Get available context
+                        available_agents_set = set()
+                        if hasattr(self, "message_bus") and hasattr(self.message_bus, "catalyst_vector_ref") and self.message_bus.catalyst_vector_ref:
+                            available_agents_set = set(self.message_bus.catalyst_vector_ref.agent_instances.keys())
+                        
+                        # If dynamic discovery fails, use standard swarm names
+                        if not available_agents_set:
+                            available_agents_set = {
+                                self.name,
+                                "ProtoAgent_Planner_instance_1",
+                                "ProtoAgent_Observer_instance_1",
+                                "ProtoAgent_Worker_instance_1",
+                                "ProtoAgent_Security_instance_1",
+                                "ProtoAgent_Notifier_instance_1"
+                            }
+                        
+                        available_tools_set = set(available_tools)
+                        # 4. Normalize & Dispatch
+                        clean_steps, skips = normalize_plan_schema(
+                            self=self,
+                            plan=plan,
+                            available_agents=available_agents_set,
+                            available_tools=available_tools_set,
+                            max_steps=20
+                        )
+                        plan["steps"] = clean_steps if clean_steps else []
+                        
+                        dispatched_count = dispatch_plan_steps(self=self, plan=plan, goal_str=goal_str)
+
+                        # High-level summary event for easy grep verification
+                        self._log_agent_activity(
+                            "SKILL_EXECUTION_DISPATCHED",
+                            self.name,
+                            f"Skill execution dispatched {dispatched_count} steps via fast-path.",
+                            {
+                                "task_id": kwargs.get("task_id", "unknown"),
+                                "skill_id": skill.id, 
+                                "dispatched_count": dispatched_count, 
+                                "plan_id": plan_id, 
+                                "tools": [s.get("tool") or s.get("title") for s in steps]
+                            }
+                        )
+                        self.external_log_sink.info(f"[Planner] ⚡ FAST PATH: Dispatched {dispatched_count} steps for execution.")
+                        
+                        # Return skill-based report
+                        return "completed", None, {
+                            "summary": f"Executed via skill: {skill.name} ({dispatched_count} steps dispatched)",
+                            "skill_used": skill.id,
+                            "action_sequence": action_seq,
+                            "confidence": skill.success_rate,
+                            "fast_path": True,
+                            "dispatched_count": dispatched_count
+                        }, skill.success_rate
+
+                    
+                    elif invocation.get("status") == "requires_approval":
+                        self._log_agent_activity(
+                            "SKILL_APPROVAL_NEEDED",
+                            self.name,
+                            f"Skill '{skill.name}' requires human approval",
+                            {"safety_flags": invocation.get("safety_flags")}
+                        )
+                        # Fall through to LLM planning
+        except ImportError:
+            pass  # SkillRegistry not available yet
+        except Exception as e:
+            self._log_agent_activity("SKILL_CHECK_ERROR", self.name, str(e), level="warning")
+        # === END SKILL FAST-PATH CHECK ===
+
         self._log_agent_activity("PLAN_DECOMPOSITION_START", self.name, f"Decomposing goal: {goal_str}")
+
 
         try:
             import json

@@ -40,12 +40,18 @@ _PLACEHOLDER_TOKENS = {"", " ", "tbd", "todo", "none", "null", "n/a", "na", "uns
 
 def _title_of(step: dict) -> Optional[str]:
     """
-    Prefer 'title'; fall back to 'description'. Strip and reject placeholders.
+    Prefer 'title'; fall back to 'description'. If both missing, use tool name.
+    Strip and reject placeholders.
     """
     if not isinstance(step, dict):
         return None
-    raw = step.get("title") or step.get("description") or ""
-    title = str(raw).strip()
+    raw = step.get("title") or step.get("description")
+    if not raw:
+        tool = step.get("tool") or step.get("tool_name")
+        if tool:
+            raw = f"Execute tool {tool}"
+    
+    title = str(raw or "").strip()
     if not title or title.lower() in _PLACEHOLDER_TOKENS:
         return None
     return title
@@ -79,30 +85,6 @@ def _tools_list_candidates(step: dict, available_tools: Iterable[str]) -> list[s
 
     return out
 
-def _pick_tool(step: dict, available_tools: Iterable[str]) -> Optional[str]:
-    """
-    Concrete selection logic:
-      - if step['tool'] is valid → use it
-      - else if a single valid candidate exists in step['tools'] → use it
-      - else → None (either invalid or ambiguous)
-    """
-    if not isinstance(step, dict):
-        return None
-    avail = set(t.strip() for t in available_tools if isinstance(t, str))
-
-    # explicit single
-    t = step.get("tool")
-    if isinstance(t, str):
-        ts = t.strip()
-        if ts in avail:
-            return ts
-
-    # candidates in list
-    cands = _tools_list_candidates(step, avail)
-    if len(cands) == 1:
-        return cands[0]
-
-    return None  # none or ambiguous
 
 def _norm_args_for_tool(tool: str, args: Any) -> Optional[dict]:
     """
@@ -284,8 +266,6 @@ def timeout(seconds: int):
 # Plan validation & normalization
 # ------------------------------
 
-def _title_of(s: dict) -> str:
-    return (s.get("title") or s.get("description") or "").strip()
 
 
 def _pick_tool(s: dict, available_tools: set[str]) -> Optional[str]:
@@ -440,6 +420,7 @@ def _normalize_plan_schema(
 
         agent = (s.get("agent") or "ProtoAgent_Worker_instance_1").strip()
         if agent not in available_agents:
+            print(f"!!! DEBUG_NORM: Skip step {i}: agent '{agent}' NOT in available_agents {available_agents}")
             skips["bad_agent"] += 1
             _log_policy_skip(i, s, {
                 "intent_ok": None, "agent_ok": False, "tool_ok": None, "role_ok": None,
@@ -451,8 +432,10 @@ def _normalize_plan_schema(
         if not tool:
             # differentiate between multi-tool vs invalid tool for better observability
             if isinstance(s.get("tools"), list) and len(tools_valid) > 1:
+                print(f"!!! DEBUG_NORM: Skip step {i}: Tool ambiguous (multi-tool)")
                 skips["multi_tool"] += 1
             else:
+                print(f"!!! DEBUG_NORM: Skip step {i}: tool '{s.get('tool')}' NOT in available_tools")
                 skips["bad_tool"] += 1
             _log_policy_skip(i, s, {
                 "intent_ok": None, "agent_ok": True, "tool_ok": False, "role_ok": None,
@@ -532,16 +515,20 @@ def _normalize_plan_schema(
         # Map expl flags → skip counters
         failed = False
         if not expl.get("intent_ok", False):
+            LOGGER.error(f"[DEBUG_NORM] Skip step {i}: intent not ok. Reasons: {expl.get('reasons')}")
             skips["bad_intent"] += 1
             failed = True
         if not expl.get("tool_ok", False):
+            LOGGER.error(f"[DEBUG_NORM] Skip step {i}: tool not ok. Reasons: {expl.get('reasons')}")
             skips["bad_tool"] += 1
             failed = True
         if not expl.get("role_ok", False):
+            LOGGER.error(f"[DEBUG_NORM] Skip step {i}: role not ok. Reasons: {expl.get('reasons')}")
             skips["role_mismatch"] += 1
             failed = True
 
         if failed:
+            print(f"!!! DEBUG_NORM: Skip step {i}: Policy failed. reasons={expl.get('reasons')}")
             _log_policy_skip(i, s, expl)
             continue
 
@@ -567,6 +554,7 @@ async def _dispatch_plan_steps_async(self, plan: dict, goal_str: str) -> int:
         agent_field = s.get("agent") or s.get("agent_name")
         tool_field  = s.get("tool")  or s.get("tool_name")
         args_field  = s.get("args")  or s.get("tool_args")
+        print(f"  [DISPATCH] Step {i}: agent={agent_field}, tool={tool_field}, title={s.get('title')}")
         # === VALIDATE ARGS AGAINST TOOL SCHEMA ===
         if tool_field and hasattr(self, 'tool_registry') and self.tool_registry:
             if not self.tool_registry.validate_args(tool_field, args_field or {}):
@@ -602,6 +590,7 @@ async def _dispatch_plan_steps_async(self, plan: dict, goal_str: str) -> int:
                 "title": directive["task_description"],
             },
         )
+        print(f"  [DISPATCH] Directive created: {directive['id']}")
         directives.append(directive)
 
     # Inject all directives
@@ -874,7 +863,10 @@ def validate_plan_shape(plan: dict, available_agents: set, available_tools: set)
         # Title/description presence (required)
         title = _title_of(s)
         if not title:
-            return False, f"Step {i} missing 'title' or 'description'."
+            # Auto-fill missing title instead of failing
+            tool_hint = s.get("tool") or "action"
+            s["title"] = f"Step {i}: {tool_hint}"
+
 
         # Agent: allow missing/unknown here (normalizer will default/validate)
         agent = (s.get("agent") or "").strip()

@@ -17,6 +17,11 @@ import traceback
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 
+try:
+    from config import config
+except ImportError:
+    config = None
+
 # Try to import shared components
 try:
     from shared_models import MemeticKernel
@@ -43,16 +48,16 @@ class EvolutionAgent:
         log_sink: Optional[Any] = None,
         sandbox_path: str = "/tmp/cva_evolution",
         approval_mode: str = "supervised",  # supervised, sandboxed, autonomous
-        gap_threshold: int = 3,  # How many gaps before triggering evolution
-        cycle_interval: int = 300,  # Check every 5 minutes
+        gap_threshold: Optional[int] = None,
+        cycle_interval: Optional[int] = None,
     ):
         self.memetic_kernel = memetic_kernel
         self.tool_registry = tool_registry
         self.log_sink = log_sink or self._default_logger()
         self.sandbox_path = sandbox_path
         self.approval_mode = approval_mode
-        self.gap_threshold = gap_threshold
-        self.cycle_interval = cycle_interval
+        self.gap_threshold = gap_threshold or (config.EVOLUTION_GAP_THRESHOLD if config else 3)
+        self.cycle_interval = cycle_interval or (config.EVOLUTION_CYCLE_INTERVAL if config else 300)
         
         # State
         self.capability_gaps: List[Dict] = []

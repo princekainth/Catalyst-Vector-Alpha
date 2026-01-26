@@ -24,6 +24,34 @@ class K8sActions:
             "max_operations_per_minute": 10
         }
 
+    def list_deployments(self, namespace: str = "default") -> Dict[str, Any]:
+        """
+        Lists all deployments in a namespace. Use this BEFORE k8s_scale or k8s_restart
+        to discover real deployment names instead of guessing.
+        """
+        outcome = {
+            "action": "k8s_list_deployments",
+            "namespace": namespace,
+            "deployments": [],
+            "status": "ok"
+        }
+        try:
+            deps = self.apps.list_namespaced_deployment(namespace=namespace)
+            for d in deps.items:
+                outcome["deployments"].append({
+                    "name": d.metadata.name,
+                    "replicas": d.spec.replicas,
+                    "available": d.status.available_replicas or 0,
+                    "ready": d.status.ready_replicas or 0
+                })
+            outcome["count"] = len(outcome["deployments"])
+            outcome["summary"] = f"Found {outcome['count']} deployments in namespace '{namespace}'"
+        except ApiException as e:
+            outcome.update({"status": "error", "error": f"API error: {e.reason}"})
+        except Exception as e:
+            outcome.update({"status": "error", "error": str(e)})
+        return outcome
+
     def restart_deployment(self, namespace: str, name: str) -> Dict[str, Any]:
         body = {"spec": {"template": {"metadata": {"annotations": {"ai.catalyst/restarted-at": str(int(time.time()))}}}}}
         outcome = {"action": "k8s_restart", "namespace": namespace, "deployment": name, "dry_run": self.dry_run}

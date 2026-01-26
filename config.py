@@ -36,6 +36,13 @@ class CVAConfig:
     CURIOSITY_CPU_MAX: float = 60.0  # max CPU usage (%) to allow curiosity
     CURIOSITY_QUIET_MINUTES: int = 10  # minutes since last incident resolution
     
+    # === Evolution ===
+    EVOLUTION_GAP_THRESHOLD: int = 3  # gaps before evolution
+    EVOLUTION_CYCLE_INTERVAL: int = 300  # seconds between evolution checks
+    
+    # === Agents ===
+    AGENT_DEFAULT_COOLDOWN: int = 30  # seconds
+    
     # === Paths ===
     PERSISTENCE_DIR: str = "persistence_data"
     LOG_DIR: str = "logs"
@@ -51,6 +58,9 @@ class CVAConfig:
             CURIOSITY_INTERVAL=int(os.getenv("CVA_CURIOSITY_INTERVAL", 300)),
             CURIOSITY_CPU_MAX=float(os.getenv("CVA_CURIOSITY_CPU_MAX", 60.0)),
             CURIOSITY_QUIET_MINUTES=int(os.getenv("CVA_CURIOSITY_QUIET_MINUTES", 10)),
+            EVOLUTION_GAP_THRESHOLD=int(os.getenv("CVA_EVOLUTION_GAP_THRESHOLD", 3)),
+            EVOLUTION_CYCLE_INTERVAL=int(os.getenv("CVA_EVOLUTION_CYCLE_INTERVAL", 300)),
+            AGENT_DEFAULT_COOLDOWN=int(os.getenv("CVA_AGENT_DEFAULT_COOLDOWN", 30)),
         )
 
 # Global config instance

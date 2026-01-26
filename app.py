@@ -340,6 +340,11 @@ def run_catalyst_system_in_background():
         # Expose running instance to tools that expect a global reference
         import tools as tools_module
         tools_module._cva_instance = system_instance
+
+        # Phase 23: Revive the swarm on startup to break starvation loops
+        if hasattr(system_instance, "revive_swarm"):
+            system_instance.revive_swarm(force=True)
+            
     except Exception as e:
         logger.exception("Fatal: failed to construct CatalystVectorAlpha")
         return
@@ -577,7 +582,9 @@ def handle_command():
         'task_description': command_text,
         'task_type': 'UserCommand',
         'task_id': task_id,
+        'mission_type': data.get('mission_type') or 'general_planning'
     }
+
     try:
         system_instance.inject_directives([directive])
         logger.info(f"Injected user command: {command_text} (task_id: {task_id})")

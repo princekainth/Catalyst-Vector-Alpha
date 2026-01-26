@@ -388,7 +388,7 @@ ISOLATE_NETWORK_SEGMENT_PARAMS = {
     "required": ["segment_id", "reason"]
 }
 
-WEB_SEARCH_PARAMS = {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}
+WEB_SEARCH_PARAMS = {"type": "object", "properties": {"query": {"type": "string", "description": "Search query string"}, "max_results": {"type": "integer", "default": 3, "description": "Maximum number of results to return (1-10)"}}, "required": ["query"]}
 READ_WEBPAGE_PARAMS = {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}
 
 UPDATE_WORLD_MODEL_PARAMS = {"type": "object", "properties": {"key": {"type": "string"}, "value": {"type": "string"}}, "required": ["key", "value"]}
@@ -417,10 +417,11 @@ K8S_SCALE_PARAMS = {
         "namespace": {"type": "string", "description": "Kubernetes namespace."},
         "name":      {"type": "string", "description": "Deployment name (alias: 'deployment')."},
         "deployment":{"type": "string", "description": "Alias for 'name'."},
-        "replicas":  {"type": "integer", "description": "Target replicas.", "minimum": 1},
+        "replicas":  {"type": "integer", "description": "Target replicas. If omitted, and action is 'up' or 'down', it will increment/decrement.", "minimum": 1},
+        "action":    {"type": "string", "enum": ["up", "down", "none"], "default": "none"},
         "approval":  {"type": "string", "enum": ["human", "auto"], "default": "human"},
     },
-    "required": ["namespace", "replicas"]
+    "required": ["namespace"]
 }
 
 K8S_POD_METRICS_PARAMS = {
@@ -583,30 +584,41 @@ Do NOT include keys that are not in MissingKeys. Do NOT repeat provided args."""
                 roles_allowed={"Observer"},
             ),
 
+            # Utility: Current Time (Phase 26 fix)
+            Tool(
+                "get_current_time",
+                "Returns the current UTC date/time. No arguments required. Use this instead of check_calendar for time queries.",
+                {"type": "object", "properties": {}, "required": []},
+                lambda **kw: {"status": "ok", "data": datetime.now(timezone.utc).isoformat(), "summary": f"Current UTC time: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}"},
+                task_type="Observation",
+                roles_allowed={"Observer", "Planner", "Worker", "Security", "Notifier"},
+            ),
+
             # Kubernetes Scale (Actuation)
             Tool(
                 "k8s_scale",
-                "Kubernetes: scale a Deployment to N replicas.",
+                "Kubernetes: scale a Deployment. Specify 'replicas' (int >= 1) for absolute scaling, or 'action' ('up' or 'down') for relative scaling. 'namespace' is always required.",
                 K8S_SCALE_PARAMS,
                 lambda **kw: (
                     {"status": "awaiting_approval",
                      "action": "k8s_scale",
                      "namespace": kw["namespace"],
                      "deployment": (kw.get("deployment") or kw.get("name")),
-                     "replicas": int(kw["replicas"])}
+                     "replicas": kw.get("replicas"),
+                     "scaling_direction": kw.get("action")}
                     if (kw.get("approval", "human").lower() != "auto" and APPROVAL_MODE != "auto")
                     else K8S.scale_deployment(
                         namespace=kw["namespace"],
                         name=(kw.get("deployment") or kw.get("name")),
-                        replicas=int(kw["replicas"])
+                        replicas=kw.get("replicas", 1) # Fallback to 1 if entirely missing
                     )
                 ),
                 normalizer=_normalize_k8s_deploy_args,
                 validator=lambda a: (
                     not _is_placeholder(a.get("namespace"))
                     and (bool(a.get("name")) or bool(a.get("deployment")))
-                    and isinstance(a.get("replicas"), int)
-                    and a["replicas"] >= 1
+                    # Relaxed: either replicas OR action must be sensible
+                    and (isinstance(a.get("replicas"), int) or a.get("action") in ["up", "down"])
                 ),
                 cooldown_seconds=10.0,
                 task_type="Actuation",
@@ -634,7 +646,18 @@ Do NOT include keys that are not in MissingKeys. Do NOT repeat provided args."""
                 cooldown_seconds=10.0,
             ),
 
+            # Kubernetes List Deployments (Discovery - Phase 27)
             Tool(
+                "list_k8s_deployments",
+                "Lists all deployments in a namespace. ALWAYS call this BEFORE k8s_scale or k8s_restart to discover real deployment names instead of guessing.",
+                {"type": "object", "properties": {"namespace": {"type": "string", "default": "default"}}, "required": []},
+                lambda **kw: K8S.list_deployments(namespace=kw.get("namespace", "default")),
+                task_type="Observation",
+                roles_allowed={"Observer", "Worker", "Planner"},
+            ),
+
+            Tool(
+
                 "microsoft_autonomous_remediation",
                 "Microsoft Enterprise Remediation: capture crash logs, restart pod, and verify stabilization.",
                 {
@@ -731,7 +754,7 @@ Do NOT include keys that are not in MissingKeys. Do NOT repeat provided args."""
             # --- 🧠 MEMORY TOOLS ---
             Tool(
                 "remember_event",
-                "Save a critical observation or decision to long-term memory.",
+                "Save a critical observation or decision to long-term memory for future recall. Required: 'category' (observation|plan|action|outcome) and 'description'.",
                 {
                     "type": "object",
                     "properties": {
@@ -807,7 +830,7 @@ Do NOT include keys that are not in MissingKeys. Do NOT repeat provided args."""
                  cooldown_seconds=10.0, task_type="GenericTask", roles_allowed={"Security"}),
 
             # Info Retrieval
-            Tool("web_search", "Performs a web search using SerpApi.", WEB_SEARCH_PARAMS, _tf("web_search_tool"),
+            Tool("web_search", "Search the web using DuckDuckGo. Args: 'query' (str, required), 'max_results' (int, optional, default=3). Do NOT use 'limit'.", WEB_SEARCH_PARAMS, _tf("web_search_tool"),
                  task_type="InformationRetrieval", roles_allowed={"Planner", "Observer", "Security", "Worker", "Notifier"}, redact_fields={"api_key"},
                  validator=lambda a: not _is_placeholder(a.get("query"))),
             Tool("capture_system_screenshot", "Captures a semantic visual snapshot of the system state.", {}, _tf("capture_system_screenshot"),
@@ -877,8 +900,8 @@ Do NOT include keys that are not in MissingKeys. Do NOT repeat provided args."""
                  validator=lambda a: not _is_placeholder(a.get("query_text")), task_type="GenericTask", roles_allowed={"Planner","Observer"}),
 
             # Text / Reports
-            Tool("analyze_text_sentiment", "Analyzes text sentiment (positive/negative).", ANALYZE_TEXT_SENTIMENT_PARAMS, _tf("analyze_text_sentiment_tool"),
-                 validator=lambda a: not _is_placeholder(a.get("text")), task_type="GenericTask", roles_allowed={"Planner","Observer"}),
+            Tool("analyze_text_sentiment", "Analyzes text sentiment (positive/negative). Use for pattern analysis on logs or task history.", ANALYZE_TEXT_SENTIMENT_PARAMS, _tf("analyze_text_sentiment_tool"),
+                 validator=lambda a: not _is_placeholder(a.get("text")), task_type="GenericTask", roles_allowed={"Planner", "Observer", "Worker", "Notifier"}),
             Tool("create_pdf", "Creates a PDF from text content and saves it.", CREATE_PDF_PARAMS, _tf("create_pdf_tool"),
                  normalizer=_normalize_pdf_args,
                  validator=lambda a: (not _is_placeholder(a.get("filename")) and not _is_placeholder(a.get("text_content"))),
@@ -1329,6 +1352,23 @@ Do NOT include keys that are not in MissingKeys. Do NOT repeat provided args."""
                 # Mark tool as broken for 5 minutes
                 self._broken_until[tool_name] = now + 300
                 logger.warning(f"[TOOL BREAKER] '{tool_name}' marked broken after {self._failure_counts[tool_name]} consecutive failures; backoff 300s.")
+                
+                # Phase 27: Trigger evolution for repeated failures
+                try:
+                    from catalyst_vector_alpha import get_system_instance
+                    system = get_system_instance()
+                    if system and hasattr(system, "evolution_agent") and system.evolution_agent:
+                        system.evolution_agent.record_capability_gap(
+                            description=f"Tool '{tool_name}' failing repeatedly ({self._failure_counts[tool_name]} times)",
+                            context=f"Circuit breaker tripped. Tool may need schema fix, better defaults, or replacement.",
+                            attempted_tool=tool_name,
+                            failure_reason="max_failures_reached",
+                            source_agent="ToolRegistry_CircuitBreaker"
+                        )
+                        logger.info(f"[EVOLUTION] 🧬 Triggered evolution for failing tool '{tool_name}'")
+                except Exception as evo_err:
+                    logger.debug(f"[EVOLUTION] Could not trigger evolution: {evo_err}")
+                
                 try:
                     if getattr(self, "db", None):
                         self.db.record_metric(
@@ -1339,6 +1379,7 @@ Do NOT include keys that are not in MissingKeys. Do NOT repeat provided args."""
                         )
                 except Exception:
                     pass
+
 
     # --- Diagnostics ---
     def _breaker_status_tool(self) -> Dict[str, Any]:

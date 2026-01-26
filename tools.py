@@ -355,12 +355,21 @@ def _v_k8s_scale_args(args: dict) -> Optional[str]:
     name = args.get("deployment") or args.get("name")
     if not (isinstance(name, str) and name.strip() and not _is_placeholder(name)):
         return "either 'deployment' or 'name' is required"
-    try:
-        r = int(args.get("replicas"))
-        if r < 1:
-            return "'replicas' must be >= 1"
-    except Exception:
-        return "'replicas' must be an integer"
+    
+    # Relaxed: if replicas is missing but action is present, we allow it (handled in registry)
+    replicas = args.get("replicas")
+    action = args.get("action")
+    
+    if replicas is None and action is None:
+        # We'll allow missing replicas for "up/down" style calls or default to 1
+        pass 
+    elif replicas is not None:
+        try:
+            r = int(replicas)
+            if r < 1:
+                return "'replicas' must be >= 1"
+        except Exception:
+            return "'replicas' must be an integer"
     return None
 
 # ------------------------------------------------------------------------------
@@ -751,12 +760,17 @@ def check_network_connectivity(source_pod: str, target_service: str, namespace: 
     import subprocess
     
     try:
+        if not _valid_url(f"http://{target_service}"):
+            return {"ok": False, "error": f"Invalid target_service: {target_service}"}
+
         # Execute curl from inside the source pod
+        # Note: We use shlex.quote to prevent target_service from injecting shell commands
+        target_url = shlex.quote(f"http://{target_service}")
         cmd = [
             "kubectl", "exec", source_pod, "-n", namespace, "--",
             "curl", "-s", "-o", "/dev/null", "-w", "%{http_code},%{time_total}",
             "--max-time", str(timeout),
-            f"http://{target_service}"
+            target_url
         ]
         
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout+5)

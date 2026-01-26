@@ -14,6 +14,7 @@ from tool_registry import tool_registry as GLOBAL_TOOL_REGISTRY
 from shared_models import OllamaLLMIntegration
 from shared_memory import SharedMemory
 from quarantine import is_quarantined
+from interest_kernel import InterestKernel
 try:
     from config import config as cva_config
 except Exception:
@@ -44,39 +45,22 @@ class CuriosityLoop:
         self.persistence_dir = base_dir
         self.proposals_dir = os.path.join(base_dir, "proposals")
         self.repo_root = self._find_repo_root(os.getcwd())
-        
-        # Topics to explore based on CVA's domain
-        self.base_interests = [
-            "kubernetes self-healing",
-            "autonomous infrastructure",
-            "eBPF observability",
-            "chaos engineering",
-            "AI SRE automation",
-            "cost optimization kubernetes",
-            "predictive autoscaling",
-            "advanced jailbreaking techniques",
-            "sandbox escape payloads",
-            "database internal performance",
-            "network port exploitation",
-            "offensive AI security",
-            "neural network evolution",
-            "quantum computing breakthroughs",
-            "zero-day vulnerability research",
-            "autonomous code optimization",
-            "digital organism philosophy",
-            "multi-agent swarm coordination",
-            "algorithmic trading ethics",
-            "space exploration robotics",
-            "CRISPR gene editing ethics",
-            "fusion energy 2025 progress",
-            "meta-learning in LLMs",
-            "distributed vector databases",
-        ]
+        self.interest_kernel = InterestKernel(self.repo_root, self.llm, self.tools)
+        self.current_interest = None
         
         self.explored = set()
         self.discoveries = []
         self.idle_cycles = 0 # Track how long we've been bored
         
+        # Phase 28: Genesis Mode - A-Life Exploration
+        self.genesis_mode = False           # When True, runs indefinitely
+        self.genesis_seed = None            # Starting concept
+        self.concept_queue = []             # Unknown concepts to explore next
+        self.knowledge_graph = {}           # concept -> [related_concepts]
+        self.genesis_depth = 0              # How deep we've gone
+        self.max_genesis_depth = 100        # Safety limit
+        
+
     def start(self):
         """Start the curiosity loop in background."""
         self.running = True
@@ -165,6 +149,9 @@ class CuriosityLoop:
             return
         
         self.external_log_sink.info(f"[Curiosity] 📚 Topic: {topic}")
+        if self.current_interest:
+            self.external_log_sink.info(f"[Curiosity] 💡 Why: {self.current_interest.get('why_now')}")
+        
         self.explored.add(topic)
         
         # 2. Search web
@@ -231,10 +218,50 @@ class CuriosityLoop:
                         context=f"Discovered during curiosity exploration on topic: {topic}",
                         source_agent="CuriosityLoop"
                     )
+            
+            # --- NEW: Record outcome feedback to InterestKernel ---
+            if self.current_interest and hasattr(self.interest_kernel, 'record_outcome'):
+                self.interest_kernel.record_outcome(
+                    interest_id=self.current_interest.get("id", "unknown"),
+                    topic=topic,
+                    impact_score=0.8 if gaps else 0.2,  # High impact if gaps found
+                    actionability_score=0.9,  # We successfully acted on it
+                    gap_produced=headline_gap if gaps else None,
+                    notes=f"Explored via web search, found {len(gaps)} gaps",
+                    category=self.current_interest.get("category", "generic"),
+                    tools_used=["web_search", "read_webpage"],
+                    actions_taken=self.current_interest.get("next_actions", []),
+                    success=True,
+                )
             # --------------------------------------
+
+        
+        # Phase 28: Genesis Mode - Extract unknowns and add to queue
+        if self.genesis_mode and knowledge:
+            unknowns = self._extract_unknowns(knowledge, topic)
+            if unknowns:
+                # Add to knowledge graph
+                self.knowledge_graph[topic] = unknowns
+                # Add to exploration queue
+                for u in unknowns:
+                    if u not in self.explored and u not in self.concept_queue:
+                        self.concept_queue.append(u)
+                self.external_log_sink.info(
+                    f"[Genesis] 🧬 Extracted {len(unknowns)} unknowns: {unknowns[:3]}... Queue: {len(self.concept_queue)}",
+                    extra={"event_type": "GENESIS_EXTRACT", "source": "CuriosityLoop", "description": f"Unknowns: {unknowns}"}
+                )
     
+
     def _pick_topic(self) -> str:
         """Pick next topic to explore."""
+        # Phase 28: Genesis Mode - use concept queue if active
+        if self.genesis_mode:
+            topic = self._genesis_pick_topic()
+            if topic:
+                self.genesis_depth += 1
+                return topic
+            # If genesis queue empty, fall through to base interests
+        
         # First, check recent failures in memory for relevant topics
         try:
             if hasattr(self.memory, 'search'):
@@ -251,12 +278,21 @@ Reply with just the search query, nothing else."""
         except Exception:
             pass  # LLM generation failed, fall back to base interests
         
-        # Otherwise pick from base interests
-        for topic in self.base_interests:
-            if topic not in self.explored:
+        # Otherwise pick from derived interests
+        kernel_data = self.interest_kernel.get_interests()
+        interests = kernel_data.get("interests", [])
+        
+        # Sort by priority
+        sorted_interests = sorted(interests, key=lambda x: x.get("priority", 0), reverse=True)
+        
+        for interest in sorted_interests:
+            topic = interest.get("topic")
+            if topic and topic not in self.explored:
+                self.current_interest = interest
                 return topic + " 2025"
         
         return None
+
 
     def _should_run(self) -> tuple[bool, str]:
         if not self._event_gate_idle():
@@ -413,14 +449,19 @@ Reply with just the search query, nothing else."""
         """Ask LLM what capabilities we're missing."""
         available_tools = self.tools.list_tool_names()[:20] if hasattr(self.tools, 'list_tool_names') else []
         
-        prompt = f"""I am CVA, an autonomous Kubernetes management AI.
+        interest_context = ""
+        if self.current_interest:
+            questions = "\n".join([f"- {q}" for q in self.current_interest.get("questions", [])])
+            interest_context = f"\nSpecifically, I am interested in these questions:\n{questions}\n"
 
+        prompt = f"""I am CVA, a self-evolving operational intelligence system.
+{interest_context}
 My current tools: {', '.join(available_tools)}
 
 I just read this article:
 {knowledge[:1500]}
 
-Based on this, what ONE specific capability am I missing that would make me better?
+Based on this, what ONE specific capability am I missing that would make me better at solving the problems identified?
 Be specific. Reply in one sentence."""
 
         try:
@@ -617,6 +658,111 @@ Be specific. Reply in one sentence."""
     def get_pending_requests(self) -> list:
         """Return capability gaps found."""
         return [d['capability_gaps'] for d in self.discoveries if d.get('capability_gaps')]
+
+    # ========================== PHASE 28: GENESIS MODE ==========================
+    
+    def enable_genesis(self, seed_topic: str = "Internet Infrastructure"):
+        """
+        Enable Genesis Mode - transforms CVA into a self-directed learning organism.
+        It will explore the seed topic, discover unknowns, and recursively learn forever.
+        """
+        self.genesis_mode = True
+        self.genesis_seed = seed_topic
+        self.concept_queue = [seed_topic]
+        self.genesis_depth = 0
+        self.external_log_sink.info(
+            f"[Genesis] 🧬 GENESIS MODE ACTIVATED - Seed: '{seed_topic}'",
+            extra={"event_type": "GENESIS_START", "source": "CuriosityLoop", "description": f"Seed: {seed_topic}"}
+        )
+        return {"status": "genesis_activated", "seed": seed_topic, "depth": 0}
+    
+    def disable_genesis(self):
+        """Disable Genesis Mode and return to normal curiosity exploration."""
+        self.genesis_mode = False
+        self.external_log_sink.info(
+            f"[Genesis] 🔴 Genesis Mode disabled. Explored {len(self.explored)} concepts.",
+            extra={"event_type": "GENESIS_STOP", "source": "CuriosityLoop"}
+        )
+        return {"status": "genesis_disabled", "concepts_explored": len(self.explored)}
+    
+    def _extract_unknowns(self, knowledge: str, current_topic: str) -> list[str]:
+        """Use LLM to identify unknown concepts that require further research."""
+        if not knowledge or len(knowledge) < 100:
+            return []
+        
+        prompt = f"""You are an AI researcher mapping human knowledge.
+From this text about "{current_topic}", identify 3-5 technical concepts, technologies, 
+or topics that would require further research to fully understand.
+
+Text:
+{knowledge[:2500]}
+
+Rules:
+- Return concepts that are DIFFERENT from "{current_topic}"
+- Focus on technical terms, protocols, standards, or systems
+- Exclude generic words like "software" or "computer"
+
+Return ONLY a JSON array of concept names, e.g. ["DNS", "BGP routing", "CDN architecture"]
+"""
+        try:
+            result = self.llm.generate_text(prompt, json_mode=True)
+            unknowns = json.loads(result)
+            if isinstance(unknowns, list):
+                # Filter out already explored and current topic
+                filtered = [u for u in unknowns 
+                           if isinstance(u, str) 
+                           and u.lower() not in [t.lower() for t in self.explored]
+                           and u.lower() != current_topic.lower()
+                           and len(u) < 100]
+                return filtered[:5]
+        except Exception as e:
+            self.external_log_sink.debug(f"[Genesis] Unknown extraction failed: {e}")
+        return []
+    
+    def _genesis_pick_topic(self) -> str | None:
+        """Pick next topic from the concept queue (Genesis Mode)."""
+        if self.genesis_depth >= self.max_genesis_depth:
+            self.external_log_sink.info(
+                f"[Genesis] ⚠️ Max depth reached ({self.max_genesis_depth}). Resetting queue.",
+                extra={"event_type": "GENESIS_DEPTH_LIMIT", "source": "CuriosityLoop"}
+            )
+            self.genesis_depth = 0
+            # Start fresh with base interests if queue is empty
+            if not self.concept_queue:
+                return None
+        
+        while self.concept_queue:
+            topic = self.concept_queue.pop(0)
+            if topic not in self.explored:
+                return topic
+        
+        # Queue empty - try to find new topics from memory
+        try:
+            if hasattr(self.memory, 'search'):
+                recent = self.memory.search("interesting unknown concept", limit=3)
+                if recent:
+                    prompt = f"""Based on this research history, suggest ONE new topic to explore:
+{str(recent)[:500]}
+Return just the topic name."""
+                    new_topic = self.llm.generate_text(prompt).strip()
+                    if new_topic and len(new_topic) < 100:
+                        return new_topic
+        except Exception:
+            pass
+        
+        return None
+    
+    def get_genesis_status(self) -> dict:
+        """Return current Genesis Mode status."""
+        return {
+            "genesis_mode": self.genesis_mode,
+            "seed": self.genesis_seed,
+            "depth": self.genesis_depth,
+            "queue_size": len(self.concept_queue),
+            "concepts_explored": len(self.explored),
+            "knowledge_graph_size": len(self.knowledge_graph),
+            "next_topics": self.concept_queue[:5] if self.concept_queue else []
+        }
 
 
 def main():

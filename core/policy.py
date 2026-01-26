@@ -56,6 +56,9 @@ ALLOWED_INTENTS: set[str] = {
     "config_tuning",
     "health_audit",
     "status_reporting",
+    "general_planning",
+    "k8s_monitoring",
+    "resource_optimization",
 }
 
 INTENT_SYNONYMS: Dict[str, str] = {
@@ -119,6 +122,9 @@ TOOL_DEFAULT_INTENT: dict[str, str] = {
 
     # resource mgmt
     "update_resource_allocation": "performance_optimization",
+    "get_pod_status": "health_audit",
+    "kubernetes_pod_metrics": "performance_optimization",
+    "watch_k8s_events": "health_audit",
 }
 
 # Very small, specific keyword fallbacks (last resort, whole-word match)
@@ -503,6 +509,9 @@ INTENT_SYNONYMS: Dict[str, str] = {
     "health": "health_audit",
     "status": "status_reporting",
     "report": "status_reporting",
+    "general_planning": "general_planning",
+    "k8s_monitoring": "k8s_monitoring",
+    "resource_optimization": "resource_optimization",
 }
 
 # Values treated as "no intent specified"

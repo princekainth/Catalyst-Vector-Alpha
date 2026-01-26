@@ -1,0 +1,136 @@
+{
+  "version": 1,
+  "updated_at": 1769368400,
+  "skills": [
+    {
+      "id": "skill-e929f4f4-1769328645",
+      "name": "K8s Pod Health Check",
+      "signature": "e929f4f4e03c4081",
+      "category": "general_planning",
+      "required_tools": [
+        "get_pod_status",
+        "kubernetes_pod_metrics"
+      ],
+      "action_pattern": "analyze",
+      "action_sequence": [
+        {
+          "agent": "ProtoAgent_Observer_instance_1",
+          "tool": "get_pod_status",
+          "args": {
+            "namespace": "all"
+          }
+        },
+        {
+          "agent": "ProtoAgent_Observer_instance_1",
+          "tool": "kubernetes_pod_metrics",
+          "args": {
+            "namespace": "all"
+          }
+        },
+        {
+          "agent": "ProtoAgent_Observer_instance_1",
+          "tool": "watch_k8s_events",
+          "args": {
+            "minutes": 10,
+            "event_types": [
+              "Warning",
+              "Normal"
+            ]
+          }
+        },
+        {
+          "agent": "ProtoAgent_Observer_instance_1",
+          "tool": "measure_responsiveness",
+          "args": {}
+        }
+      ],
+      "trigger_keywords": [
+        "pod",
+        "health",
+        "cpu",
+        "memory",
+        "check"
+      ],
+      "safety_flags": [],
+      "version": 1,
+      "confidence_model": {
+        "success_rate": 1.0,
+        "times_used": 1,
+        "last_outcomes": [
+          true
+        ]
+      },
+      "created_at": 1769328645.4942358,
+      "last_used": 1769368400,
+      "quarantined": false
+    },
+    {
+      "id": "skill-2c936eb1-1769351118",
+      "name": "K8s Pod Health Check (General)",
+      "signature": "2c936eb1158f32ee",
+      "category": "general_planning",
+      "required_tools": [
+        "get_pod_status",
+        "kubernetes_pod_metrics",
+        "prometheus_query"
+      ],
+      "action_pattern": "analyze",
+      "action_sequence": [
+        "{\"tool\": \"get_pod_status\", \"args\": {\"namespace\": \"all\"}}",
+        "{\"tool\": \"kubernetes_pod_metrics\", \"args\": {\"namespace\": \"all\"}}",
+        "{\"tool\": \"prometheus_query\", \"args\": {\"query\": \"node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes\"}}"
+      ],
+      "trigger_keywords": [
+        "pod",
+        "health",
+        "cpu",
+        "memory",
+        "resource"
+      ],
+      "safety_flags": [],
+      "version": 1,
+      "confidence_model": {
+        "success_rate": 1.0,
+        "times_used": 0,
+        "last_outcomes": []
+      },
+      "created_at": 1769351118.5617812,
+      "last_used": null,
+      "quarantined": false
+    },
+    {
+      "id": "skill-6573886d-1769351118",
+      "name": "K8s Resource Analysis (General)",
+      "signature": "6573886d5fdc3e9f",
+      "category": "general_planning",
+      "required_tools": [
+        "list_k8s_deployments",
+        "kubernetes_pod_metrics",
+        "prometheus_range_query"
+      ],
+      "action_pattern": "analyze",
+      "action_sequence": [
+        "{\"tool\": \"list_k8s_deployments\", \"args\": {\"namespace\": \"all\"}}",
+        "{\"tool\": \"kubernetes_pod_metrics\", \"args\": {\"namespace\": \"all\"}}",
+        "{\"tool\": \"prometheus_range_query\", \"args\": {\"query\": \"sum(container_memory_usage_bytes) by (pod)\", \"range_minutes\": 60}}"
+      ],
+      "trigger_keywords": [
+        "resource",
+        "cpu",
+        "memory",
+        "pod",
+        "deployment"
+      ],
+      "safety_flags": [],
+      "version": 1,
+      "confidence_model": {
+        "success_rate": 1.0,
+        "times_used": 0,
+        "last_outcomes": []
+      },
+      "created_at": 1769351118.5619724,
+      "last_used": null,
+      "quarantined": false
+    }
+  ]
+}

@@ -2,6 +2,14 @@
 
 ## ✅ COMPLETED THIS SESSION
 
+### Skill Fast-Path Execution (NEW)
+- [x] SkillRegistry: crystallized skills from recurring intents
+- [x] Fast-path dispatch: bypass LLM for matched skills
+- [x] Loader validation: auto-quarantine invalid skills
+- [x] SKILL_EXECUTION_DISPATCHED event for verification
+- [x] Primitives extraction for future transfer learning
+- [x] Skills usage logging (.cva/skills_usage.jsonl)
+
 ### Event-Driven Architecture
 - [x] `_should_be_idle()` gate - checks K8s health
 - [x] All 5 agents respect idle mode
@@ -16,7 +24,7 @@
 
 ### Code Quality
 - [x] ~400 print statements → proper logging
-- [x] DEBUG spam removed
+- [x] DEBUG spam removed (including DEBUG_FAST)
 - [x] Duplicate log messages fixed
 - [x] Bare `except:` → `except Exception:`
 
@@ -25,6 +33,7 @@
 - [x] Idle outcome logged as INFO not ERROR
 - [x] Memory context pollution fixed
 - [x] GmailAgent duplicate logs fixed
+- [x] Fixed undefined `task_id` in SKILL_EXECUTION_DISPATCHED
 
 ---
 

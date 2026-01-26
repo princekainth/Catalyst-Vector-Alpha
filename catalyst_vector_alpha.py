@@ -456,8 +456,6 @@ class CatalystVectorAlpha:
                 tool_registry=self.tool_registry,
                 log_sink=self.external_log_sink,
                 approval_mode="autonomous",  # Changed to autonomous by user request
-                gap_threshold=1,  # Trigger immediately on first gap (Demo mode)
-                cycle_interval=10,  # Check every 10 seconds (Accelerated for demo)
             )
             self.evolution_agent.start()
             self.external_log_sink.info("[EvolutionAgent] 🧬 Started self-evolution monitoring")
@@ -1634,6 +1632,30 @@ class CatalystVectorAlpha:
                 if hasattr(agent, "eidos_spec") and agent.eidos_spec.get("is_dynamic", False):
                     agent.is_expired = True
                     self.external_log_sink.info(f"    -> Dynamic agent {name} marked for immediate collection.")
+
+    def revive_swarm(self, force=False):
+        """Phase 23: Force-restore energy to all agents to break starvation loops."""
+        self.external_log_sink.info("🚑 [REVIVAL] Initiating swarm-wide metabolic stabilization...")
+        revived_count = 0
+        for name, agent in self.agent_instances.items():
+            if hasattr(agent, "energy"):
+                old_energy = agent.energy
+                if force or old_energy < 20:
+                    agent.energy = 100.0
+                    revived_count += 1
+                    # Unpause if paused due to starvation
+                    if hasattr(agent, "is_paused") and agent.is_paused:
+                        # Simple unpause check
+                        agent.is_paused = False
+        
+        self.external_log_sink.info(f"✨ [REVIVAL] Successfully stabilized {revived_count} agents.")
+        
+        # Broadcast to dashboard
+        self._log_swarm_activity(
+            "SYSTEM_STABILIZATION",
+            "Orchestrator",
+            f"Automated metabolic stabilization performed. {revived_count} agents revived."
+        )
    
     def _handle_agent_perform_task(self, directive: dict):
         """Handles the AGENT_PERFORM_TASK directive with enhanced task completion tracking."""
@@ -1691,7 +1713,8 @@ class CatalystVectorAlpha:
                     text_content=text_content,
                     task_type=task_type,
                     tool_name=directive.get('tool_name'),      # ADD THIS
-                    tool_args=directive.get('tool_args')       # ADD THIS
+                    tool_args=directive.get('tool_args'),       # ADD THIS
+                    mission_type=directive.get('mission_type')
                 )
                 
             # After execution, reflect and log.
@@ -3637,13 +3660,21 @@ class CatalystVectorAlpha:
                         # Normalize the result
                         outcome, reason, report, progress = _normalize_task_result(raw_result)
                         
-                        # Log the result
-                        if outcome != "idle":
-                            # Phase 6: Reward Mechanism
+                        # Phase 23: Swarm Recovery & Metabolic Buff
+                        if hasattr(agent, "gain_energy"):
                             if outcome == "completed":
-                                if hasattr(agent, "gain_energy"):
-                                    agent.gain_energy(10.0)
-                            
+                                agent.gain_energy(12.0) # Bonus for success
+                            elif outcome == "failed":
+                                # Minor energy for intent processing / tool validation attempt (Good Faith)
+                                agent.gain_energy(2.0)
+                            elif progress > 0:
+                                # Partial success
+                                agent.gain_energy(6.0)
+                            else:
+                                # Idle cycle recovery (prevents death loops)
+                                agent.gain_energy(0.5)
+                        
+                        if outcome != "idle":
                             logger.debug(f"{agent_name}: {outcome} (progress: {progress:.1%})")
                             if reason:
                                 logger.debug(f"  Reason: {reason}")

@@ -1,0 +1,28 @@
+domain:
+  name: "CVA"
+  mission: "Build a self-evolving operational intelligence system."
+  risk_level: "low"  # low, medium, high
+  requires_human_approval_for:
+    - "deployments"
+    - "deletions"
+  current_focus:
+    - "memory + learning loops"
+    - "agent safety + guardrails"
+    - "tool reliability"
+  constraints:
+    - "Prefer deterministic steps over creativity"
+    - "No unsafe actions without approval"
+  environment:
+    stack:
+      - "python"
+      - "fastapi"
+      - "postgres"
+      - "kubernetes"
+    tools_available:
+      - "kubectl"
+      - "prometheus"
+      - "log reader"
+  success_signals:
+    - "reduces repeated failures"
+    - "learns reusable skills"
+    - "creates plans that execute"
