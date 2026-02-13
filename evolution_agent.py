@@ -249,7 +249,7 @@ class EvolutionAgent:
             query = f"python code to {clean_desc}"
             try:
                 self.log_sink.info(f"[EvolutionAgent] 🔍 Searching: {query}")
-                result = self.tool_registry.safe_call("web_search", query=query, max_results=3)
+                result = self.tool_registry.safe_call("web_search", query=query)
                 
                 # Even if "success" is False, we might have some data or we can just proceed to LLM with the intent
                 search_results = []
@@ -293,19 +293,26 @@ REQUIREMENTS:
 1. Function Name: `{tool_name}`
 2. Arguments: Use `**kwargs` or specific named arguments with type hints.
 3. Return: Must return a dictionary with keys: `{{"success": bool, "message": str, "data": dict}}`.
-4. Libraries: You can use `requests`, `json`, `datetime`, `random`, `math`, `BeautifulSoup` (bs4).
-5. Error Handling: Wrap everything in try/except blocks.
+4. Libraries: You can use `requests`, `json`, `datetime`, `random`, `math`, `bs4`, `urllib`.
+5. Error Handling: Wrap EVERYTHING in try/except blocks. Return `success: False` on error.
 6. Documentation: specific docstring describing what it does.
-7. CRITICAL: PRIORITIZE FREE / NO-AUTH APIs. Do NOT using APIs that require a key (like OpenWeatherMap) unless absolutely necessary. Look for open endpoints (e.g. Open-Meteo for weather, wttr.in, public gov APIs). Use scraping if no free API exists.
+7. CRITICAL: PRIORITIZE FREE / NO-AUTH APIs. Use Open-Meteo for weather. Use public news RSS feeds if possible.
+8. IMPORTS: All imports MUST be inside the function definition. Do not use top-level imports.
 
 OUTPUT FORMAT:
-Return ONLY the python code. No markdown formatting, no backticks.
+Return ONLY the raw python code. 
+Do NOT use Markdown code blocks (no ```python ... ```). 
+Do NOT include any explanations or text outside the code.
 Include the `TOOL_METADATA` dictionary at the end.
+The dictionary MUST contain "name", "description", "parameters", and "category".
 
 EXAMPLE:
 def get_current_time(**kwargs):
     import datetime
-    return {{"success": True, "message": "Time fetched", "data": {{"time": str(datetime.datetime.now())}}}}
+    try:
+        return {{"success": True, "message": "Time fetched", "data": {{"time": str(datetime.datetime.now())}}}}
+    except Exception as e:
+        return {{"success": False, "message": str(e), "data": {{}}}}
 
 TOOL_METADATA = {{
     "name": "get_current_time",
@@ -347,11 +354,17 @@ TOOL_METADATA = {{
     def _sanitize_tool_name(self, description: str) -> str:
         """Convert description to valid Python function name."""
         import re
-        # Remove common verbs to make it noun-based if possible, or just keep it active
-        clean = re.sub(r"(?i)^(i need|create|make|write|generate)\s+(a|an)\s+(tool|function|script)\s+(to|that|for)\s+", "", description)
+        # Remove common technical/log prefixes
+        clean = re.sub(r"(?i)^(missing tool for task:|i need|create|make|write|generate)\s+", "", description)
+        clean = re.sub(r"(?i)^(a|an)\s+(tool|function|script)\s+(to|that|for)\s+", "", clean)
         
-        words = clean.lower().split()[:4]
-        name = "_".join(words)
+        # Take the most meaningful part
+        words = clean.lower().split()
+        # Filter out very common words
+        stopwords = {"the", "a", "an", "for", "me", "with", "and", "in", "at", "it", "must", "include"}
+        keywords = [w for w in words if w not in stopwords][:4]
+        
+        name = "_".join(keywords)
         name = re.sub(r"[^a-z0-9_]", "", name)
         
         # Ensure it starts with a letter
@@ -361,19 +374,20 @@ TOOL_METADATA = {{
         return name or "evolved_tool"
     
     def _test_tool_code(self, tool_code: Dict) -> tuple[bool, str]:
-        """
-        Test the generated tool code in sandbox.
-        Returns (passed: bool, output: str)
-        """
+        # Try to detect actual function name from code
+        import re
         code = tool_code.get("code", "")
         tool_name = tool_code.get("name", "unknown")
+        m = re.search(r"def\s+([a-zA-Z0-9_]+)\s*\(", code)
+        actual_name = m.group(1) if m else tool_name
         
         # Write to sandbox
         test_file = os.path.join(self.sandbox_path, f"test_{tool_name}.py")
         try:
             with open(test_file, "w") as f:
                 f.write(code)
-                f.write(f"\n\n# Test\nif __name__ == '__main__':\n    print({tool_name}())\n")
+                # Call the detected function name
+                f.write(f"\n\n# Test\nif __name__ == '__main__':\n    import json\n    result = {actual_name}()\n    print(json.dumps(result))\n")
             
             # Syntax check
             with open(test_file, "r") as f:

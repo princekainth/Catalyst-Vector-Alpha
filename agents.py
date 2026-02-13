@@ -12550,14 +12550,16 @@ class ProtoAgent_Worker(ProtoAgent):
                     )
 
             prompt = (
-                f'Given the task: "{task_description}"\n'
-                f"And the available tools:\n{tool_instructions}\n\n"
-                "Select the SINGLE most appropriate tool and generate MEANINGFUL arguments.\n"
+                f"Task: \"{task_description}\"\n\n"
+                "CRITICAL: If NO existing tool below is a PERFECT match for this task, you MUST respond with 'no_tool'.\n"
+                "DO NOT attempt to use a tool that is only 'somewhat related' or has a similar name but different purpose.\n\n"
+                "If no appropriate tool exists, respond with:\n"
+                '{"tool_name": "no_tool", "tool_args": {"reason": "Capability gap: [detailed reason]"}}\n\n'
+                f"AVAILABLE TOOLS:\n{tool_instructions}\n\n"
                 "CRITICAL: Respond with ONLY a JSON object. No explanations.\n\n"
                 "Good examples:\n"
-                '{"tool_name":"create_pdf","tool_args":{"filename":"report","text_content":"Actual report content here"}}\n'
-                '{"tool_name":"web_search","tool_args":{"query":"specific search terms"}}\n'
-                '{"tool_name":"get_system_cpu_load","tool_args":{"time_interval_seconds":60}}\n\n'
+                '{"tool_name":"create_pdf","tool_args":{"filename":"report","text_content":"..."}}\n'
+                '{"tool_name":"no_tool","tool_args":{"reason": "No tool for fetching cryptoprice data"}}\n\n'
                 "RULES:\n- Never use empty/placeholder values.\n- Output ONLY valid JSON."
             )
 
@@ -12841,12 +12843,27 @@ class ProtoAgent_Worker(ProtoAgent):
 
         # ---------- validate availability ----------
         if not tool_name or not registry.has_tool(tool_name):
+            # Missing Capability Detected
+            try:
+                orch = getattr(self, "orchestrator", None)
+                if orch and hasattr(orch, "evolution_agent") and orch.evolution_agent:
+                    orch.evolution_agent.record_capability_gap(
+                        description=f"Missing tool for task: {task_description}",
+                        context=f"Agent could not select a tool. LLM suggested '{tool_name}' which is not available.",
+                        attempted_tool=tool_name or "none",
+                        failure_reason="tool_not_found",
+                        source_agent=self.name
+                    )
+                    self.external_log_sink.info(f"[{self.name}] 🧬 Reported missing tool gap to EvolutionAgent.")
+            except Exception as evo_err:
+                self.external_log_sink.warning(f"[{self.name}] Failed to report gap: {evo_err}")
+
             rep = _store_task_result_early(
-                "completed",
+                "failed", # Changed from completed to failed to reflect missing capability
                 f"No appropriate tool available for task: {task_description}",
                 {"selection_source": source},
             )
-            return "completed", None, rep, 1.0
+            return "failed", "tool_not_found", rep, 0.0
 
         # ---------- execute via registry.safe_call ----------
         try:
@@ -12947,6 +12964,21 @@ class ProtoAgent_Worker(ProtoAgent):
                 "Tool execution failed.",
                 0.0,
             )
+            # Trigger Evolution on Failure (Optimization: Agent-side reporting)
+            try:
+                orch = getattr(self, "orchestrator", None)
+                if orch and hasattr(orch, "evolution_agent") and orch.evolution_agent:
+                    orch.evolution_agent.record_capability_gap(
+                        description=f"Tool '{tool_name}' failed execution: {failure_reason}",
+                        context=f"Task: {task_description}\nArguments: {tool_args}",
+                        attempted_tool=tool_name,
+                        failure_reason=str(failure_reason),
+                        source_agent=self.name
+                    )
+                    self.external_log_sink.info(f"[{self.name}] 🧬 Reported tool failure to EvolutionAgent.")
+            except Exception as evo_err:
+                # Do not let reporting failure crash the agent loop
+                self.external_log_sink.warning(f"[{self.name}] Failed to report gap: {evo_err}")
 
         report = {
             "summary": summary,

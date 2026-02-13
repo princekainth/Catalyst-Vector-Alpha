@@ -455,10 +455,15 @@ class CatalystVectorAlpha:
                 memetic_kernel=self.memetic_kernel,
                 tool_registry=self.tool_registry,
                 log_sink=self.external_log_sink,
-                approval_mode="autonomous",  # Changed to autonomous by user request
+                approval_mode="autonomous",  # Changed to autonomous for Phase 2 immediate verify
+                gap_threshold=3,  # Reverted to standard threshold
             )
             self.evolution_agent.start()
-            self.external_log_sink.info("[EvolutionAgent] 🧬 Started self-evolution monitoring")
+            # Link back to tool registry for failure feedback loop
+            if hasattr(self.tool_registry, "set_evolution_agent"):
+                self.tool_registry.set_evolution_agent(self.evolution_agent)
+            
+            self.external_log_sink.info("[EvolutionAgent] 🧬 Started self-evolution monitoring (Autonomous)")
         except Exception as _e:
             self.external_log_sink.warning(f"[EvolutionAgent] failed to start: {_e}")
             self.evolution_agent = None
@@ -3154,7 +3159,6 @@ class CatalystVectorAlpha:
             self.dynamic_directive_queue.clear()
 
         logger.info(f"--- Processing {len(snapshot)} Injected Directives ---")
-
         actionable_directives = [
             task for task in snapshot if enforce_intent(task)
         ]
@@ -3965,18 +3969,19 @@ if __name__ == "__main__":
     )
     
     # --- Register spawn tool and set CVA reference ---
-    from tools import spawn_specialized_agent
+    # --- Register spawn tool and set CVA reference ---
+    # from tools import spawn_specialized_agent  # MISSING in tools.py
     import tools as tools_module
     tools_module._cva_instance = catalyst_alpha  # Set global reference
     
-    from tool_registry import Tool
-    GLOBAL_TOOL_REGISTRY.register_tool(Tool(
-    name="spawn_specialized_agent",
-    func=spawn_specialized_agent,
-    description="Spawn a specialized agent for a specific task",
-    parameters={}
-    ))
-    central_logger.info("Spawn tool registered")
+    # from tool_registry import Tool
+    # GLOBAL_TOOL_REGISTRY.register_tool(Tool(
+    # name="spawn_specialized_agent",
+    # func=spawn_specialized_agent,
+    # description="Spawn a specialized agent for a specific task",
+    # parameters={}
+    # ))
+    central_logger.info("Spawn tool registration SKIPPED (missing implementation)")
     
     # --- Register Browser Tools for Teachers ---
     try:
@@ -3996,6 +4001,7 @@ if __name__ == "__main__":
     
     # Load previous system state (this will call _load_system_state within CatalystVectorAlpha)
     catalyst_alpha._load_system_state()
+    
     # --- END CRITICAL ---
 
     # Start the continuous cognitive loop with supervisor protection
@@ -4006,6 +4012,8 @@ if __name__ == "__main__":
     )
     supervisor.run_supervised(tick_sleep=10)
     logger.info("Catalyst Vector Alpha (Phase 11) Execution Finished.")
+
+
 
 
 

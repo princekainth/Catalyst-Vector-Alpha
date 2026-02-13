@@ -16,6 +16,8 @@ def _is_standard_response(res: Any) -> bool:
     return set(res.keys()) >= {"status", "data", "error"}
 import threading
 import inspect
+import importlib.util
+import ast
 
 # Use the unified Tool model + policy helpers
 from tool_types import Tool, derive_task_type, validate_role_task_assignment
@@ -500,12 +502,20 @@ class ToolRegistry:
         self._last_failure_ts: Dict[str, float] = {}
         self._broken_until: Dict[str, float] = {}
         self.db = db
+        self.evolution_agent = None  # Explicit reference to avoid circular imports
         cfg = get_config()
         timeouts_cfg = cfg.get("tool_timeouts", {}) if isinstance(cfg, dict) else {}
         self._per_tool_timeouts = (timeouts_cfg.get("per_tool") or {})
         self.toolsmith_enabled = bool((cfg.get("features", {}) if isinstance(cfg, dict) else {}).get("toolsmith_enabled", False))
+        self.toolsmith_enabled = bool((cfg.get("features", {}) if isinstance(cfg, dict) else {}).get("toolsmith_enabled", False))
         self._initialize_default_tools()
+        self.load_evolved_tools()
         self._default_reasoner_llm = None
+
+    def set_evolution_agent(self, agent: Any) -> None:
+        """Inject the EvolutionAgent instance to enable self-healing."""
+        self.evolution_agent = agent
+        log.info(f"[ToolRegistry] EvolutionAgent linked: {agent}")
 
     def _llm_reason_defaults(self, tool: Tool, args: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
@@ -558,6 +568,81 @@ Do NOT include keys that are not in MissingKeys. Do NOT repeat provided args."""
             log.warning("LLM default inference failed for %s: %s", tool.name, e)
 
         return base_args
+
+    # --- Dynamic Loading (Persistence) ---
+    def load_evolved_tools(self) -> None:
+        """
+        Scan evolved_tools/ directory for valid Python tool files and register them.
+        """
+        evolved_dir = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "evolved_tools"
+        )
+        if not os.path.exists(evolved_dir):
+            print(f"DEBUG: No evolved_tools directory found at {evolved_dir}")
+            log.info(f"[ToolRegistry] No evolved_tools directory found at {evolved_dir}")
+            return
+
+        print(f"DEBUG: Scanning for evolved tools in {evolved_dir}...")
+        log.info(f"[ToolRegistry] Scanning for evolved tools in {evolved_dir}...")
+        
+        count = 0
+        for filename in os.listdir(evolved_dir):
+            if not filename.endswith(".py") or filename == "__init__.py":
+                continue
+                
+            file_path = os.path.join(evolved_dir, filename)
+            
+            try:
+                # 1. Syntax Validaton
+                with open(file_path, "r") as f:
+                    source = f.read()
+                ast.parse(source) # Will raise SyntaxError if invalid
+                
+                # 2. Dynamic Import
+                module_name = filename[:-3]
+                spec = importlib.util.spec_from_file_location(module_name, file_path)
+                if spec and spec.loader:
+                    module = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(module)
+                    
+                    # 3. Validation & Registration
+                    if hasattr(module, "TOOL_METADATA"):
+                        metadata = module.TOOL_METADATA
+                        tool_name = metadata.get("name")
+                        
+                        # Find the function
+                        # It usually matches the tool name, but let's be flexible
+                        func = getattr(module, tool_name, None)
+                        if not func:
+                            # Fallback: check for 'missing_tool_for_task' or similar from our generation template
+                            # Or just grab the first function in the module that isn't imported
+                            for name, obj in inspect.getmembers(module, inspect.isfunction):
+                                if name == tool_name or name.startswith("tool_") or name == "missing_tool_for_task":
+                                    func = obj
+                                    break
+                                    
+                        if func and tool_name:
+                            # Register it!
+                            self._tools[tool_name] = Tool(
+                                name=tool_name,
+                                description=metadata.get("description", "Evolved Tool"),
+                                parameters=metadata.get("parameters", {}),
+                                func=func,
+                                task_type="Actuation", # Default to Actuation for safety, or derive?
+                                roles_allowed={"Worker", "Planner"}
+                            )
+                            count += 1
+                            log.info(f"[ToolRegistry] 🧬 Loaded evolved tool: {tool_name}")
+                        else:
+                            log.warning(f"[ToolRegistry] Evolved tool {filename} invalid: missing function entry point.")
+                    else:
+                        log.warning(f"[ToolRegistry] Evolved tool {filename} invalid: missing TOOL_METADATA.")
+                        
+            except Exception as e:
+                log.error(f"[ToolRegistry] Failed to load evolved tool {filename}: {e}")
+                
+        log.info(f"[ToolRegistry] Loaded {count} evolved tools.")
 
     # --- Registration ---
     def _initialize_default_tools(self) -> None:
@@ -1354,11 +1439,9 @@ Do NOT include keys that are not in MissingKeys. Do NOT repeat provided args."""
                 logger.warning(f"[TOOL BREAKER] '{tool_name}' marked broken after {self._failure_counts[tool_name]} consecutive failures; backoff 300s.")
                 
                 # Phase 27: Trigger evolution for repeated failures
-                try:
-                    from catalyst_vector_alpha import get_system_instance
-                    system = get_system_instance()
-                    if system and hasattr(system, "evolution_agent") and system.evolution_agent:
-                        system.evolution_agent.record_capability_gap(
+                if self.evolution_agent and hasattr(self.evolution_agent, "record_capability_gap"):
+                    try:
+                        self.evolution_agent.record_capability_gap(
                             description=f"Tool '{tool_name}' failing repeatedly ({self._failure_counts[tool_name]} times)",
                             context=f"Circuit breaker tripped. Tool may need schema fix, better defaults, or replacement.",
                             attempted_tool=tool_name,
@@ -1366,8 +1449,11 @@ Do NOT include keys that are not in MissingKeys. Do NOT repeat provided args."""
                             source_agent="ToolRegistry_CircuitBreaker"
                         )
                         logger.info(f"[EVOLUTION] 🧬 Triggered evolution for failing tool '{tool_name}'")
-                except Exception as evo_err:
-                    logger.debug(f"[EVOLUTION] Could not trigger evolution: {evo_err}")
+                    except Exception as evo_err:
+                        logger.debug(f"[EVOLUTION] Could not trigger evolution: {evo_err}")
+                else:
+                    # Fallback or log that evolution is not linked
+                    logger.debug(f"[EVOLUTION] EvolutionAgent not linked; skipping gap recording for '{tool_name}'")
                 
                 try:
                     if getattr(self, "db", None):
