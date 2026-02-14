@@ -1695,7 +1695,7 @@ class CatalystVectorAlpha:
             reporting_agents_list = reporting_agents_ref
 
         agent = self.agent_instances[agent_name]
-        logger.debug(f"AGENT_PERFORM_TASK: Agent '{agent_name}' performing task: '{task_description}'.")
+        logger.info(f"AGENT_PERFORM_TASK: Agent '{agent_name}' performing task: '{task_description}'.")
         
         try:
             # Special handling: force Planner to run k8s_monitoring mission immediately

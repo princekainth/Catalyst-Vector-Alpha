@@ -15,17 +15,28 @@ const drawerWidth = 240;
 function App() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
+  const [lastHealthStatus, setLastHealthStatus] = useState(null);
 
   useEffect(() => {
     // Check system connection status
     const checkConnection = async () => {
       try {
         const response = await api.get('/health');
-        if (response.data.status === 'ok') {
-          setIsConnected(true);
+        if (response?.status !== 200 || !response?.data || typeof response.data !== 'object') {
+          setIsConnected(false);
+          setLastHealthStatus(null);
+          return;
         }
+
+        const status = response.data.status;
+        const runtimeState = response.data.runtime_state;
+        const connected = status === 'ok' || (status === 'online' && Boolean(runtimeState));
+
+        setIsConnected(connected);
+        setLastHealthStatus(connected ? status : null);
       } catch (error) {
         setIsConnected(false);
+        setLastHealthStatus(null);
       }
     };
 
