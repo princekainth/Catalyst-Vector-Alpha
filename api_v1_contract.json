@@ -1,0 +1,122 @@
+{
+  "version": "1.0.0",
+  "frozen_on": "2026-02-14",
+  "notes": [
+    "Endpoints listed here are the only v1 API surface.",
+    "Any endpoint outside this contract is experimental and must use /api/exp/* or remain disabled."
+  ],
+  "endpoints": [
+    {
+      "method": "GET",
+      "path": "/api/health",
+      "response": {
+        "status": "ok|error",
+        "data": "object",
+        "runtime_state": "string"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/status",
+      "response": {
+        "status": "ok|error",
+        "data": "object",
+        "runtime_state": "string"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/incidents/detect",
+      "request": {
+        "incident": "string",
+        "mission_type": "string (optional)",
+        "agent_name": "string (optional)"
+      },
+      "response": {
+        "status": "ok|error",
+        "data": {
+          "task_id": "string",
+          "queue_status": "string"
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/plan",
+      "request": {
+        "goal": "string",
+        "planner_agent_name": "string (optional)",
+        "mission_type": "string (optional)"
+      },
+      "response": {
+        "status": "ok|error",
+        "data": {
+          "task_id": "string",
+          "queue_status": "string"
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/act",
+      "request": {
+        "task": "string",
+        "agent_name": "string (optional)",
+        "task_type": "string (optional)",
+        "mission_type": "string (optional)",
+        "tool_name": "string (optional)",
+        "tool_args": "object (optional)"
+      },
+      "response": {
+        "status": "ok|error",
+        "data": {
+          "task_id": "string",
+          "queue_status": "string"
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/verify",
+      "request": {
+        "task_id": "string"
+      },
+      "response": {
+        "status": "ok|error",
+        "data": {
+          "task_id": "string",
+          "task": "object"
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/report",
+      "request": {
+        "task_id": "string (optional)",
+        "limit": "integer (optional, default 10)"
+      },
+      "response": {
+        "status": "ok|error",
+        "data": {
+          "task_id": "string (optional)",
+          "report": "object"
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/agents/spawn",
+      "request": {
+        "purpose": "string",
+        "context": "object (optional)"
+      },
+      "response": {
+        "status": "ok|error",
+        "data": {
+          "agent_id": "string"
+        }
+      }
+    }
+  ]
+}
