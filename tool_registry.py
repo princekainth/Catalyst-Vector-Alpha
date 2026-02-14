@@ -511,11 +511,20 @@ class ToolRegistry:
         self._initialize_default_tools()
         self.load_evolved_tools()
         self._default_reasoner_llm = None
+        self._tool_executor = None
 
     def set_evolution_agent(self, agent: Any) -> None:
         """Inject the EvolutionAgent instance to enable self-healing."""
         self.evolution_agent = agent
         log.info(f"[ToolRegistry] EvolutionAgent linked: {agent}")
+
+    def _get_tool_executor(self):
+        # Lazy import prevents module cycle at import time.
+        if self._tool_executor is None:
+            from cva_runtime.control_plane.tool_executor import ToolExecutor
+
+            self._tool_executor = ToolExecutor(registry=self)
+        return self._tool_executor
 
     def _llm_reason_defaults(self, tool: Tool, args: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
@@ -1258,11 +1267,40 @@ Do NOT include keys that are not in MissingKeys. Do NOT repeat provided args."""
         return t.func(**kwargs)
 
     def safe_call(self, tool_name: str, timeout_seconds: Optional[int] = None, **kwargs) -> Any:
+        context = kwargs.get("_context") if isinstance(kwargs.get("_context"), dict) else None
+        trace_id = kwargs.get("trace_id") or (context.get("trace_id") if isinstance(context, dict) else None)
+        agent_id = (
+            kwargs.get("agent_id")
+            or kwargs.get("caller_agent")
+            or (context.get("agent_id") if isinstance(context, dict) else None)
+            or "system"
+        )
+        executor = self._get_tool_executor()
+        return executor.execute(
+            agent_id=str(agent_id),
+            tool_name=tool_name,
+            args=dict(kwargs),
+            trace_id=trace_id,
+            context=context,
+            timeout_seconds=timeout_seconds,
+        )
+
+    def _safe_call_direct(self, tool_name: str, timeout_seconds: Optional[int] = None, **kwargs) -> Any:
         tool = self.get_tool(tool_name)
+        if not tool:
+            return {
+                "status": "error",
+                "data": None,
+                "error": f"Unknown tool '{tool_name}'",
+                "summary": None,
+            }
         canonical = tool.name
         now = time.time()
         context = kwargs.pop("_context", None)
         caller_agent = kwargs.pop("caller_agent", None)
+        kwargs.pop("trace_id", None)
+        kwargs.pop("agent_id", None)
+        kwargs.pop("approval_token", None)
 
         # Planner guard: block direct tool execution unless allowlisted
         allowlist = set()
