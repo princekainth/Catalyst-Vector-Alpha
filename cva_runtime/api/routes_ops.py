@@ -5,6 +5,8 @@ from flask import Blueprint, request
 
 from cva_runtime.api.responses import err, ok
 from cva_runtime.api.runtime import get_runtime
+from cva_runtime.control_plane.approvals import issue_approval_token
+from cva_runtime.control_plane.audit_log import hash_args
 
 
 ops_bp = Blueprint("ops_bp", __name__)
@@ -149,3 +151,45 @@ def api_report():
         limit = 10
 
     return ok({"report": {"recent_tasks": runtime.get_recent_tasks(limit=limit)}})
+
+
+@ops_bp.post("/api/approvals/issue")
+def api_issue_approval():
+    data = request.get_json(silent=True) or {}
+    trace_id = (data.get("trace_id") or "").strip()
+    tool = (data.get("tool") or "").strip()
+    args_hash = (data.get("args_hash") or "").strip()
+    agent_id = (data.get("agent_id") or "").strip() or None
+
+    if not args_hash and isinstance(data.get("args"), dict):
+        args_hash = hash_args(data.get("args") or {})
+
+    if not trace_id or not tool or not args_hash:
+        return err(
+            "invalid_request",
+            "'trace_id', 'tool', and 'args_hash' are required (or provide raw 'args').",
+            http_status=400,
+        )
+
+    ttl_seconds = data.get("ttl_seconds")
+    try:
+        ttl_seconds = int(ttl_seconds) if ttl_seconds is not None else None
+    except Exception:
+        return err("invalid_request", "'ttl_seconds' must be an integer.", http_status=400)
+
+    token, expires_in_s = issue_approval_token(
+        trace_id=trace_id,
+        tool=tool,
+        args_hash=args_hash,
+        agent_id=agent_id,
+        ttl_seconds=ttl_seconds,
+    )
+    return ok(
+        {
+            "approval_token": token,
+            "expires_in_s": expires_in_s,
+            "trace_id": trace_id,
+            "tool": tool,
+            "args_hash": args_hash,
+        }
+    )

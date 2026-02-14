@@ -7,6 +7,7 @@ import uuid
 from typing import Any, Dict, FrozenSet, Mapping
 
 from cva_runtime.control_plane.audit_log import hash_args, log_decision
+from cva_runtime.control_plane.approvals import validate_approval_token
 from cva_runtime.control_plane.capabilities import Capability, ToolRisk, get_tool_profile
 from cva_runtime.control_plane.policy import evaluate
 
@@ -56,7 +57,14 @@ AGENT_CAPABILITY_PROFILES: Dict[str, FrozenSet[Capability]] = {
     "notifier": frozenset({Capability.NET_OUTBOUND, Capability.FILE_READ}),
 }
 
-FULL_CAPABILITIES: FrozenSet[Capability] = frozenset(Capability)
+LEGACY_FALLBACK_CAPABILITIES: FrozenSet[Capability] = frozenset(
+    {
+        Capability.K8S_READ,
+        Capability.METRICS_READ,
+        Capability.LOGS_READ,
+        Capability.FILE_READ,
+    }
+)
 
 
 class ToolExecutor:
@@ -78,6 +86,8 @@ class ToolExecutor:
         safe_args = dict(args or {})
         ctx = dict(context or {})
         warnings: list[str] = []
+        policy_args = self._approval_binding_args(safe_args)
+        args_hash = hash_args(policy_args)
 
         profile = get_tool_profile(tool_name)
         if profile is None:
@@ -103,7 +113,46 @@ class ToolExecutor:
             )
 
         agent_caps = self._resolve_agent_capabilities(agent_id=agent_id, context=ctx)
-        approved = bool(ctx.get("approved")) or bool(safe_args.get("approval_token"))
+        approval_token = str(safe_args.get("approval_token") or "").strip()
+        approval_valid = False
+        approval_reason = "no approval token provided"
+        if approval_token and profile.risk == ToolRisk.DESTRUCTIVE:
+            approval_valid, approval_reason = validate_approval_token(
+                token=approval_token,
+                trace_id=trace,
+                tool=tool_name,
+                args_hash=args_hash,
+                agent_id=agent_id,
+                consume=True,
+            )
+            if not approval_valid:
+                self._try_audit(
+                    trace_id=trace,
+                    agent_id=agent_id,
+                    tool_name=tool_name,
+                    args=safe_args,
+                    decision="POLICY_DECISION",
+                    reason=f"invalid approval token: {approval_reason}",
+                    result_status="deny",
+                    latency_ms=self._elapsed_ms(started_ms),
+                    extra={
+                        "allow": False,
+                        "requires_approval": True,
+                        "risk": profile.risk.value,
+                        "required_caps": sorted(c.value for c in profile.required_caps),
+                        "approval": {"token_present": True, "valid": False, "reason": approval_reason},
+                    },
+                    warnings=warnings,
+                )
+                return self._error(
+                    code="approval_invalid",
+                    message=approval_reason,
+                    trace_id=trace,
+                    details={"tool": tool_name},
+                    warnings=warnings,
+                )
+
+        approved = bool(ctx.get("approved")) or approval_valid
         decision = evaluate(
             agent_id=agent_id,
             tool_name=tool_name,
@@ -127,6 +176,11 @@ class ToolExecutor:
                 "requires_approval": decision.requires_approval,
                 "risk": profile.risk.value,
                 "required_caps": sorted(c.value for c in profile.required_caps),
+                "approval": {
+                    "token_present": bool(approval_token),
+                    "valid": approval_valid,
+                    "reason": approval_reason,
+                },
             },
             warnings=warnings,
         )
@@ -136,8 +190,8 @@ class ToolExecutor:
                 approval = {
                     "trace_id": trace,
                     "tool": tool_name,
-                    "args_hash": hash_args(safe_args),
-                    "approval_token": decision.approval_token,
+                    "args_hash": args_hash,
+                    "approval_token": None,
                 }
                 return self._error(
                     code="approval_required",
@@ -233,8 +287,8 @@ class ToolExecutor:
             if role in role_hint:
                 return caps
 
-        # Compatibility fallback for legacy paths that do not pass agent metadata yet.
-        return FULL_CAPABILITIES
+        # Conservative compatibility fallback for legacy paths with missing agent metadata.
+        return LEGACY_FALLBACK_CAPABILITIES
 
     def _try_audit(
         self,
@@ -351,3 +405,8 @@ class ToolExecutor:
         if requires_approval:
             return "approval_required"
         return "deny"
+
+    @staticmethod
+    def _approval_binding_args(args: Mapping[str, Any]) -> Dict[str, Any]:
+        blocked = {"approval_token", "trace_id", "agent_id", "caller_agent", "_context"}
+        return {k: v for k, v in dict(args or {}).items() if k not in blocked}
