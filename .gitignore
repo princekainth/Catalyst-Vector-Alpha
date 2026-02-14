@@ -40,3 +40,12 @@ token.json
 minikube-linux-amd64
 backups_test/
 backups_test/
+
+# runtime artifacts / caches
+**/interest_cache.json
+**/*.cache
+**/.cva/**
+**/persistence/**
+**/backups/**
+**/__pycache__/
+**/*.pyc
