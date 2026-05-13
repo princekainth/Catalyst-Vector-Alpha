@@ -5,6 +5,11 @@ from datetime import datetime, timezone
 from agent_factory import AgentFactory
 from database import CVADatabase
 
+try:
+    from config_manager import config
+except ImportError:
+    config = None
+
 logger = logging.getLogger("CatalystLogger")
 
 class GuardianAgent:
@@ -14,9 +19,9 @@ class GuardianAgent:
         self.factory = factory
         self.db = db
         self.policies = {
-            "max_agents": 50,
-            "max_failed_tasks": 3,
-            "max_idle_minutes": 30
+            "max_agents": getattr(config, "GUARDIAN_MAX_AGENTS", 50) if config else 50,
+            "max_failed_tasks": getattr(config, "GUARDIAN_MAX_FAILED_TASKS", 3) if config else 3,
+            "max_idle_minutes": getattr(config, "GUARDIAN_MAX_IDLE_MINS", 30) if config else 30
         }
         logger.info("Guardian Agent initialized")
     

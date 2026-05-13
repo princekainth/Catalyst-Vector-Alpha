@@ -1,19 +1,20 @@
 # tool_registry.py  
 from __future__ import annotations
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 import os
 import time
-import os
 import logging
 from typing import Optional, Dict, List, Any, Tuple, Set
 from urllib.parse import urlparse
 import json
 
 def _is_standard_response(res: Any) -> bool:
-    """Detect if result already matches CVA's standardize_response shape."""
+    """Detect if resultAlready matches CVA's standardize_response shape."""
     if not isinstance(res, dict):
         return False
-    return set(res.keys()) >= {"status", "data", "error"}
+    # CVA standard: must have 'status' and 'success'
+    return "status" in res and "success" in res
 import threading
 import inspect
 import importlib.util
@@ -23,6 +24,7 @@ import ast
 from tool_types import Tool, derive_task_type, validate_role_task_assignment
 from config_manager import get_config
 import tools
+import tools_system
 
 # Optional sandbox_toolsmith (graceful fallback for environments without it)
 try:
@@ -186,7 +188,7 @@ def _tf(name: str):
 _PLACEHOLDER_STRINGS: Set[str] = {
     "", " ", "string", "placeholder", "tbd", "todo", "none", "null", "n/a", "na"
 }
-_REDACT_KEYS = {"api_key", "apikey", "auth", "authorization", "password", "token", "secret"}
+_REDACT_KEYS = {"api_key", "apikey", "auth", "authorization", "password", "token", "secret", "env_value", "value", "env_val"}
 
 def _is_placeholder(v: Any) -> bool:
     if v is None:
@@ -402,6 +404,46 @@ SHUFFLE_ROLES_PARAMS = {"type": "object", "properties": {"stagnant_agents": {"ty
 GET_CPU_AVG_5M_PROM_PARAMS = {"type": "object", "properties": {"instance": {"type": "string"}}, "required": []}
 GET_HTTP_P95_MS_PROM_PARAMS = {"type": "object", "properties": {"service": {"type": "string"}}, "required": ["service"]}
 
+K8S_PATCH_DEPLOYMENT_IMAGE_PARAMS = {
+    "type": "object",
+    "properties": {
+        "deployment": {"type": "string"},
+        "container": {"type": "string"},
+        "image": {"type": "string"},
+        "namespace": {"type": "string", "default": "default"}
+    },
+    "required": ["deployment", "container", "image"],
+    "additionalProperties": False
+}
+
+K8S_PATCH_PROBE_PARAMS = {
+    "type": "object",
+    "properties": {
+        "deployment": {"type": "string"},
+        "container": {"type": "string"},
+        "probe_type": {"type": "string", "enum": ["readinessProbe", "livenessProbe"]},
+        "path": {"type": "string"},
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "initial_delay_seconds": {"type": "integer", "minimum": 0, "maximum": 3600},
+        "period_seconds": {"type": "integer", "minimum": 1, "maximum": 3600},
+        "failure_threshold": {"type": "integer", "minimum": 1, "maximum": 100},
+        "namespace": {"type": "string", "default": "default"}
+    },
+    "required": ["deployment", "container", "probe_type"],
+    "additionalProperties": False
+}
+
+K8S_ROLLOUT_UNDO_PARAMS = {
+    "type": "object",
+    "properties": {
+        "deployment": {"type": "string"},
+        "namespace": {"type": "string", "default": "default"},
+        "revision": {"type": "integer", "minimum": 1, "maximum": 100000}
+    },
+    "required": ["deployment"],
+    "additionalProperties": False
+}
+
 K8S_RESTART_PARAMS = {
     "type": "object",
     "properties": {
@@ -502,6 +544,7 @@ class ToolRegistry:
         self._last_failure_ts: Dict[str, float] = {}
         self._broken_until: Dict[str, float] = {}
         self.db = db
+        self.pending_callback = None
         self.evolution_agent = None  # Explicit reference to avoid circular imports
         cfg = get_config()
         timeouts_cfg = cfg.get("tool_timeouts", {}) if isinstance(cfg, dict) else {}
@@ -581,26 +624,27 @@ Do NOT include keys that are not in MissingKeys. Do NOT repeat provided args."""
     # --- Dynamic Loading (Persistence) ---
     def load_evolved_tools(self) -> None:
         """
-        Scan evolved_tools/ directory for valid Python tool files and register them.
+        Scan evolved_tools/active/ for promoted Python tool files and register them.
+
+        Only tools that have been promoted from quarantine/ to active/ are loaded.
         """
-        evolved_dir = os.path.join(
+        active_dir = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
-            "evolved_tools"
+            "evolved_tools",
+            "active",
         )
-        if not os.path.exists(evolved_dir):
-            print(f"DEBUG: No evolved_tools directory found at {evolved_dir}")
-            log.info(f"[ToolRegistry] No evolved_tools directory found at {evolved_dir}")
+        if not os.path.exists(active_dir):
+            log.info("[ToolRegistry] No evolved_tools/active/ directory found.")
             return
 
-        print(f"DEBUG: Scanning for evolved tools in {evolved_dir}...")
-        log.info(f"[ToolRegistry] Scanning for evolved tools in {evolved_dir}...")
+        log.info(f"[ToolRegistry] Scanning for promoted tools in {active_dir}...")
         
         count = 0
-        for filename in os.listdir(evolved_dir):
+        for filename in os.listdir(active_dir):
             if not filename.endswith(".py") or filename == "__init__.py":
                 continue
                 
-            file_path = os.path.join(evolved_dir, filename)
+            file_path = os.path.join(active_dir, filename)
             
             try:
                 # 1. Syntax Validaton
@@ -621,28 +665,24 @@ Do NOT include keys that are not in MissingKeys. Do NOT repeat provided args."""
                         tool_name = metadata.get("name")
                         
                         # Find the function
-                        # It usually matches the tool name, but let's be flexible
                         func = getattr(module, tool_name, None)
                         if not func:
-                            # Fallback: check for 'missing_tool_for_task' or similar from our generation template
-                            # Or just grab the first function in the module that isn't imported
                             for name, obj in inspect.getmembers(module, inspect.isfunction):
                                 if name == tool_name or name.startswith("tool_") or name == "missing_tool_for_task":
                                     func = obj
                                     break
                                     
                         if func and tool_name:
-                            # Register it!
                             self._tools[tool_name] = Tool(
                                 name=tool_name,
                                 description=metadata.get("description", "Evolved Tool"),
                                 parameters=metadata.get("parameters", {}),
                                 func=func,
-                                task_type="Actuation", # Default to Actuation for safety, or derive?
+                                task_type="Actuation",
                                 roles_allowed={"Worker", "Planner"}
                             )
                             count += 1
-                            log.info(f"[ToolRegistry] 🧬 Loaded evolved tool: {tool_name}")
+                            log.info(f"[ToolRegistry] 🧬 Loaded promoted tool: {tool_name}")
                         else:
                             log.warning(f"[ToolRegistry] Evolved tool {filename} invalid: missing function entry point.")
                     else:
@@ -651,7 +691,7 @@ Do NOT include keys that are not in MissingKeys. Do NOT repeat provided args."""
             except Exception as e:
                 log.error(f"[ToolRegistry] Failed to load evolved tool {filename}: {e}")
                 
-        log.info(f"[ToolRegistry] Loaded {count} evolved tools.")
+        log.info(f"[ToolRegistry] Loaded {count} promoted tools from active/.")
 
     # --- Registration ---
     def _initialize_default_tools(self) -> None:
@@ -719,14 +759,14 @@ Do NOT include keys that are not in MissingKeys. Do NOT repeat provided args."""
                 roles_allowed={"Worker"},
             ),
 
-            # Kubernetes restart
+            # Kubernetes rollout restart
             Tool(
-                "k8s_restart",
+                "k8s_rollout_restart",
                 "Kubernetes: rollout restart a Deployment (adds annotation to pod template).",
                 K8S_RESTART_PARAMS,
                 lambda **kw: (
                     {"status": "awaiting_approval",
-                     "action": "k8s_restart",
+                     "action": "k8s_rollout_restart",
                      "namespace": kw["namespace"],
                      "deployment": (kw.get("deployment") or kw.get("name"))}
                     if (kw.get("approval", "human").lower() != "auto" and APPROVAL_MODE != "auto")
@@ -748,6 +788,75 @@ Do NOT include keys that are not in MissingKeys. Do NOT repeat provided args."""
                 lambda **kw: K8S.list_deployments(namespace=kw.get("namespace", "default")),
                 task_type="Observation",
                 roles_allowed={"Observer", "Worker", "Planner"},
+            ),
+
+            # --- Local System Adapter (Phase 5) ---
+            Tool(
+                "system_get_disk_usage",
+                "Get disk usage for a specific path.",
+                {"type": "object", "properties": {"path": {"type": "string", "default": "/"}}, "required": []},
+                lambda **kw: tools_system.system_get_disk_usage(path=kw.get("path", "/")),
+                task_type="Observation",
+                roles_allowed={"Observer", "Planner", "Worker"},
+            ),
+            Tool(
+                "system_get_memory_usage",
+                "Get system memory usage.",
+                {"type": "object", "properties": {}, "required": []},
+                lambda **kw: tools_system.system_get_memory_usage(),
+                task_type="Observation",
+                roles_allowed={"Observer", "Planner", "Worker"},
+            ),
+            Tool(
+                "system_get_cpu_load",
+                "Get system CPU load averages (1m, 5m, 15m).",
+                {"type": "object", "properties": {}, "required": []},
+                lambda **kw: tools_system.system_get_cpu_load(),
+                task_type="Observation",
+                roles_allowed={"Observer", "Planner", "Worker"},
+            ),
+            Tool(
+                "system_check_port",
+                "Check if a local port is open (127.0.0.1/localhost only).",
+                {"type": "object", "properties": {
+                    "host": {"type": "string", "default": "127.0.0.1"},
+                    "port": {"type": "integer"},
+                    "timeout": {"type": "integer", "default": 2}
+                }, "required": ["port"]},
+                lambda **kw: tools_system.system_check_port(
+                    host=kw.get("host", "127.0.0.1"), 
+                    port=kw.get("port"), 
+                    timeout=kw.get("timeout", 2)
+                ),
+                task_type="Observation",
+                roles_allowed={"Observer", "Planner", "Worker"},
+            ),
+            Tool(
+                "system_tail_log_file",
+                "Tail a log file from an allowed directory (./logs, ./.cva/logs, /tmp/cva-demo-logs).",
+                {"type": "object", "properties": {
+                    "path": {"type": "string"},
+                    "lines": {"type": "integer", "default": 100}
+                }, "required": ["path"]},
+                lambda **kw: tools_system.system_tail_log_file(
+                    path=kw.get("path"), 
+                    lines=kw.get("lines", 100)
+                ),
+                task_type="Observation",
+                roles_allowed={"Observer", "Planner", "Worker"},
+            ),
+            Tool(
+                "system_restart_allowed_service",
+                "Restart an authorized service listed in CVA_ALLOWED_SERVICES.",
+                {"type": "object", "properties": {
+                    "service_name": {"type": "string"}
+                }, "required": ["service_name"]},
+                lambda **kw: tools_system.system_restart_allowed_service(
+                    service_name=kw.get("service_name")
+                ),
+                task_type="Actuation",
+                roles_allowed={"Worker"},
+                cooldown_seconds=30.0,
             ),
 
             Tool(
@@ -844,6 +953,16 @@ Do NOT include keys that are not in MissingKeys. Do NOT repeat provided args."""
                 task_type="Observation",
                 roles_allowed={"Observer", "Security", "Planner"},
             ),
+
+            Tool("k8s_get_pod_logs", "Read pod logs.", {"type": "object", "properties": {"pod_name": {"type": "string"}, "namespace": {"type": "string", "default": "default"}, "tail": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 100}}, "required": ["pod_name"]}, _tf("k8s_get_pod_logs"), task_type="Observation", roles_allowed={"Observer", "Worker"}),
+            Tool("k8s_get_pod_status", "Get pod JSON status.", {"type": "object", "properties": {"pod_name": {"type": "string"}, "namespace": {"type": "string", "default": "default"}}, "required": ["pod_name"]}, _tf("k8s_get_pod_status"), task_type="Observation", roles_allowed={"Observer"}),
+            Tool("k8s_describe_pod", "Describe a pod.", {"type": "object", "properties": {"pod_name": {"type": "string"}, "namespace": {"type": "string", "default": "default"}}, "required": ["pod_name"]}, _tf("k8s_describe_pod"), task_type="Observation", roles_allowed={"Observer"}),
+            Tool("k8s_rollout_restart", "Restart a deployment.", {"type": "object", "properties": {"deployment": {"type": "string"}, "namespace": {"type": "string", "default": "default"}}, "required": ["deployment"]}, _tf("k8s_rollout_restart"), task_type="Actuation", roles_allowed={"Worker"}),
+            Tool("k8s_patch_deployment_env", "Patch env vars.", {"type": "object", "properties": {"deployment": {"type": "string"}, "env_name": {"type": "string"}, "env_value": {"type": "string"}, "container": {"type": "string"}, "namespace": {"type": "string", "default": "default"}}, "required": ["deployment", "env_name", "env_value"]}, _tf("k8s_patch_deployment_env"), task_type="Actuation", roles_allowed={"Worker"}),
+            Tool("k8s_patch_resource_limits", "Patch resource limits.", {"type": "object", "properties": {"deployment": {"type": "string"}, "cpu_request": {"type": "string"}, "cpu_limit": {"type": "string"}, "memory_request": {"type": "string"}, "memory_limit": {"type": "string"}, "container": {"type": "string"}, "namespace": {"type": "string", "default": "default"}}, "required": ["deployment"]}, _tf("k8s_patch_resource_limits"), task_type="Actuation", roles_allowed={"Worker"}),
+            Tool("k8s_patch_deployment_image", "Updates container image.", K8S_PATCH_DEPLOYMENT_IMAGE_PARAMS, _tf("k8s_patch_deployment_image"), task_type="Actuation", roles_allowed={"Worker"}),
+            Tool("k8s_patch_probe", "Patches container probes.", K8S_PATCH_PROBE_PARAMS, _tf("k8s_patch_probe"), task_type="Actuation", roles_allowed={"Worker"}),
+            Tool("k8s_rollout_undo", "Reverts a deployment.", K8S_ROLLOUT_UNDO_PARAMS, _tf("k8s_rollout_undo"), task_type="Actuation", roles_allowed={"Worker"}),
 
             # --- 🧠 MEMORY TOOLS ---
             Tool(
@@ -1114,6 +1233,22 @@ Do NOT include keys that are not in MissingKeys. Do NOT repeat provided args."""
                  task_type="GenericTask", roles_allowed={"Observer","Security","Worker","Planner"}),
             Tool("extract_iocs", "Extract IoCs (IPs/domains/hashes) from text.", EXTRACT_IOCS_PARAMS, _tf("extract_iocs_tool"),
                  task_type="GenericTask", roles_allowed={"Security","Observer"}),
+
+            # Sandbox / Terminal (Execution)
+            Tool("execute_terminal_command", "Execute a shell command in the secure sandbox. Use for data processing or script execution.",
+                 {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]},
+                 _tf("execute_terminal_command"),
+                 task_type="Actuation", roles_allowed={"Worker"}),
+
+            Tool("write_sandbox_file", "Write a file into the secure sandbox workspace.",
+                 {"type": "object", "properties": {"filepath": {"type": "string"}, "content": {"type": "string"}}, "required": ["filepath", "content"]},
+                 _tf("write_sandbox_file"),
+                 task_type="Actuation", roles_allowed={"Worker"}),
+
+            Tool("send_email", "Send an email summary of data.",
+                 {"type": "object", "properties": {"to": {"type": "string"}, "subject": {"type": "string"}, "body": {"type": "string"}}, "required": ["to", "body"]},
+                 _tf("send_email"),
+                 task_type="Actuation", roles_allowed={"Worker", "Notifier"}),
         ]
 
         for tool in tools_to_register:
@@ -1261,10 +1396,19 @@ Do NOT include keys that are not in MissingKeys. Do NOT repeat provided args."""
         return True
 
     def call(self, tool_name: str, **kwargs) -> Any:
-        t = self.get_tool(tool_name)
-        if not t:
-            raise KeyError(f"Unknown tool '{tool_name}'")
-        return t.func(**kwargs)
+        """[DEPRECATED] Direct call bypasses ToolExecutor. Access blocked by default."""
+        import os, logging
+        logger = logging.getLogger("CatalystLogger")
+        logger.critical(f"SECURITY ALERT: Direct ToolRegistry.call('{tool_name}') bypass attempted.")
+        
+        if os.getenv("CVA_ALLOW_UNSAFE_TOOL_CALL") == "1":
+            logger.warning(f"UNSAFE: Allowing bypass for '{tool_name}' due to CVA_ALLOW_UNSAFE_TOOL_CALL=1")
+            t = self.get_tool(tool_name)
+            if not t:
+                raise KeyError(f"Unknown tool '{tool_name}'")
+            return t.func(**kwargs)
+            
+        raise RuntimeError(f"Direct ToolRegistry.call() bypass blocked for '{tool_name}'. Use safe_call() so ToolExecutor policy is enforced.")
 
     def safe_call(self, tool_name: str, timeout_seconds: Optional[int] = None, **kwargs) -> Any:
         context = kwargs.get("_context") if isinstance(kwargs.get("_context"), dict) else None
@@ -1276,7 +1420,7 @@ Do NOT include keys that are not in MissingKeys. Do NOT repeat provided args."""
             or "system"
         )
         executor = self._get_tool_executor()
-        return executor.execute(
+        res = executor.execute(
             agent_id=str(agent_id),
             tool_name=tool_name,
             args=dict(kwargs),
@@ -1284,6 +1428,16 @@ Do NOT include keys that are not in MissingKeys. Do NOT repeat provided args."""
             context=context,
             timeout_seconds=timeout_seconds,
         )
+
+        # Trigger callback if approval is required
+        if isinstance(res, dict) and res.get("code") == "approval_required":
+            if self.pending_callback:
+                try:
+                    self.pending_callback(res, original_args=kwargs)
+                except Exception:
+                    pass
+
+        return res
 
     def _safe_call_direct(self, tool_name: str, timeout_seconds: Optional[int] = None, **kwargs) -> Any:
         tool = self.get_tool(tool_name)
@@ -1391,18 +1545,30 @@ Do NOT include keys that are not in MissingKeys. Do NOT repeat provided args."""
             with ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(_execute)
                 result = future.result(timeout=eff_timeout) if eff_timeout is not None else future.result()
+            # Determine success based on response status if possible
+            is_success = True
+            if _is_standard_response(result):
+                is_success = (result.get("status") == "ok")
+            elif isinstance(result, dict) and "success" in result and set(result.keys()) <= {"success","data","error"}:
+                is_success = bool(result.get("success"))
+
             dt = (time.time() - t0) * 1000.0
-            logger.info(f"[TOOL OK] {canonical} ({dt:.1f} ms)")
-            self._record_tool_success(canonical)
-            # Record success metric
+            if is_success:
+                logger.info(f"[TOOL OK] {canonical} ({dt:.1f} ms)")
+                self._record_tool_success(canonical)
+            else:
+                logger.warning(f"[TOOL ERROR] {canonical} returned error status in {dt:.1f}ms")
+                self._record_tool_failure(canonical)
+
+            # Record metrics
             try:
                 exec_time = dt / 1000.0
                 if hasattr(self, "db") and self.db:
                     self.db.record_metric(
                         metric_type="tool_execution",
                         tool_name=tool_name,
-                        value=1.0,  # success
-                        metadata={"execution_time": exec_time, "status": "success"}
+                        value=1.0 if is_success else 0.0,
+                        metadata={"execution_time": exec_time, "status": "success" if is_success else "failure"}
                     )
             except Exception:
                 pass
@@ -1410,12 +1576,11 @@ Do NOT include keys that are not in MissingKeys. Do NOT repeat provided args."""
             # Normalize to standard schema if needed
             if _is_standard_response(result):
                 return result
-            if isinstance(result, dict) and "success" in result and set(result.keys()) <= {"success","data","error"}:
-                # legacy success envelope; convert
-                status = "ok" if result.get("success") else "error"
-                if status != "ok":
-                    self._record_tool_failure(canonical)
-                return {"status": status, "data": result.get("data"), "error": result.get("error"), "summary": None}
+            if isinstance(result, dict) and ("success" in result or "status" in result):
+                # semi-standard or legacy envelope; convert
+                status = result.get("status") or ("ok" if result.get("success") else "error")
+                return {"status": status, "data": result.get("data"), "error": result.get("error"), "summary": result.get("summary")}
+
             # Fallback: wrap raw result
             return {"status": "ok", "data": result, "error": None, "summary": None}
             
@@ -1534,6 +1699,7 @@ Do NOT include keys that are not in MissingKeys. Do NOT repeat provided args."""
 # Single, importable instance + legacy TOOLS dict
 # -----------------------------
 from database import cva_db
+# Global Singleton
 tool_registry = ToolRegistry(db=cva_db)
 
 def _wrap_safe(name: str):

@@ -2,6 +2,8 @@ import React, { useState } from 'react';
 import { Card, CardContent, Typography, Box, List, ListItem, ListItemText, Button, Divider, Chip, Dialog, DialogTitle, DialogContent, DialogActions, TextField } from '@mui/material';
 import { CheckCircle, Close, Info, Gavel } from '@mui/icons-material';
 import { approvePlan } from '../api';
+import RiskBadge from './RiskBadge';
+import EvidencePreview from './EvidencePreview';
 
 function PendingApprovals({ plans, onRefresh, setSnackbarMessage, setSnackbarOpen }) {
   const [approveDialogOpen, setApproveDialogOpen] = useState(false);
@@ -43,7 +45,7 @@ function PendingApprovals({ plans, onRefresh, setSnackbarMessage, setSnackbarOpe
       });
 
       if (result.ok) {
-        setSnackbarMessage(`Approved: ${selectedPlan.action} - ${selectedPlan.deployment || selectedPlan.namespace}`);
+        setSnackbarMessage(`Approved: ${selectedPlan.action}`);
         setSnackbarOpen(true);
         onRefresh();
       } else {
@@ -60,11 +62,10 @@ function PendingApprovals({ plans, onRefresh, setSnackbarMessage, setSnackbarOpe
   };
 
   const getActionIcon = (action) => {
-    switch (action) {
-      case 'k8s_scale': return '📊';
-      case 'k8s_restart': return '🔄';
-      default: return '⚙️';
-    }
+    if (action.includes('patch')) return '🔐';
+    if (action.includes('rollout')) return '🔄';
+    if (action.includes('scale')) return '📊';
+    return '⚙️';
   };
 
   return (
@@ -72,62 +73,53 @@ function PendingApprovals({ plans, onRefresh, setSnackbarMessage, setSnackbarOpe
       <CardContent>
         <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
           <Gavel color="warning" />
-          Pending Approvals
+          Remediation Gate
         </Typography>
 
         <Typography variant="caption" color="text.secondary" gutterBottom>
-          {plans.length} action{plans.length !== 1 ? 's' : ''} requiring approval
+          {plans.length} action{plans.length !== 1 ? 's' : ''} blocked by safety policy
         </Typography>
 
         <Divider sx={{ my: 1 }} />
 
-        <List sx={{ maxHeight: 300, overflow: 'auto' }}>
+        <List sx={{ maxHeight: 400, overflow: 'auto' }}>
           {plans.map((plan, index) => (
             <React.Fragment key={plan.task_id || index}>
               <ListItem 
+                alignItems="flex-start"
                 secondaryAction={
-                  <Box sx={{ display: 'flex', gap: 1 }}>
-                    <Button 
-                      size="small" 
-                      variant="outlined" 
-                      color="success" 
-                      startIcon={<CheckCircle />}
-                      onClick={() => handleApproveClick(plan)}
-                    >
-                      Approve
-                    </Button>
-                  </Box>
+                  <Button 
+                    size="small" 
+                    variant="contained" 
+                    color="primary" 
+                    startIcon={<CheckCircle />}
+                    onClick={() => handleApproveClick(plan)}
+                  >
+                    Review
+                  </Button>
                 }
               >
                 <ListItemText
                   primary={
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                      <span style={{ fontSize: '1.2em' }}>{getActionIcon(plan.action)}</span>
-                      <Typography variant="body1" fontWeight="medium">
-                        {plan.action.replace('_', ' ').toUpperCase()}
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
+                      <span style={{ fontSize: '1.1em' }}>{getActionIcon(plan.action)}</span>
+                      <Typography variant="body2" fontWeight="bold">
+                        {plan.action.replace('k8s_', '').toUpperCase()}
                       </Typography>
+                      <RiskBadge risk={plan.action.includes('patch') || plan.action.includes('undo') ? 'DESTRUCTIVE' : 'SAFE'} />
                     </Box>
                   }
                   secondary={
                     <React.Fragment>
-                      {plan.deployment && (
-                        <Typography component="span" variant="body2">
-                          {plan.deployment}
-                        </Typography>
-                      )}
-                      {plan.namespace && (
-                        <Typography component="span" variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-                          Namespace: {plan.namespace}
-                        </Typography>
-                      )}
-                      {plan.replicas && (
-                        <Typography component="span" variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-                          Replicas: {plan.replicas}
-                        </Typography>
-                      )}
+                      <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                        Trace: {plan.task_id.substring(0, 12)}...
+                      </Typography>
+                      <Typography variant="caption" sx={{ display: 'block', fontWeight: 'bold' }}>
+                        Target: {plan.deployment || 'Cluster'} ({plan.namespace || 'global'})
+                      </Typography>
                       {plan.rationale && (
-                        <Typography component="span" variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
-                          <Info fontSize="small" color="info" /> {plan.rationale}
+                        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5, fontStyle: 'italic' }}>
+                          "{plan.rationale}"
                         </Typography>
                       )}
                     </React.Fragment>
@@ -156,71 +148,67 @@ function PendingApprovals({ plans, onRefresh, setSnackbarMessage, setSnackbarOpe
 function ApproveDialog({ open, onClose, plan, approvalToken, setApprovalToken, onApprove, isApproving }) {
   if (!plan) return null;
 
+  const isDestructive = plan.action.includes('patch') || plan.action.includes('undo');
+
   return (
     <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
-      <DialogTitle>
+      <DialogTitle sx={{ bgcolor: isDestructive ? '#fff5f5' : 'inherit' }}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-          <Gavel color="warning" />
-          Confirm Approval
+          <Gavel color={isDestructive ? 'error' : 'warning'} />
+          Verify Remediation Plan
         </Box>
       </DialogTitle>
       <DialogContent dividers>
-        <Box sx={{ mt: 2 }}>
-          <Typography variant="h6" gutterBottom>
-            {plan.action.replace('_', ' ').toUpperCase()}
-          </Typography>
+        <Box sx={{ mt: 1 }}>
+          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+            <Typography variant="h6">{plan.action.toUpperCase()}</Typography>
+            <RiskBadge risk={isDestructive ? 'DESTRUCTIVE' : 'SAFE'} />
+          </Box>
 
-          <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 2, my: 2 }}>
-            {plan.deployment && (
-              <React.Fragment>
-                <Typography variant="body2" color="text.secondary">Deployment:</Typography>
-                <Typography variant="body2">{plan.deployment}</Typography>
-              </React.Fragment>
-            )}
-            {plan.namespace && (
-              <React.Fragment>
-                <Typography variant="body2" color="text.secondary">Namespace:</Typography>
-                <Typography variant="body2">{plan.namespace}</Typography>
-              </React.Fragment>
-            )}
-            {plan.replicas && (
-              <React.Fragment>
-                <Typography variant="body2" color="text.secondary">Replicas:</Typography>
-                <Typography variant="body2">{plan.replicas}</Typography>
-              </React.Fragment>
-            )}
+          <Box sx={{ p: 2, bgcolor: '#f8f9fa', borderRadius: 1, mb: 2 }}>
+            <Typography variant="caption" color="text.secondary">TARGET RESOURCES</Typography>
+            <Typography variant="body2" sx={{ fontWeight: 'bold' }}>
+              {plan.namespace}/{plan.deployment}
+            </Typography>
+            {plan.replicas && <Typography variant="body2">Scaling to: {plan.replicas} replicas</Typography>}
           </Box>
 
           {plan.rationale && (
-            <Box sx={{ mt: 2 }}>
-              <Typography variant="subtitle2" gutterBottom>Rationale:</Typography>
-              <Typography variant="body2" color="text.secondary">
-                {plan.rationale}
+            <Box sx={{ mb: 2 }}>
+              <Typography variant="subtitle2" sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                <Info fontSize="small" color="primary" /> Rationale
               </Typography>
+              <Typography variant="body2" sx={{ pl: 3 }}>{plan.rationale}</Typography>
             </Box>
           )}
 
+          <EvidencePreview evidence={plan.evidence || "Trace context: Pod logs and events analyzed by Intelligence Layer."} />
+
           <TextField
-            label="Approval Token"
+            label="Security Approval Token"
             value={approvalToken}
             onChange={(e) => setApprovalToken(e.target.value)}
             fullWidth
             margin="normal"
+            placeholder="Enter token from CLI or secure channel"
             variant="outlined"
             disabled={isApproving}
+            autoFocus
           />
+          <Typography variant="caption" color="error" sx={{ display: 'block', mt: 1 }}>
+            {isDestructive ? '⚠️ WARNING: This action modifies cluster state and requires strict verification.' : ''}
+          </Typography>
         </Box>
       </DialogContent>
       <DialogActions>
-        <Button onClick={onClose} disabled={isApproving} startIcon={<Close />}>Cancel</Button>
+        <Button onClick={onClose} disabled={isApproving}>Cancel</Button>
         <Button 
           onClick={onApprove} 
           disabled={isApproving || !approvalToken}
-          startIcon={<CheckCircle />}
           variant="contained"
-          color="success"
+          color={isDestructive ? 'error' : 'primary'}
         >
-          {isApproving ? 'Approving...' : 'Approve'}
+          {isApproving ? 'Executing...' : 'Authorize Action'}
         </Button>
       </DialogActions>
     </Dialog>

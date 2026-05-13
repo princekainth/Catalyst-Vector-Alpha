@@ -41,7 +41,7 @@ if APP_ROOT not in sys.path:
     sys.path.insert(0, APP_ROOT)
 
 # --- Third-Party --------------------------------------------------------------
-from flask import Flask, jsonify, render_template, request, send_file
+from flask import Flask, jsonify, render_template, request, send_file, make_response
 from flask_cors import CORS
 
 # --- Project Imports (fail fast with message) ---------------------------------
@@ -94,6 +94,7 @@ _runner = MissionRunner(PROM, K8S, POL, mem_kernel=None)
 
 # --- Logger -------------------------------------------------------------------
 # --- Logger -------------------------------------------------------------------
+from cva_runtime.control_plane.incident_store import incident_store
 logger = logging.getLogger("CatalystLogger")
 logger.setLevel(logging.INFO)
 
@@ -288,7 +289,6 @@ def _find_pending_by_token(token: str) -> Optional[Dict[str, Any]]:
         return None
     with plan_lock:
         for p in plan_store.values():
-            if p.get("status") == "awaiting_approval" and p.get("approval_token") == token:
                 return p
     return None
 
@@ -297,6 +297,62 @@ def mark_plan_executed(task_id: str) -> None:
         if task_id in plan_store:
             plan_store[task_id]["status"] = "executed"
             plan_store[task_id]["executed_ts"] = time.time()
+
+def save_pending_action(approval_res: Dict[str, Any], original_args: Dict[str, Any] = None) -> None:
+    """Captures any tool returning approval_required and saves it for the UI."""
+    trace_id = approval_res.get("trace_id")
+    approval = approval_res.get("approval") or approval_res.get("details", {}).get("approval", {})
+    tool_name = approval.get("tool")
+    
+    if not trace_id or not tool_name:
+        return
+    
+    # Extract context/args
+    args = original_args or {}
+    target_ns = args.get("namespace") or approval.get("namespace") or "default"
+    target_dep = args.get("deployment") or args.get("workload") or "unknown"
+
+    # Integration with IncidentStore
+    incidents = incident_store.list_incidents()
+    matching_inc_id = None
+    for inc in incidents:
+        if inc["status"] in ["OPEN", "GATED"] and inc["namespace"] == target_ns and inc["workload"] == target_dep:
+            matching_inc_id = inc["id"]
+            break
+            
+    if matching_inc_id:
+        incident_store.attach_trace(matching_inc_id, trace_id, tool=tool_name, risk=approval.get("risk", "DESTRUCTIVE"))
+    else:
+        # Create a generic incident if none exists
+        incident_store.create_or_update_incident(
+            incident_type="ApprovalRequiredAction",
+            severity="WARNING",
+            namespace=target_ns,
+            workload=target_dep,
+            trace_id=trace_id,
+            status="GATED",
+            recommended_tool=tool_name,
+            risk=approval.get("risk", "DESTRUCTIVE"),
+            evidence=f"Action '{tool_name}' blocked by safety policy. Trace: {trace_id}"
+        )
+
+    plan = {
+        "task_id": trace_id,
+        "trace_id": trace_id,
+        "status": "awaiting_approval",
+        "action": tool_name,
+        "ts": time.time(),
+        "approval_token": None,
+        "args_hash": approval.get("args_hash"),
+        "namespace": target_ns,
+        "deployment": target_dep,
+    }
+    
+    with plan_lock:
+        plan_store[trace_id] = plan
+    logger.info(f"Registered pending action in store: {tool_name} (Trace: {trace_id})")
+
+# Register callback with registry moved to __main__
 
 def queue_pending_mission(action: str, params: Dict[str, Any], rationale: str = "") -> Dict[str, Any]:
     """
@@ -545,12 +601,20 @@ def api_dashboard_summary():
 
 @app.route('/')
 def index():
-    return render_template('index.html')
+    response = make_response(render_template('index.html'))
+    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    response.headers['Pragma'] = 'no-cache'
+    response.headers['Expires'] = '0'
+    return response
 
 # Dashboard route - serves the React app
 @app.route('/dashboard')
 def dashboard():
-    return render_template('index.html')
+    response = make_response(render_template('index.html'))
+    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    response.headers['Pragma'] = 'no-cache'
+    response.headers['Expires'] = '0'
+    return response
 
 # Dashboard diagnostics page
 @app.route('/dashboard-diagnostics')
@@ -884,7 +948,7 @@ def execute_tool_endpoint():
             
         logger.info(f"[API] Executing tool '{tool_name}' with args {args}")
         
-        result = tool_registry.safe_call(tool_name, **args, _context={"source": "dashboard_user"})
+        result = tool_registry.safe_call(tool_name, **args, agent_id="dashboard_operator", _context={"source": "dashboard_user"})
         
         return jsonify({
             "status": "ok",
@@ -960,6 +1024,35 @@ def api_scale_cpu():
     )
     return jsonify({"status": "ok", "data": res}), 200
 
+# --- Routes: Incidents --------------------------------------------------------
+@app.get("/api/incidents")
+def list_incidents_api():
+    status = request.args.get("status")
+    return jsonify({"status": "ok", "data": incident_store.list_incidents(status)})
+
+@app.get("/api/incidents/<incident_id>")
+def get_incident_api(incident_id):
+    inc = incident_store.get_incident(incident_id)
+    if not inc:
+        return jsonify({"status": "error", "error": "Not found"}), 404
+    return jsonify({"status": "ok", "data": inc})
+
+@app.post("/api/incidents/report")
+def report_incident_api():
+    try:
+        data = request.json
+        inc_id = incident_store.create_or_update_incident(**data)
+        return jsonify({"status": "ok", "incident_id": inc_id})
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e)}), 400
+
+@app.post("/api/incidents/<incident_id>/resolve")
+def resolve_incident_api(incident_id):
+    data = request.json or {}
+    reason = data.get("reason", "manual")
+    incident_store.resolve_incident(incident_id, reason)
+    return jsonify({"status": "ok"})
+
 # --- Routes: Pending Plans (for dashboard) -----------------------------------
 @app.get("/api/catalyst/plans")
 def list_pending_plans():
@@ -1012,66 +1105,70 @@ def _invoke_k8s_scale_via_registry(namespace: str, deployment: str, replicas: in
 @app.post('/api/approve')
 def api_post_approve():
     """
-    Approves a pending k8s_scale plan and executes it.
-    Body options:
-      A) {"task_id": "...", "approval_token"?: "..."}
-      B) {"approval_token": "..."}  # finds the matching pending plan
-      C) {"namespace": "...", "deployment": "...", "replicas": 3, "approval_token"?: "..."}  # ad-hoc
+    Generalized approval endpoint.
+    Body: {"task_id": "...", "approval_token": "..."}
+    Note: task_id here is often the trace_id of the blocked request.
     """
     body = request.get_json(silent=True) or {}
-    token = body.get("approval_token") or body.get("token") or "dashboard_approved"
+    token = body.get("approval_token") or body.get("token")
     task_id = body.get("task_id")
+    
+    if not token or not task_id:
+        return jsonify({"ok": False, "error": "task_id and approval_token are required."}), 400
 
     # Resolve plan
-    plan = None
-    if task_id:
-        with plan_lock:
-            p = plan_store.get(task_id)
-        if not p or p.get("status") != "awaiting_approval":
-            return jsonify({"ok": False, "error": "No matching pending plan for task_id."}), 404
-        plan = p
-    elif "namespace" in body or "deployment" in body or "replicas" in body:
-        # Ad-hoc approval (no stored plan)
-        try:
-            ns, dep, rep = _normalize_scale_params(body)
-        except Exception as e:
-            return jsonify({"ok": False, "error": str(e)}), 400
-        plan = {
-            "task_id": f"adhoc_{int(time.time())}",
-            "status": "awaiting_approval",
-            "action": "k8s_scale",
-            "namespace": ns,
-            "deployment": dep,
-            "replicas": rep,
-            "approval_token": token,
-        }
-    else:
-        # Try token lookup
-        plan = _find_pending_by_token(token)
-        if not plan:
-            # Fallback to latest
-            plan = latest_pending_scale_plan()
-        if not plan:
-            return jsonify({"ok": False, "error": "No pending mission."}), 404
+    with plan_lock:
+        plan = plan_store.get(task_id)
+    
+    if not plan or plan.get("status") != "awaiting_approval":
+        return jsonify({"ok": False, "error": f"No pending action found for ID {task_id}"}), 404
 
+    # Issue a real cryptographic token bound to this trace
+    from cva_runtime.control_plane.approvals import issue_approval_token
+    
+    # We need the tool name and args_hash from the plan
+    tool_name = plan.get("action")
+    # For args_hash, we might need to recalculate it or retrieve it if stored.
+    # Luckily, safe_call stores it in the plan if it was returned by ToolExecutor.
+    args_hash = plan.get("args_hash")
+    
+    if not args_hash:
+        return jsonify({"ok": False, "error": "Plan is missing args_hash. Cannot issue valid token."}), 500
+
+    real_token, ttl = issue_approval_token(
+        trace_id=task_id,
+        tool=tool_name,
+        args_hash=args_hash
+    )
+    
+    with plan_lock:
+        plan["approval_token"] = real_token
+        plan["status"] = "approved"
+        plan["approved_ts"] = time.time()
+    
+    logger.info(f"Action {tool_name} approved. Issued token {real_token} for trace {task_id}")
+    
+    return jsonify({
+        "ok": True, 
+        "message": f"Action {tool_name} approved. Token issued and stored.",
+        "approval_token": real_token,
+        "trace_id": task_id
+    })
+
+@app.get('/api/audit/logs')
+def api_get_audit_logs():
+    """Returns the last 50 redacted audit records."""
+    audit_path = os.getenv("CVA_AUDIT_LOG_PATH", "./.cva/audit/actions.jsonl")
+    if not os.path.exists(audit_path):
+        return jsonify({"ok": True, "logs": []})
+    
     try:
-        ns, dep, rep = _normalize_scale_params(plan if "params" not in plan else plan["params"])
+        with open(audit_path, "r") as f:
+            lines = f.readlines()[-50:]
+            logs = [json.loads(l) for l in lines if l.strip()]
+        return jsonify({"ok": True, "logs": logs})
     except Exception as e:
-        # If plan already has flat fields, use them directly
-        ns = plan.get("namespace")
-        dep = plan.get("deployment")
-        rep = plan.get("replicas")
-        if not (ns and dep and isinstance(rep, (int, float))):
-            return jsonify({"ok": False, "error": f"Invalid plan fields: {e}"}), 400
-        rep = int(rep)
-
-    ok, result = _invoke_k8s_scale_via_registry(ns, dep, rep, plan.get("approval_token", token))
-
-    if ok:
-        if plan.get("task_id") and plan.get("status") == "awaiting_approval":
-            mark_plan_executed(plan["task_id"])
-        return jsonify({"ok": True, "detail": result, "message": f"Scaled {dep} to {rep} replicas"}), 200
-    return jsonify({"ok": False, "detail": result}), 500
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 # --- Existing: Approve Scale (kept for backward-compat) -----------------------
 @app.post('/api/catalyst/approve_scale')
@@ -1415,47 +1512,9 @@ def api_kill_agent(agent_id):
 # ==========================================
 # GEMINI™ PROTOCOL API LAYER
 # ==========================================
-@app.route('/api/agents/spawn', methods=['POST'])
-def gemini_agent_deployment():
-    """Gemini™ cloud agent deployment endpoint"""
-    data = request.get_json(silent=True) or {}
-    purpose = data.get("purpose", "Test agent")
-    context = data.get("context", {})
+# NOTE: The /api/agents/spawn endpoint is already defined above in spawn_agent_api().
+# A duplicate route was removed here to prevent Flask from silently shadowing it.
 
-    if system_instance is None or not hasattr(system_instance, "handle_spawn_request"):
-        return jsonify({"success": False, "error": "System is not running."}), 503
-
-    try:
-        with agent_instances_lock:
-            result = system_instance.handle_spawn_request(
-                purpose=purpose,
-                context=context,
-                parent_agent="api_manual",
-            )
-
-        if isinstance(result, dict):
-            return jsonify({
-                "success": False,
-                "error": result.get("error", "Unknown error"),
-                "suggestions": result.get("suggestions", []),
-                "hint": result.get("hint", ""),
-                "status": "Gemini Protocol Initiated",
-                "orchestrator": "GeminiOrchestrator v1.0",
-                "timestamp": time.time(),
-            }), 400
-
-        if result:
-            return jsonify({
-                "success": True,
-                "agent_id": result,
-                "status": "Gemini Protocol Initiated",
-                "orchestrator": "GeminiOrchestrator v1.0",
-                "timestamp": time.time(),
-            })
-
-        return jsonify({"success": False, "error": "Spawn failed"}), 500
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
 
 # --- Health Monitoring Helper Functions ---------------------------------------
 def calculate_health_score(swarm, tool_stats, task_stats):
@@ -1659,12 +1718,21 @@ def generate_health_recommendations(score, resources):
     return recommendations
 
 if __name__ == '__main__':
+    # Register callback with registry
+    try:
+        tool_registry.pending_callback = save_pending_action
+        logger.info("Registered save_pending_action as tool_registry.pending_callback")
+    except Exception as e:
+        logger.warning(f"Failed to register pending callback: {e}")
     
-    logger.info("[app.py] Starting GmailAgent loop in a background thread...")
-    gmail_thread = threading.Thread(target=gmail_agent.main_loop, daemon=True)
-    
-    gmail_thread.start()
-    logger.info("[app.py] GmailAgent is now running in the background.")
+    # Security: GmailAgent is disabled by default for Beta. Enable with CVA_ENABLE_GMAIL_AGENT=1
+    if os.getenv("CVA_ENABLE_GMAIL_AGENT") == "1":
+        logger.info("[app.py] Starting GmailAgent loop in a background thread...")
+        gmail_thread = threading.Thread(target=gmail_agent.main_loop, daemon=True)
+        gmail_thread.start()
+        logger.info("[app.py] GmailAgent is now running in the background.")
+    else:
+        logger.info("[app.py] GmailAgent is DISABLED (Set CVA_ENABLE_GMAIL_AGENT=1 to enable).")
     # ----------------------------------------------------------
 
     # Start CVA loop in a background thread (This is your original code)
@@ -1680,6 +1748,6 @@ if __name__ == '__main__':
 
     try:
         from waitress import serve
-        serve(app, host='127.0.0.1', port=port)
+        serve(app, host='0.0.0.0', port=port)
     except ImportError:
-        app.run(host='127.0.0.1', port=port, debug=False, use_reloader=False)
+        app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)

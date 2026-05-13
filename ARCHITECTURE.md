@@ -1,65 +1,46 @@
-# CVA Architecture Summary (Post-Optimization)
+# CVA Architecture: The Cognitive SRE Loop
 
-## Performance Metrics (20 second test)
-| Metric | Before Session | After Session |
-|--------|----------------|---------------|
-| Ollama connections | 11+ | 1 |
-| Embedding calls | 40+ | 4 |
-| Log lines | 500+ | 99 |
-| DEBUG prints | 50+ | 0 |
-| Errors | Multiple | 0 |
-| Agent execution (idle) | 21s | 0.02s |
+Catalyst Vector Alpha (CVA) is designed as a secure, agentic control loop. It follows a "Monitor -> Diagnose -> Propose -> Execute" workflow with a hard security choke point.
 
-## Event-Driven Flow
-echo "=== Create updated architecture summary ===" && cat > /tmp/cva_architecture.md << 'EOF'
-# CVA Architecture Summary (Post-Optimization)
+## System Overview
 
-## Performance Metrics (20 second test)
-| Metric | Before Session | After Session |
-|--------|----------------|---------------|
-| Ollama connections | 11+ | 1 |
-| Embedding calls | 40+ | 4 |
-| Log lines | 500+ | 99 |
-| DEBUG prints | 50+ | 0 |
-| Errors | Multiple | 0 |
-| Agent execution (idle) | 21s | 0.02s |
-
-## Event-Driven Flow
-```
-HEALTHY CLUSTER:
-  [EventGate] ✅ System healthy - IDLE MODE
-  [Planner] 😴 Skipping idle synthesis
-  [Observer/Security/Worker] → idle (0.02s each)
-
-BROKEN POD DETECTED:
-  [EventGate] ⚠️ Unhealthy pods detected - ACTIVE MODE
-  [K8sStudent] → microsoft_autonomous_remediation
-  [Planner] → INITIATE_PLANNING_CYCLE
+```mermaid
+graph TD
+    Monitor[K8S Event Monitor] -->|Issues| Brain[Cognitive Controller]
+    Brain -->|Fetch Context| Evidence[Logs/Events Collector]
+    Evidence -->|Metadata| Brain
+    Brain -->|Remediation Proposal| SecurityGate[ToolExecutor Gating]
+    
+    subgraph "The Sandbox"
+        SecurityGate -->|Approval Required| Dashboard[Pending Approvals UI]
+        Dashboard -->|Approval Token| SecurityGate
+        SecurityGate -->|Authorized Call| K8S[Kubernetes API / Local OS]
+    end
+    
+    K8S -->|Audit Log| Audit[Immutable Audit Trail]
+    Audit -->|Context| Brain
 ```
 
-## Key Files
-```
-agents.py           11,643 lines - All agent classes
-catalyst_vector_alpha.py  3,862 lines - Main orchestrator
-supervisor.py          145 lines - Crash recovery
-curiosity_loop.py      259 lines - Background learning
-```
+## Core Components
 
-## Singletons Implemented
-- OllamaLLMIntegration (shared_models.py)
-- SharedMemory (shared_memory.py)
-- AgentFactory (agent_factory.py)
+### 1. The Cognitive Controller (`catalyst_vector_alpha.py`)
+The "Brain" of the system. It uses LLM reasoning to classify incidents and select the appropriate remediation tool. It is intentionally stateless and relies on the **Memory Store** for historical context.
 
-## Caching Implemented
-- Tool embeddings: persistence_data/tool_embeddings_cache.json
+### 2. Tool Registry & Profiles (`tool_registry.py` / `capabilities.py`)
+Every action CVA can take is defined as a `Tool`. 
+- **ToolProfile**: Defines the required capabilities (e.g., `K8S_WRITE`) and risk level (`SAFE`, `CAUTION`, `DESTRUCTIVE`).
+- **Registration**: Ensures no arbitrary code can be executed; only pre-defined, validated tools are available.
 
-## Idle Gates Added
-- ProtoAgent_Planner._should_be_idle()
-- ProtoAgent_Planner._handle_idle_synthesis()
-- ProtoAgent_Observer._execute_agent_specific_task()
-- ProtoAgent_Security._execute_agent_specific_task()
-- ProtoAgent_Worker._execute_agent_specific_task()
+### 3. ToolExecutor (The Security Choke Point)
+Located in `cva_runtime/control_plane/tool_executor.py`, this is the only path to the outside world.
+- It validates the agent's identity.
+- It intercepts any `DESTRUCTIVE` tool calls.
+- It enforces the requirement for a **Trace-bound Approval Token**.
 
-## Memory Optimization
-- Skip memory consultation for "No specific intent" tasks
-- Memory context stored separately (not polluting task descriptions)
+### 4. Memory Store (`memory_store.py`)
+A vector-based storage system that allows CVA to "remember" past successful remediations, helping it avoid repetitive failures and improving proposal quality over time.
+
+## Security Design Principles
+- **Zero-Shell Policy**: No raw shell execution. All system calls use list-style subprocesses.
+- **Trace Accountability**: Every action is linked to a unique `trace_id` for end-to-end auditing.
+- **Least Privilege**: Agents are assigned specific roles (Observer, Worker, Security) that restrict their tool access.

@@ -73,6 +73,7 @@ from tools import (
     update_resource_allocation_tool,
     get_environmental_data_tool,
 )
+from core.self_healing_monitor import SelfHealingMonitor
 
 _GLOBAL_CONFIG = get_config()
 
@@ -82,25 +83,25 @@ logger = logging.getLogger("CatalystLogger")
 # The basicConfig should ideally be in your main execution block, but this works.
 logging.basicConfig(level=logging.INFO, handlers=[], force=True)
 
-# Add JSON log handler (structured logs) alongside any configured handlers
+# Reuse JsonLogHandler from app.py if available; otherwise define a minimal one
 class JsonLogHandler(logging.Handler):
-    def emit(self, record: logging.LogRecord) -> None:
-        try:
-            import json, time as _time
-            log_entry = {
-                "timestamp": getattr(record, "timestamp", _time.time()),
-                "level": record.levelname,
-                "name": record.name,
-                "message": record.getMessage(),
-                "event_type": getattr(record, "event_type", None),
-                "source": getattr(record, "source", None),
-                "details": getattr(record, "details", None),
-            }
-            os.makedirs("logs", exist_ok=True)
-            with open("logs/catalyst.jsonl", "a") as f:
-                f.write(json.dumps(log_entry) + "\n")
-        except Exception:
-            pass
+        def emit(self, record: logging.LogRecord) -> None:
+            try:
+                import json, time as _time
+                log_entry = {
+                    "timestamp": getattr(record, "timestamp", _time.time()),
+                    "level": record.levelname,
+                    "name": record.name,
+                    "message": record.getMessage(),
+                    "event_type": getattr(record, "event_type", None),
+                    "source": getattr(record, "source", None),
+                    "details": getattr(record, "details", None),
+                }
+                os.makedirs("logs", exist_ok=True)
+                with open("logs/catalyst.jsonl", "a") as f:
+                    f.write(json.dumps(log_entry) + "\n")
+            except Exception:
+                pass
 
 json_handler = JsonLogHandler()
 json_handler.setLevel(logging.INFO)
@@ -109,160 +110,8 @@ if (_GLOBAL_CONFIG.get("features", {}) if isinstance(_GLOBAL_CONFIG, dict) else 
 
 
         
-# --- Swarm Protocol ---
-class SwarmProtocol:
-    def __init__(self,
-             swarm_name: str,
-             initial_goal: str,
-             initial_members: list,
-             consensus_mechanism: str,
-             description: str,
-             catalyst_vector_ref: 'CatalystVectorAlpha',
-             swarm_state_file_path: str,
-             loaded_state: Optional[dict] = None):
-
-        self.name = swarm_name
-        self.goal = initial_goal
-        self.members = set(initial_members)
-        self.consensus_mechanism = consensus_mechanism
-        self.description = description
-        self.catalyst_vector_ref = catalyst_vector_ref
-
-        # --- FIX: Corrected typo in variable name (removed extra "_path") ---
-        self.swarm_state_file_full_path = swarm_state_file_path
-
-        # Get necessary components from the orchestrator for MemeticKernel initialization
-        orchestrator_log_sink = self.catalyst_vector_ref.external_log_sink
-        orchestrator_chroma_db_path = self.catalyst_vector_ref.chroma_db_full_path
-        orchestrator_persistence_dir = self.catalyst_vector_ref.persistence_dir
-
-        # --- REFACTORED: Create the MemeticKernel instance once, outside the if/else block ---
-        self.memetic_kernel = MemeticKernel(
-            agent_name=f"SwarmKernel_{self.name}",
-            external_log_sink=orchestrator_log_sink,
-            chroma_db_path=orchestrator_chroma_db_path,
-            persistence_dir=orchestrator_persistence_dir,
-            config={'goal': self.goal, 'members': list(self.members)}
-        )
-
-        if loaded_state:
-            # If loading from state, restore the attributes of the swarm itself
-            self.goal = loaded_state.get('goal', self.goal)
-            self.members = set(loaded_state.get('members', []))
-            
-            # --- REFACTORED: Tell the existing kernel to load its state ---
-            kernel_state = loaded_state.get('memetic_kernel', {})
-            if kernel_state:
-                self.memetic_kernel.load_state(kernel_state)
-                
-            if loaded_state.get('sovereign_gradient'):
-                self.sovereign_gradient = SovereignGradient.from_state(loaded_state['sovereign_gradient'])
-            else:
-                self.sovereign_gradient = SovereignGradient(target_entity_name=self.name, config={})
-
-            self.catalyst_vector_ref._log_swarm_activity(
-                "SWARM_RELOADED", self.name, f"Swarm '{self.name}' reloaded from persistence."
-            )
-        else:
-            # If this is a new swarm, initialize its first memory
-            self.sovereign_gradient = SovereignGradient(target_entity_name=self.name, config={})
-            self.memetic_kernel.add_memory("SwarmFormation", f"Swarm '{self.name}' established.")
-            self.catalyst_vector_ref._log_swarm_activity(
-                "SWARM_FORMED", self.name, f"Swarm '{self.name}' established."
-            )
-
-
-    def add_member(self, agent_name):
-        if agent_name not in self.members:
-            self.members.add(agent_name)
-            self.memetic_kernel.add_memory("MemberAdded", f"Agent '{agent_name}' joined the swarm.")
-            self.memetic_kernel.config['members'] = list(self.members) # Ensure config also uses list
-            if self.catalyst_vector_ref: # Use the orchestrator's logger via _log_swarm_activity
-                self.catalyst_vector_ref._log_swarm_activity(
-                    "SWARM_MEMBER_ADDED", # event_type
-                    self.name,            # source
-                    f"Agent '{agent_name}' joined swarm '{self.name}'.", # description
-                    {"agent": agent_name, "swarm": self.name}, # details
-                    level='info'          # level
-                )
-                
-    def set_goal(self, new_goal):
-        old_goal = self.goal
-        self.goal = new_goal
-        self.memetic_kernel.add_memory("GoalUpdate", f"Swarm goal updated to: '{new_goal}'.")
-        self.memetic_kernel.config['goal'] = new_goal
-        if self.catalyst_vector_ref: # Use the orchestrator's logger via _log_swarm_activity
-            self.catalyst_vector_ref._log_swarm_activity(
-                "SWARM_GOAL_UPDATED", # event_type
-                self.name,            # source
-                f"Swarm goal updated.", # description
-                {"old_goal": old_goal, "new_goal": new_goal}, # details
-                level='info'          # level
-            )
-            
-    def set_sovereign_gradient(self, new_gradient: 'SovereignGradient'):
-        """Sets the sovereign gradient for this swarm."""
-        old_gradient_state = self.sovereign_gradient.get_state() if self.sovereign_gradient else None
-        self.sovereign_gradient = new_gradient
-        self.memetic_kernel.config['gradient'] = new_gradient.get_state()
-        self.memetic_kernel.add_memory("GradientUpdate", f"Sovereign gradient set for swarm: '{new_gradient.autonomy_vector}'.")
-        # FIX: Corrected direct call to CatalystVectorAlpha's _log_swarm_activity
-        if self.catalyst_vector_ref:
-             self.catalyst_vector_ref._log_swarm_activity(
-                "SWARM_GRADIENT_SET", # event_type
-                self.name,            # source
-                f"Sovereign gradient set.", # description
-                {"old_gradient": old_gradient_state, "new_gradient": new_gradient.get_state()}, # details
-                level='info'          # level
-            )
-            
-    def coordinate_task(self, task_description):
-        final_task_description = task_description
-        gradient_compliant = True
-        if self.sovereign_gradient:
-            compliant, adjusted_task = self.sovereign_gradient.evaluate_action(task_description)
-            gradient_compliant = compliant
-            final_task_description = adjusted_task
-            if not compliant:
-                logger.debug(f"[SovereignGradient] Swarm task '{task_description}' was adjusted to '{final_task_description}' due to Sovereign Gradient non-compliance.")
-        
-        self.memetic_kernel.add_memory("TaskCoordination", f"Swarm '{self.name}' coordinating task: '{final_task_description}' (Compliant: {gradient_compliant}) among {len(self.members)} members (conceptual).")
-        logger.info(f"[SwarmProtocol] Swarm '{self.name}' coordinating task: '{final_task_description}' among {len(self.members)} members (conceptual).")
-        if self.catalyst_vector_ref:
-            self.catalyst_vector_ref._log_swarm_activity(
-                "SWARM_TASK_COORDINATION", # event_type
-                self.name,                 # source
-                f"Coordinating task: '{final_task_description}'.", # description
-                {"task": final_task_description, "members_count": len(self.members), "compliant": gradient_compliant}, # details
-                level='info'               # level
-            )
-
-    def get_state(self):
-        return {
-            'name': self.name,
-            'goal': self.goal,
-            'members': list(self.members), # FIX: Convert set to list for JSON serialization
-            'consensus_mechanism': self.consensus_mechanism,
-            'description': self.description,
-            'sovereign_gradient': self.sovereign_gradient.get_state() if self.sovereign_gradient else None,
-            'memetic_kernel': self.memetic_kernel.get_state()
-        }
-
-    def save_state(self):
-        """Saves the swarm's current state to SQLite database (with JSON fallback)."""
-        try:
-            from database import cva_db
-            state = self.get_state()
-            cva_db.save_full_swarm_state(state)
-            self.external_log_sink.info(f"Swarm '{self.name}' state saved to database.")
-        except Exception as e:
-            self.external_log_sink.error(f"Database save failed: {e}, falling back to JSON")
-            try:
-                os.makedirs(os.path.dirname(self.swarm_state_file_full_path), exist_ok=True)
-                with open(self.swarm_state_file_full_path, 'w') as f:
-                    json.dump(self.get_state(), f, indent=2)
-            except Exception as e2:
-                self.external_log_sink.error(f"JSON fallback also failed: {e2}")
+# --- Swarm Protocol (extracted to swarm_protocol.py) ---
+from swarm_protocol import SwarmProtocol  # noqa: E402
 
 # --- Catalyst Vector Alpha (Main Orchestrator) ---
 class CatalystVectorAlpha:
@@ -375,13 +224,24 @@ class CatalystVectorAlpha:
             self.SWARM_RESET_THRESHOLD = int(agent_cfg.get("swarm_reset_threshold", self.SWARM_RESET_THRESHOLD))
             self.NO_PATTERN_AGENT_THRESHOLD = float(agent_cfg.get("no_pattern_agent_threshold", self.NO_PATTERN_AGENT_THRESHOLD))
             self.dead_agent_threshold_seconds = int(agent_cfg.get("dead_agent_threshold_seconds", 300))
-            self.zombie_thread_warn_seconds = int(agent_cfg.get("zombie_thread_warn_seconds", 60))
+            self.zombie_thread_warn_seconds = 60
         except Exception:
             self.dead_agent_threshold_seconds = 300
             self.zombie_thread_warn_seconds = 60
 
+        # --- System state initialization ---
+        self.swarm_state = {"cycle_count": 0}
+
         # --- Resource monitor + shims ---
-        self.resource_monitor = SystemResourceMonitor()
+        try:
+            from SwarmMonitor import SystemResourceMonitor
+            self.resource_monitor = SystemResourceMonitor()
+        except ImportError:
+            class MockResourceMonitor:
+                def get_cpu_usage(self): return 0.0
+                def get_memory_usage(self): return 0.0
+            self.resource_monitor = MockResourceMonitor()
+
         if not hasattr(self.resource_monitor, "get_cpu_usage"):
             import psutil
             self.resource_monitor.get_cpu_usage = lambda: psutil.cpu_percent(interval=0.1)
@@ -390,6 +250,7 @@ class CatalystVectorAlpha:
             self.resource_monitor.get_memory_usage = lambda: psutil.Process().memory_percent()
 
         # --- SwarmHealthMonitor (background thread) ---
+        from SwarmMonitor import SwarmHealthMonitor
         self.meta_monitor = SwarmHealthMonitor(
             log_path=self.swarm_activity_log_full_path,
             orchestrator_inject=self.inject_directives if hasattr(self, "inject_directives") else None
@@ -403,6 +264,7 @@ class CatalystVectorAlpha:
             self.meta_monitor.start()
         except Exception as _e:
             self.external_log_sink.warning(f"[SwarmHealthMonitor] failed to start: {_e}")
+
         # --- K8s Student Agent (autonomous, runs in own thread) ---
         # Set to False to disable K8s-focused autonomous remediation
         K8S_STUDENT_ENABLED = False  # ← Change to True to enable K8s monitoring
@@ -448,17 +310,6 @@ class CatalystVectorAlpha:
             self.external_log_sink.warning(f"[Curiosity] failed to start: {_e}")
             self.curiosity_loop = None
 
-        # --- Start Evolution Agent (self-modification capability) ---
-        try:
-            from evolution_agent import EvolutionAgent
-            self.evolution_agent = EvolutionAgent(
-                memetic_kernel=self.memetic_kernel,
-                tool_registry=self.tool_registry,
-                log_sink=self.external_log_sink,
-                approval_mode="autonomous",  # Changed to autonomous for Phase 2 immediate verify
-                gap_threshold=3,  # Reverted to standard threshold
-            )
-            self.evolution_agent.start()
             # Link back to tool registry for failure feedback loop
             if hasattr(self.tool_registry, "set_evolution_agent"):
                 self.tool_registry.set_evolution_agent(self.evolution_agent)
@@ -467,6 +318,21 @@ class CatalystVectorAlpha:
         except Exception as _e:
             self.external_log_sink.warning(f"[EvolutionAgent] failed to start: {_e}")
             self.evolution_agent = None
+
+        # --- Start Self-Healing Monitor (detects broken tools) ---
+        try:
+            self.self_healing_monitor = SelfHealingMonitor(
+                tool_registry=self.tool_registry,
+                evolution_agent=self.evolution_agent,
+                message_bus=self.message_bus,
+                log_sink=self.external_log_sink,
+                check_interval=_GLOBAL_CONFIG.SELF_HEALING_CHECK_INTERVAL,
+            )
+            self.self_healing_monitor.start()
+            self.external_log_sink.info("[SelfHealing] 🩹 Started proactive tool health monitoring")
+        except Exception as _e:
+            self.external_log_sink.warning(f"[SelfHealing] failed to start: {_e}")
+            self.self_healing_monitor = None
 
         # --- Log initial setup completion ---
         self._log_swarm_activity(
@@ -540,7 +406,31 @@ class CatalystVectorAlpha:
         # --- Directive handlers (keep your existing implementation) ---
         self._directive_handlers = self._initialize_directive_handlers()
 
+    def shutdown(self):
+        """Orchestrator-level shutdown hook."""
+        self.external_log_sink.info("[System] 🛑 Initiating graceful shutdown...")
         
+        # 1. Stop background loops
+        if hasattr(self, 'self_healing_monitor') and self.self_healing_monitor:
+            self.self_healing_monitor.stop()
+            
+        if hasattr(self, 'evolution_agent') and self.evolution_agent:
+            self.evolution_agent.stop()
+            
+        if hasattr(self, 'curiosity_loop') and self.curiosity_loop:
+            self.curiosity_loop.stop()
+            
+        # 2. Stop all agents
+        for name, agent in self.agent_instances.items():
+            if hasattr(agent, 'stop'):
+                agent.stop()
+        
+        # 3. Shutdown database
+        if self.db:
+            self.db.shutdown()
+            
+        self.external_log_sink.info("[System] ✅ Shutdown complete.")
+
     def _log_swarm_activity(self, event_type, source, description, details=None, level='info'):
         """Logs significant swarm activity to a central file and pushes to external sink."""
         # This method seems to be fine, but the log calls throughout the code need to be fixed
@@ -2479,20 +2369,21 @@ class CatalystVectorAlpha:
                 if agent_class:
                     try:
                         # CRITICAL FIX: Pass all required arguments to agent_class.__init__
-                        # These arguments should now be correctly defined as self.xxx_full_path in CatalystVectorAlpha.__init__
                         self.agent_instances[agent_name] = agent_class(
                             name=agent_name,
                             eidos_spec=loaded_state['eidos_spec'],
                             message_bus=self.message_bus,
-                            tool_registry=self.tool_registry,
                             event_monitor=self.event_monitor,
                             external_log_sink=self.external_log_sink,
-                            chroma_db_path=self.chroma_db_full_path, # <--- Pass full ChromaDB path
-                            persistence_dir=self.persistence_dir,     # <--- Pass base persistence dir
-                            paused_agents_file_path=self.paused_agents_file_full_path_full_path, # <--- Pass full paused agents file path
-                            sovereign_gradient=loaded_state.get('sovereign_gradient'), # Pass loaded gradient config/state
-                            loaded_state=loaded_state # Pass the entire loaded state for agent's _load_or_initialize_state
+                            chroma_db_path=self.chroma_db_full_path,
+                            persistence_dir=self.persistence_dir,
+                            paused_agents_file_path=self.paused_agents_file_full_path,
+                            world_model=self.world_model,
+                            tool_registry=self.tool_registry,
+                            db=self.db
                         )
+                        # Restore agent internal state
+                        self.agent_instances[agent_name].load_state(loaded_state)
                         self.external_log_sink.info(f"Agent '{agent_name}' re-instantiated from loaded state.")
                     except Exception as e:
                         logger.error(f"Error re-instantiating agent '{agent_name}' from loaded state: {e}. Skipping.")
@@ -3151,19 +3042,30 @@ class CatalystVectorAlpha:
             return list(self.dynamic_directive_queue)
 
     def _process_dynamic_directives(self):
-        """Processes directives from the dynamic queue, with special handling for user commands."""
-        with self._directive_lock:
-            if not self.dynamic_directive_queue:
-                return
-            snapshot = list(self.dynamic_directive_queue)
-            self.dynamic_directive_queue.clear()
+        """
+        Process directives from the dynamic queue.
+        This allows external commands (e.g. from API) to be handled by the swarm.
+        """
+        # Log queue status periodically if not empty
+        if self.dynamic_directive_queue:
+            logger.info(f"Dynamic Directive Queue has {len(self.dynamic_directive_queue)} items.")
 
-        logger.info(f"--- Processing {len(snapshot)} Injected Directives ---")
+        if not self.dynamic_directive_queue:
+            return # Nothing to process
+
+        # Process directives in batches for efficiency
+        # Use the lock to safely access and clear the queue
+        with self._directive_lock:
+            directives_to_process = list(self.dynamic_directive_queue)
+            self.dynamic_directive_queue.clear() # Clear queue before processing to avoid race conditions
+
+        logger.info(f"Processing batch of {len(directives_to_process)} directives: {[d.get('type') for d in directives_to_process]}")
+        
         actionable_directives = [
-            task for task in snapshot if enforce_intent(task)
+            task for task in directives_to_process if enforce_intent(task)
         ]
         
-        num_dropped = len(snapshot) - len(actionable_directives)
+        num_dropped = len(directives_to_process) - len(actionable_directives)
         if num_dropped > 0:
             self.logger.info(f"Dropped {num_dropped} tasks with no actionable intent.")
 
@@ -4010,7 +3912,15 @@ if __name__ == "__main__":
         database=catalyst_alpha.db,
         logger=catalyst_alpha.external_log_sink
     )
-    supervisor.run_supervised(tick_sleep=10)
+    try:
+        supervisor.run_supervised(tick_sleep=10)
+    except KeyboardInterrupt:
+        central_logger.info("System interrupted by user.")
+    except Exception as e:
+        central_logger.error(f"Fatal system error: {e}", exc_info=True)
+    finally:
+        catalyst_alpha.shutdown()
+    
     logger.info("Catalyst Vector Alpha (Phase 11) Execution Finished.")
 
 

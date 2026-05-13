@@ -929,29 +929,64 @@
       },
 
       async fetchAgents() {
-        console.log('fetchAgents called');
         try {
-          const r = await fetch('/api/agents');
-          if (!r.ok) throw new Error('Failed to fetch agents');
-          const data = await r.json();
-          console.log('Fetched data:', data);
-          let agentsPayload = {};
-          if (Array.isArray(data.agents)) {
-            agentsPayload = data.agent_details || {};
-            if (!Object.keys(agentsPayload).length) {
-              agentsPayload = Object.fromEntries(data.agents.map(name => [name, { role: 'Agent', state: {} }]));
+          const [agentRes, factoryRes] = await Promise.allSettled([
+            fetch('/api/agents'),
+            fetch('/api/agents/factory')
+          ]);
+
+          // Collect factory agent IDs first so we can tag them during merge
+          let factoryAgentMap = {};
+          if (factoryRes.status === 'fulfilled' && factoryRes.value.ok) {
+            const fdata = await factoryRes.value.json();
+            const dynAgents = fdata.active_agents || fdata.agents || [];
+            for (const da of dynAgents) {
+              const id = da.agent_id || da.id;
+              factoryAgentMap[id] = da;
+              if (da.name) factoryAgentMap[da.name] = da;
             }
-          } else {
-            agentsPayload = data.agents || {};
           }
-          this.agents = Object.entries(agentsPayload).map(([name, info]) => ({
-            agent_id: name,
-            name: name,
-            purpose: info.role || 'Agent',
-            tools: info.state?.tools || [],
-            expires_at: null
-          }));
-          console.log('Mapped agents:', this.agents.length, this.agents);
+
+          // Build agents from /api/agents, tagging factory ones as dynamic
+          let agentsPayload = {};
+          if (agentRes.status === 'fulfilled' && agentRes.value.ok) {
+            const data = await agentRes.value.json();
+            if (Array.isArray(data.agents)) {
+              agentsPayload = data.agent_details || {};
+              if (!Object.keys(agentsPayload).length) {
+                agentsPayload = Object.fromEntries(data.agents.map(name => [name, { role: 'Agent', state: {} }]));
+              }
+            } else {
+              agentsPayload = data.agents || {};
+            }
+          }
+
+          this.agents = Object.entries(agentsPayload).map(([name, info]) => {
+            const factoryInfo = factoryAgentMap[name];
+            return {
+              agent_id: name,
+              name: factoryInfo?.name || name,
+              purpose: factoryInfo?.purpose || info.role || 'ProtoAgent',
+              tools: factoryInfo?.tools || info.state?.tools || [],
+              expires_at: factoryInfo?.expires_at || null,
+              is_dynamic: !!factoryInfo
+            };
+          });
+
+          // Add any factory agents not already present
+          for (const [id, da] of Object.entries(factoryAgentMap)) {
+            if (!this.agents.find(a => a.agent_id === id || a.name === da.name)) {
+              this.agents.push({
+                agent_id: da.agent_id || id,
+                name: da.name,
+                purpose: da.purpose || 'Dynamic Agent',
+                tools: da.tools || [],
+                expires_at: da.expires_at,
+                is_dynamic: true
+              });
+            }
+          }
+
           this.renderAgents();
           this.updateStats();
         } catch (e) {
@@ -980,9 +1015,13 @@
         let agentsToRender = this.agents;
         try {
           if (this.summary && this.summary.agent_list && this.summary.agent_list.length) {
-            // Merge with existing agent objects when possible
-            const map = Object.fromEntries(this.agents.map(a => [a.name || a.agent_id, a]));
-            agentsToRender = this.summary.agent_list.map(name => map[name] || { name, agent_id: name, tools: [], purpose: 'Dynamic Agent' });
+            // Build a map keyed by BOTH name and agent_id for robust lookup
+            const map = {};
+            for (const a of this.agents) {
+              if (a.name) map[a.name] = a;
+              if (a.agent_id) map[a.agent_id] = a;
+            }
+            agentsToRender = this.summary.agent_list.map(name => map[name] || { name, agent_id: name, tools: [], purpose: 'Dynamic Agent', is_dynamic: false });
           }
         } catch (_) { }
 
@@ -1002,6 +1041,7 @@
               </div>
               <div class="flex items-center space-x-2">
                 <span class="badge badge-success">Active</span>
+                ${agent.is_dynamic ? '<span class="badge" style="background:#7c3aed">⚡ Dynamic</span>' : ''}
                 <span class="text-xs text-slate-500">${timeLeft}m left</span>
                 ${agent.agent_id ? `<button class="btn btn-secondary btn-sm" onclick="App.killAgent('${agent.agent_id}')">🛑 Kill</button>` : ''}
               </div>
@@ -1431,7 +1471,7 @@
       async pauseSystem() {
         try {
           await fetch('/api/system/pause', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason: 'Dashboard request' }) });
-          this.toast('System pause requested');
+          this.toast('System paused');
         } catch (e) {
           this.toast('Pause failed: ' + e.message, true);
         }
@@ -1440,7 +1480,7 @@
       async unpauseSystem() {
         try {
           await fetch('/api/system/unpause', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason: 'Dashboard request' }) });
-          this.toast('System unpause requested');
+          this.toast('System resumed');
         } catch (e) {
           this.toast('Unpause failed: ' + e.message, true);
         }

@@ -64,3 +64,14 @@ def health_check():
     except Exception as e:
         print(f"Database health check failed: {e}")
         return False
+
+def close_pool():
+    """Shut down the database connection pool."""
+    global pool
+    if pool:
+        try:
+            pool.closeall()
+            print("Database connection pool closed.")
+        except Exception as e:
+            print(f"Error closing database pool: {e}")
+        pool = None

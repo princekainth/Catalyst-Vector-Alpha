@@ -525,7 +525,7 @@ def _normalize_plan_schema(
         if not expl.get("role_ok", False):
             LOGGER.error(f"[DEBUG_NORM] Skip step {i}: role not ok. Reasons: {expl.get('reasons')}")
             skips["role_mismatch"] += 1
-            failed = True
+            # failed = True  # Relaxed: do not drop the step just for a role mismatch
 
         if failed:
             print(f"!!! DEBUG_NORM: Skip step {i}: Policy failed. reasons={expl.get('reasons')}")

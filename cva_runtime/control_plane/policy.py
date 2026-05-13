@@ -105,7 +105,7 @@ def evaluate(
             requires_approval=False,
         )
 
-    if mode == "autonomous_full":
+    if mode == "autonomous_full" or mode == "auto":
         if allow_destructive:
             return PolicyDecision(
                 allow=True,

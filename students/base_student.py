@@ -223,11 +223,11 @@ class BaseStudent(ABC):
         
         try:
             if hasattr(self.tools, "safe_call"):
-                return self.tools.safe_call(tool_name, **kwargs)
-            elif hasattr(self.tools, "call"):
-                return self.tools.call(tool_name, **kwargs)
-            elif callable(getattr(self.tools, tool_name, None)):
-                return getattr(self.tools, tool_name)(**kwargs)
+                return self.tools.safe_call(tool_name, agent_id=self.name, **kwargs)
+            
+            # Fallbacks blocked for safety. Use safe_call exclusively.
+            print(f"[{self.name}] 🛡️ SECURITY BLOCK: Direct tool call bypass attempted in BaseStudent for '{tool_name}'.")
+            return None
         except Exception as e:
             print(f"[{self.name}] Tool call failed: {tool_name} - {e}")
             return None

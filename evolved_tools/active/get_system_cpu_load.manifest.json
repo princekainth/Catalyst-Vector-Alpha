@@ -1,0 +1,17 @@
+{
+  "tool_name": "get_system_cpu_load",
+  "description": "REPAIR: Tool 'get_system_cpu_load' is broken. Circuit breaker tripped due to repeated failures.",
+  "gap_id": "gap-1771902807834",
+  "source_directive": "Proactive health check detected failure. Stack trace analysis required.",
+  "source_urls": [],
+  "risk_profile": "safe",
+  "detected_capabilities": [],
+  "test_results": {
+    "passed": true,
+    "output": "{\"success\": true, \"message\": \"\", \"data\": {\"cpu_usage\": 29.0}}\n"
+  },
+  "author_agent": "SelfHealingMonitor",
+  "approval_status": "promoted",
+  "created_at": "2026-02-24T03:13:40.051936Z",
+  "promoted_at": "2026-02-24T03:13:40.052315Z"
+}

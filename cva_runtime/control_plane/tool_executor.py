@@ -8,7 +8,7 @@ from typing import Any, Dict, FrozenSet, Mapping
 
 from cva_runtime.control_plane.audit_log import hash_args, log_decision
 from cva_runtime.control_plane.approvals import validate_approval_token
-from cva_runtime.control_plane.capabilities import Capability, ToolRisk, get_tool_profile
+from cva_runtime.control_plane.capabilities import Capability, ToolProfile, ToolRisk, get_tool_profile
 from cva_runtime.control_plane.policy import evaluate
 
 
@@ -20,6 +20,7 @@ AGENT_CAPABILITY_PROFILES: Dict[str, FrozenSet[Capability]] = {
             Capability.LOGS_READ,
             Capability.FILE_READ,
             Capability.LLM_CALL,
+            Capability.SYSTEM_READ,
         }
     ),
     "planner": frozenset(
@@ -29,6 +30,7 @@ AGENT_CAPABILITY_PROFILES: Dict[str, FrozenSet[Capability]] = {
             Capability.LOGS_READ,
             Capability.FILE_READ,
             Capability.LLM_CALL,
+            Capability.SYSTEM_READ,
         }
     ),
     "worker": frozenset(
@@ -42,6 +44,9 @@ AGENT_CAPABILITY_PROFILES: Dict[str, FrozenSet[Capability]] = {
             Capability.SHELL_READ,
             Capability.SHELL_WRITE,
             Capability.LLM_CALL,
+            Capability.NET_OUTBOUND,
+            Capability.SYSTEM_READ,
+            Capability.SYSTEM_WRITE,
         }
     ),
     "security": frozenset(
@@ -52,9 +57,10 @@ AGENT_CAPABILITY_PROFILES: Dict[str, FrozenSet[Capability]] = {
             Capability.FILE_READ,
             Capability.LLM_CALL,
             Capability.APPROVAL_OVERRIDE,
+            Capability.SYSTEM_READ,
         }
     ),
-    "notifier": frozenset({Capability.NET_OUTBOUND, Capability.FILE_READ}),
+    "notifier": frozenset({Capability.NET_OUTBOUND, Capability.FILE_READ, Capability.LLM_CALL, Capability.SHELL_READ}),
 }
 
 LEGACY_FALLBACK_CAPABILITIES: FrozenSet[Capability] = frozenset(
@@ -63,6 +69,18 @@ LEGACY_FALLBACK_CAPABILITIES: FrozenSet[Capability] = frozenset(
         Capability.METRICS_READ,
         Capability.LOGS_READ,
         Capability.FILE_READ,
+        Capability.LLM_CALL,
+        Capability.SHELL_READ,
+    }
+)
+
+# Narrow capabilities for the dashboard human-in-the-loop actions
+DASHBOARD_OPERATOR_CAPABILITIES: FrozenSet[Capability] = frozenset(
+    {
+        Capability.K8S_READ,
+        Capability.K8S_WRITE,
+        Capability.LOGS_READ,
+        Capability.METRICS_READ,
     }
 )
 
@@ -91,26 +109,46 @@ class ToolExecutor:
 
         profile = get_tool_profile(tool_name)
         if profile is None:
-            reason = f"unknown tool '{tool_name}' is not in policy profiles"
-            self._try_audit(
-                trace_id=trace,
-                agent_id=agent_id,
-                tool_name=tool_name,
-                args=safe_args,
-                decision="POLICY_DECISION",
-                reason=reason,
-                result_status="deny",
-                latency_ms=self._elapsed_ms(started_ms),
-                extra={"allow": False, "requires_approval": False, "risk": ToolRisk.DESTRUCTIVE.value},
-                warnings=warnings,
-            )
-            return self._error(
-                code="policy_denied",
-                message=reason,
-                trace_id=trace,
-                details={"tool": tool_name},
-                warnings=warnings,
-            )
+            # Check if it's a registered evolved tool
+            is_registered = False
+            try:
+                if hasattr(self.registry, "list_tool_names"):
+                    is_registered = tool_name in self.registry.list_tool_names()
+                elif hasattr(self.registry, "get_available_tools"):
+                    is_registered = tool_name in self.registry.get_available_tools()
+            except Exception:
+                pass
+
+            if is_registered:
+                # Dynamically generate a conservative profile for evolved tools
+                profile = ToolProfile(
+                    name=tool_name,
+                    required_caps=frozenset({Capability.SHELL_WRITE, Capability.NET_OUTBOUND, Capability.FILE_WRITE}),
+                    risk=ToolRisk.CAUTION,
+                    resources_touched=("evolved_tool",),
+                )
+                warnings.append(f"using dynamic profile for evolved tool '{tool_name}'")
+            else:
+                reason = f"unknown tool '{tool_name}' is not in policy profiles"
+                self._try_audit(
+                    trace_id=trace,
+                    agent_id=agent_id,
+                    tool_name=tool_name,
+                    args=safe_args,
+                    decision="POLICY_DECISION",
+                    reason=reason,
+                    result_status="deny",
+                    latency_ms=self._elapsed_ms(started_ms),
+                    extra={"allow": False, "requires_approval": False, "risk": ToolRisk.DESTRUCTIVE.value},
+                    warnings=warnings,
+                )
+                return self._error(
+                    code="policy_denied",
+                    message=reason,
+                    trace_id=trace,
+                    details={"tool": tool_name},
+                    warnings=warnings,
+                )
 
         agent_caps = self._resolve_agent_capabilities(agent_id=agent_id, context=ctx)
         approval_token = str(safe_args.get("approval_token") or "").strip()
@@ -283,6 +321,9 @@ class ToolExecutor:
                 return frozenset(caps)
 
         role_hint = str(context.get("agent_role") or context.get("agent_type") or agent_id or "").lower()
+        if "dashboard_operator" in role_hint or "dashboard_operator" == str(agent_id).lower():
+            return DASHBOARD_OPERATOR_CAPABILITIES
+
         for role, caps in AGENT_CAPABILITY_PROFILES.items():
             if role in role_hint:
                 return caps

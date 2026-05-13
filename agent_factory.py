@@ -80,15 +80,25 @@ class DynamicAgent(ProtoAgent):
         
         logger.info(f"DynamicAgent spawned: {spec.name} (expires in {spec.ttl_hours}h)")
     
-    def _execute_agent_specific_task(self, task_description: str, cycle_id: Optional[str], 
-                                      reporting_agents: Optional[Union[str, List]], 
-                                      context_info: Optional[dict], **kwargs):
-        """Execute task with specialized tools."""
+    def _execute_agent_specific_task(self, task_description: str, cycle_id: Optional[str] = None, 
+                                      reporting_agents: Optional[Union[str, List]] = None, 
+                                      context_info: Optional[dict] = None, **kwargs):
+        """Execute task with specialized tools by routing to tool-first execute_task."""
         if self.check_expiration():
             return "failed", "Agent expired", {}, 0.0
         
-        # Use parent's generic execution but with our specialized tools
-        return "completed", None, {"summary": f"Executed: {task_description}"}, 0.8
+        # Bridge to our Tool-First Protocol logic
+        task = {"description": task_description}
+        exec_result = self.execute_task(task)
+        
+        if exec_result.get("success"):
+            actual_result = exec_result.get("result")
+            # If the tool result is already a tuple (some legacy tools return this), normalize it
+            if isinstance(actual_result, tuple):
+                return actual_result
+            return "completed", None, {"result": actual_result}, 1.0
+        else:
+            return "failed", exec_result.get("error", "Unknown error"), {}, 0.0
     
     
     def check_expiration(self) -> bool:
@@ -142,7 +152,7 @@ class DynamicAgent(ProtoAgent):
     """
 
         try:
-            response = self.ollama_inference_model.generate_text(decision_prompt, temperature=0.2)
+            response = self.llm.generate_text(decision_prompt, temperature=0.2)
             response = response.strip()
             if '```json' in response:
                 response = response.split('```json')[1].split('```')[0].strip()
@@ -153,6 +163,7 @@ class DynamicAgent(ProtoAgent):
                 response = json_match.group(0)
             
             decision = json.loads(response)
+            result = None  # Initialize before branching
             
             # STEP 2: Execute based on decision
             if decision.get("decision") == "TOOLSMITH_MODE":
@@ -233,13 +244,24 @@ class DynamicAgent(ProtoAgent):
             self.db.record_dynamic_agent_task(
                 agent_id=self.spec.agent_id,
                 task=task,
-                result=result
+                result=result or {"success": False, "error": "No tool executed"}
             )
             
+            if result is None:
+                return {
+                    "success": False,
+                    "error": f"Tool '{tool_name}' not available, and all fallbacks failed.",
+                    "suggestion": "Ensure the agent is spawned with the correct tools, or enable toolsmith mode."
+                }
+                
             return {"success": True, "result": result}
             
         except Exception as e:
+            import traceback
+            logger.error(f"DynamicAgent execute_task failed: {e}\n{traceback.format_exc()}")
             return {"success": False, "error": str(e)}
+
+
 
     def _toolsmith_mode(self, task_description: str, reasoning: str) -> dict:
         """Generate and execute custom code when no tool exists"""
@@ -256,7 +278,7 @@ class DynamicAgent(ProtoAgent):
     """
         
         try:
-            code = self.ollama_inference_model.generate_text(code_prompt, temperature=0.3)
+            code = self.llm.generate_text(code_prompt, temperature=0.3)
             
             # Clean code
             if '```python' in code:

@@ -94,18 +94,7 @@ MISSION_TOOL_POLICY = {
         "fallback": "execute_terminal_command",
     },    
     "general_planning": {
-        "allow": {
-            "get_system_cpu_load",
-            "get_system_resource_usage",
-            "top_processes",
-            "measure_responsiveness",
-            "check_calendar",
-            "create_pdf",
-            "generate_report_pdf",
-            "watch_k8s_events",
-            "kubernetes_pod_metrics",
-            "prometheus_query",
-        },
+        "allow": set(),  # Allow all tools for general user commands
         "deny": set(),
         "fallback": "measure_responsiveness",
     },
@@ -258,7 +247,20 @@ def filter_plan_steps(mission: str, steps: List[Dict[str, Any]], target_deployme
 
     for step in steps:
         tool = step.get("tool")
-        if tool in policy["deny"] or (policy["allow"] and tool not in policy["allow"]):
+        
+        # Check if it's an evolved tool (lives in evolved_tools/active)
+        is_evolved = False
+        try:
+            # Safely find project root relative to this file (core/mission_policy.py)
+            _this_dir = os.path.dirname(os.path.abspath(__file__))
+            project_root = os.path.dirname(_this_dir)
+            active_dir = os.path.join(project_root, "evolved_tools", "active")
+            if os.path.exists(os.path.join(active_dir, f"{tool}.py")):
+                is_evolved = True
+        except Exception:
+            pass
+
+        if tool in policy["deny"] or (policy["allow"] and tool not in policy["allow"] and not is_evolved):
             if policy["fallback"]:
                 # Auto-correct the step to use the fallback tool
                 step = dict(step)

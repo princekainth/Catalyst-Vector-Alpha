@@ -12,8 +12,13 @@ import subprocess
 import json
 import time
 import re
-from typing import Optional
 from datetime import datetime
+from typing import Optional, List, Dict, Any, Union
+
+try:
+    from config_manager import config
+except ImportError:
+    config = None
 
 from .base_student import BaseStudent
 from reasoning_engine import get_reasoning_engine, ReasoningTrace
@@ -50,9 +55,9 @@ class K8sStudent(BaseStudent):
         
         # Track what we've already tried to fix
         self._remediated_pods: dict[str, float] = {}  # pod_key -> timestamp
-        self._cooldown_seconds = 300  # Don't retry same pod for 5 min
+        self._cooldown_seconds = getattr(config, "K8S_STUDENT_COOLDOWN", 300) if config else 300
         self._failed_attempts: dict[str, int] = {}  # deployment_key -> fail count
-        self._max_attempts = 3  # Stop after 3 failures
+        self._max_attempts = getattr(config, "K8S_STUDENT_MAX_ATTEMPTS", 3) if config else 3
         self._permanently_skip: set[str] = set()  # Pods we gave up on
         self._last_status: Optional[dict] = None
         
@@ -804,139 +809,70 @@ Respond with ONLY valid JSON (no markdown, no backticks):
     # Fix Actions
     # ─────────────────────────────────────────────────────────────
     
+    def _security_block(self, bypass_type: str, *args, **kwargs) -> dict:
+        """Centralized security block for prohibited execution paths."""
+        print(f"[{self.name}] 🛡️ SECURITY BLOCK: Bypass attempt '{bypass_type}' intercepted.")
+        return {
+            "success": False,
+            "status": "blocked",
+            "reason": "Direct mutation/remediation bypass prohibited. Route via ToolExecutor.",
+            "trace_id": f"SEC-BLOCK-{bypass_type.upper()}",
+            "metadata": {
+                "args_count": len(args),
+                "kwargs_keys": list(kwargs.keys())
+            }
+        }
+
     def _add_env_var(self, dep_name: str, namespace: str, var_name: str, var_value: str) -> dict:
-        """Add environment variable to deployment."""
-        try:
-            patch = {
-                "spec": {
-                    "template": {
-                        "spec": {
-                            "containers": [{
-                                "name": dep_name.split("-")[0],  # Best guess at container name
-                                "env": [{"name": var_name, "value": var_value}]
-                            }]
-                        }
-                    }
-                }
-            }
-            
-            result = subprocess.run(
-                ["kubectl", "patch", "deployment", dep_name, "-n", namespace,
-                 "--type", "strategic", "-p", json.dumps(patch)],
-                capture_output=True, text=True, timeout=30
-            )
-            
-            if result.returncode == 0:
-                print(f"[{self.name}] ✅ Added {var_name} to {dep_name}")
-                return {"success": True, "action": f"Added env {var_name}"}
-            else:
-                return {"success": False, "error": result.stderr}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-    
+        """[HARDENED] Add environment variable via ToolExecutor."""
+        return self.tools.safe_call(
+            "k8s_patch_deployment_env",
+            agent_id=self.name,
+            deployment=dep_name,
+            namespace=namespace,
+            env_name=var_name,
+            env_value=var_value
+        )
+
     def _increase_memory(self, dep_name: str, namespace: str, request: str, limit: str) -> dict:
-        """Increase memory limits for deployment."""
-        try:
-            patch = {
-                "spec": {
-                    "template": {
-                        "spec": {
-                            "containers": [{
-                                "name": dep_name.split("-")[0],
-                                "resources": {
-                                    "requests": {"memory": request},
-                                    "limits": {"memory": limit}
-                                }
-                            }]
-                        }
-                    }
-                }
-            }
-            
-            result = subprocess.run(
-                ["kubectl", "patch", "deployment", dep_name, "-n", namespace,
-                 "--type", "strategic", "-p", json.dumps(patch)],
-                capture_output=True, text=True, timeout=30
-            )
-            
-            if result.returncode == 0:
-                print(f"[{self.name}] ✅ Increased memory for {dep_name} to {limit}")
-                return {"success": True, "action": f"Increased memory to {limit}"}
-            else:
-                return {"success": False, "error": result.stderr}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-    
-    def _create_configmap(self, name: str, namespace: str) -> dict:
-        """Create a placeholder ConfigMap."""
-        try:
-            result = subprocess.run(
-                ["kubectl", "create", "configmap", name, "-n", namespace,
-                 "--from-literal=placeholder=true"],
-                capture_output=True, text=True, timeout=30
-            )
-            
-            if result.returncode == 0:
-                print(f"[{self.name}] ✅ Created ConfigMap {name}")
-                return {"success": True, "action": f"Created ConfigMap {name}"}
-            elif "already exists" in result.stderr:
-                return {"success": True, "action": f"ConfigMap {name} already exists"}
-            else:
-                return {"success": False, "error": result.stderr}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-    
-    def _create_secret(self, name: str, namespace: str) -> dict:
-        """Create a placeholder Secret."""
-        try:
-            result = subprocess.run(
-                ["kubectl", "create", "secret", "generic", name, "-n", namespace,
-                 "--from-literal=placeholder=true"],
-                capture_output=True, text=True, timeout=30
-            )
-            
-            if result.returncode == 0:
-                print(f"[{self.name}] ✅ Created Secret {name}")
-                return {"success": True, "action": f"Created Secret {name}"}
-            elif "already exists" in result.stderr:
-                return {"success": True, "action": f"Secret {name} already exists"}
-            else:
-                return {"success": False, "error": result.stderr}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-    
-    def _set_image(self, dep_name: str, namespace: str, image: str) -> dict:
-        """Set container image for deployment."""
-        try:
-            container_name = dep_name.split("-")[0]
-            result = subprocess.run(
-                ["kubectl", "set", "image", f"deployment/{dep_name}",
-                 f"{container_name}={image}", "-n", namespace],
-                capture_output=True, text=True, timeout=30
-            )
-            
-            if result.returncode == 0:
-                print(f"[{self.name}] ✅ Set image to {image}")
-                return {"success": True, "action": f"Set image to {image}"}
-            else:
-                return {"success": False, "error": result.stderr}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-    
+        """[HARDENED] Increase memory limits via ToolExecutor."""
+        return self.tools.safe_call(
+            "k8s_patch_resource_limits",
+            agent_id=self.name,
+            deployment=dep_name,
+            namespace=namespace,
+            memory_request=request,
+            memory_limit=limit
+        )
+
+    def _create_configmap(self, name: str, namespace: str, data: dict) -> dict:
+        """[STILL BLOCKED] Create configmap bypassed for security."""
+        return self._security_block("create_configmap", name=name, namespace=namespace, data_keys=list(data.keys()))
+
+    def _create_secret(self, name: str, namespace: str, data: dict) -> dict:
+        """[STILL BLOCKED] Create secret bypassed for security."""
+        return self._security_block("create_secret", name=name, namespace=namespace, data_keys=list(data.keys()))
+
+    def _set_image(self, dep_name: str, namespace: str, container: str, image: str) -> dict:
+        """[STILL BLOCKED] Set image bypassed for security."""
+        return self._security_block("set_image", deployment=dep_name, namespace=namespace, container=container)
+
     # ─────────────────────────────────────────────────────────────
     # Helpers
     # ─────────────────────────────────────────────────────────────
-    
+
     def _get_pod_logs(self, name: str, namespace: str, tail: int = 50) -> str:
-        """Get pod logs."""
-        try:
-            result = subprocess.run(
-                ["kubectl", "logs", name, "-n", namespace, f"--tail={tail}"],
-                capture_output=True, text=True, timeout=30
-            )
-            return result.stdout + result.stderr
-        except:
-            return ""
+        """[HARDENED] Get pod logs via ToolExecutor."""
+        res = self.tools.safe_call(
+            "k8s_get_pod_logs",
+            agent_id=self.name,
+            pod_name=name,
+            namespace=namespace,
+            tail=tail
+        )
+        if res.get("status") == "ok":
+            return res.get("data", {}).get("logs", "")
+        return f"Error fetching logs: {res.get('error', 'unknown')}"
 
     def _get_pod_events(self, name: str, namespace: str, limit: int = 5) -> str:
         """Get recent events for a pod."""
@@ -1061,91 +997,14 @@ Respond with ONLY valid JSON (no markdown, no backticks):
             return None
     
     def _apply_web_fix(self, url: str, reason: str, pod_name: str, namespace: str) -> Optional[dict]:
-        """Fetch article, extract fix with LLM, apply it."""
-        if not self.tools:
-            return None
-        
-        try:
-            # 1. Fetch article
-            print(f"[{self.name}] 📖 Reading: {url[:50]}...")
-            result = self.tools.safe_call('read_webpage', url=url)
-            
-            if not isinstance(result, dict) or result.get('status') != 'ok':
-                return None
-            
-            outer_data = result.get('data', {})
-            inner_data = outer_data.get('data', outer_data) if isinstance(outer_data, dict) else {}
-            content = inner_data.get('content', '')[:3000]
-            
-            if not content:
-                return None
-            
-            # 2. Ask LLM to extract kubectl fix
-            from shared_models import OllamaLLMIntegration
-            llm = OllamaLLMIntegration()
-            
-            # Get actual deployment name from Kubernetes
-            dep_name = self._get_deployment_owner(pod_name, namespace)
-            if not dep_name:
-                # No deployment owner - can't fix with kubectl rollout/set
-                print(f"[{self.name}] ⚠️ No deployment owner for {pod_name} - cannot auto-fix")
-                return {"status": "no_deployment", "pod": pod_name}
-            
-            # Choose fix strategy based on error type
-            if reason == "OOMKilled":
-                fix_hint = f"kubectl set resources deployment/{dep_name} -n {namespace} --limits=memory=512Mi --requests=memory=256Mi"
-            elif reason == "CrashLoopBackOff":
-                fix_hint = f"kubectl rollout restart deployment/{dep_name} -n {namespace}"
-            elif reason == "ImagePullBackOff":
-                fix_hint = "NO_FIX (image issues need manual correction)"
-            elif reason == "CreateContainerConfigError":
-                fix_hint = "NO_FIX (missing configmap/secret needs manual creation)"
-            else:
-                fix_hint = f"kubectl rollout restart deployment/{dep_name} -n {namespace}"
-            
-            prompt = f"""Fix Kubernetes {reason} issue.
-
-DEPLOYMENT: {dep_name}
-NAMESPACE: {namespace}
-ERROR TYPE: {reason}
-
-RECOMMENDED FIX FOR {reason}:
-{fix_hint}
-
-If the recommended fix looks correct, return it exactly.
-Otherwise say NO_FIX.
-
-Reply ONLY the command or NO_FIX."""
-
-            response = llm.generate_text(prompt)
-            fix_command = response.strip() if response else ""
-            
-            print(f"[{self.name}] 🤖 LLM suggested: {fix_command[:80]}")
-            
-            if not fix_command or "NO_FIX" in fix_command or len(fix_command) < 10:
-                return {"status": "no_fix_found"}
-            
-            # 3. Safety check - only allow certain kubectl commands
-            allowed_prefixes = ['kubectl set', 'kubectl patch', 'kubectl scale', 'kubectl rollout']
-            if not any(fix_command.startswith(p) for p in allowed_prefixes):
-                print(f"[{self.name}] ⚠️ Command not in allowed list, skipping")
-                return {"status": "unsafe_command", "command": fix_command}
-            
-            # 4. Apply the fix
-            print(f"[{self.name}] 🔨 Applying: {fix_command}")
-            import subprocess
-            result = subprocess.run(fix_command, shell=True, capture_output=True, text=True, timeout=30)
-            
-            if result.returncode == 0:
-                print(f"[{self.name}] ✅ Web fix applied successfully!")
-                return {"status": "applied", "command": fix_command, "output": result.stdout}
-            else:
-                print(f"[{self.name}] ❌ Command failed: {result.stderr[:100]}")
-                return {"status": "failed", "command": fix_command, "error": result.stderr}
-            
-        except Exception as e:
-            print(f"[{self.name}] Web fix failed: {e}")
-            return None
+        """[BLOCKED] Web-generated remediation disabled for safety."""
+        # SECURITY HARDENING: Web-generated remediation is disabled due to bypass risk.
+        print(f"[{self.name}] 🛡️ SECURITY BLOCK: Web-fix remediation bypass attempted. Trace: SEC-BLOCK-WEB-FIX")
+        return {
+            "status": "blocked",
+            "reason": "Web-generated remediation execution is disabled. All remediation must go through ToolExecutor.",
+            "trace_id": "SEC-BLOCK-WEB-FIX"
+        }
 
     def _pod_still_broken(self, pod_name: str, namespace: str) -> bool:
         """Check if pod is still in a broken state."""

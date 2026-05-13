@@ -1,4 +1,5 @@
 -- CVA PostgreSQL Schema with improvements
++ CREATE EXTENSION IF NOT EXISTS vector;
 
 -- Agent state with proper indexing
 CREATE TABLE agent_state (
@@ -19,7 +20,8 @@ CREATE TABLE task_history (
     completed_at TIMESTAMPTZ,
     execution_time_seconds REAL,
     error_message TEXT,
-    metadata_json JSONB
+    metadata_json JSONB,
+    task_embedding vector(1024)
 );
 CREATE INDEX idx_task_agent ON task_history(agent_name);
 CREATE INDEX idx_task_started ON task_history(started_at DESC);

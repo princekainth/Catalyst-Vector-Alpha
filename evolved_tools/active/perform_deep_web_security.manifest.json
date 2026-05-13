@@ -1,0 +1,19 @@
+{
+  "tool_name": "perform_deep_web_security",
+  "description": "Perform a deep web security vulnerability scan on example.com and identify all open ports using an advanced port scanning tool.",
+  "gap_id": "gap-1771820151852",
+  "source_directive": "Task: User wants to scan a target IP/Web Server for vulnerabilities.",
+  "source_urls": [],
+  "risk_profile": "caution",
+  "detected_capabilities": [
+    "net_outbound"
+  ],
+  "test_results": {
+    "passed": true,
+    "output": "{\"success\": false, \"message\": \"HTTPSConnectionPool(host='api.openports.io', port=443): Max retries exceeded with url: /scan/scanme.nmap.org (Caused by NameResolutionError(\\\"<urllib3.connection.HTTPSConnection object at 0x7878535fa930>: Failed to resolve 'api.openports.io' ([Errno -5] No address associated with hostname)\\\"))\", \"data\": {}}\n"
+  },
+  "author_agent": null,
+  "approval_status": "promoted",
+  "created_at": "2026-02-23T04:16:14.624950Z",
+  "promoted_at": "2026-02-23T04:17:08.007358Z"
+}

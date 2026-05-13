@@ -14,8 +14,14 @@ import json
 import os
 import ast
 import traceback
+import inspect
 from datetime import datetime
 from typing import Optional, Dict, Any, List
+
+try:
+    from database import cva_db
+except ImportError:
+    cva_db = None
 
 try:
     from config import config
@@ -27,6 +33,11 @@ try:
     from shared_models import MemeticKernel
 except ImportError:
     MemeticKernel = None
+
+try:
+    from cva_runtime.control_plane.evolution_recorder import EvolutionRecorder
+except ImportError:
+    EvolutionRecorder = None
 
 
 class EvolutionAgent:
@@ -50,9 +61,13 @@ class EvolutionAgent:
         approval_mode: str = "supervised",  # supervised, sandboxed, autonomous
         gap_threshold: Optional[int] = None,
         cycle_interval: Optional[int] = None,
+        llm: Optional[Any] = None,
+        db: Optional[Any] = None,
     ):
         self.memetic_kernel = memetic_kernel
         self.tool_registry = tool_registry
+        self.llm = llm
+        self.db = db or cva_db
         self.log_sink = log_sink or self._default_logger()
         self.sandbox_path = sandbox_path
         self.approval_mode = approval_mode
@@ -63,18 +78,44 @@ class EvolutionAgent:
         self.capability_gaps: List[Dict] = []
         self.evolution_history: List[Dict] = []
         self.pending_tools: List[Dict] = []  # Awaiting approval
+        
+        # Load from DB if available
+        if self.db:
+            try:
+                state = self.db.load_evolution_state()
+                self.capability_gaps = state.get("capability_gaps", [])
+                self.evolution_history = state.get("evolution_history", [])
+                self.pending_tools = state.get("pending_tools", [])
+                if self.capability_gaps or self.evolution_history:
+                    self.log_sink.info("[EvolutionAgent] Restored state: %d gaps, %d history items.", 
+                                       len(self.capability_gaps), len(self.evolution_history))
+            except Exception as e:
+                self.log_sink.warning("[EvolutionAgent] Failed to load state from DB: %s", e)
+
         self.running = False
         self._thread: Optional[threading.Thread] = None
         
         # Ensure sandbox exists
         os.makedirs(sandbox_path, exist_ok=True)
+
+        # Replayable eval harness
+        self.recorder = EvolutionRecorder() if EvolutionRecorder else None
         
-        self.log_sink.info("[EvolutionAgent] Initialized with approval_mode=%s", approval_mode)
+        self.log_sink.info("[EvolutionAgent] Initialized with approval_mode=%s, recorder=%s", approval_mode, bool(self.recorder))
     
     def _default_logger(self):
         """Fallback logger."""
         import logging
         return logging.getLogger("EvolutionAgent")
+    
+    def _persist_state(self):
+        """Persist current gaps, history and pending tools to DB."""
+        if not self.db:
+            return
+        try:
+            self.db.save_evolution_state(self.capability_gaps, self.evolution_history, self.pending_tools)
+        except Exception as e:
+            self.log_sink.error("[EvolutionAgent] Failed to persist state: %s", e)
     
     # =========================================================================
     # CAPABILITY GAP DETECTION
@@ -112,6 +153,9 @@ class EvolutionAgent:
         
         self.capability_gaps.append(gap)
         
+        # Persist state
+        self._persist_state()
+
         # Also store in long-term memory if available
         if self.memetic_kernel and hasattr(self.memetic_kernel, "add_memory"):
             try:
@@ -151,6 +195,15 @@ class EvolutionAgent:
         gap = pending_gaps[-1]
         gap["status"] = "researching"
         
+        # --- Recorder: start run ---
+        tool_name_hint = self._sanitize_tool_name(gap["description"])
+        run_id = None
+        if self.recorder:
+            try:
+                run_id = self.recorder.start_run(tool_name_hint, gap.get("context", gap["description"]))
+            except Exception:
+                pass  # recorder failures must never block evolution
+
         self.log_sink.info(
             "[EvolutionAgent] 🔬 Researching solution for: %s",
             gap["description"]
@@ -163,22 +216,62 @@ class EvolutionAgent:
             if not research_result:
                 self.log_sink.warning("[EvolutionAgent] No solution found for gap: %s", gap["id"])
                 gap["status"] = "dismissed"
+                if self.recorder and run_id:
+                    self.recorder.finalize_run(run_id, "dismissed", "No research results")
                 return
             
+            # --- Recorder: research ---
+            if self.recorder and run_id:
+                try:
+                    self.recorder.record_research(run_id, research_result)
+                except Exception:
+                    pass
+
             # Step 2 & 3: Generate and Test (Iterative Loop)
             tool_code = None
             errors = []
             max_retries = 3
+            test_passed = False
+            test_output = ""
             
             for attempt in range(max_retries):
                 self.log_sink.info(f"[EvolutionAgent] 🧬 Generating code (Attempt {attempt+1}/{max_retries})...")
-                tool_code = self._generate_tool_code(gap, research_result, previous_errors=errors)
+                
+                # Check if this is a REPAIR mission
+                is_repair = gap["description"].startswith("REPAIR:")
+                existing_code = ""
+                if is_repair and self.tool_registry:
+                    tool_name = gap.get("attempted_tool")
+                    if tool_name and self.tool_registry.has_tool(tool_name):
+                        try:
+                            tool_obj = self.tool_registry.get_tool(tool_name)
+                            if tool_obj and hasattr(tool_obj, "func"):
+                                existing_code = inspect.getsource(tool_obj.func)
+                                self.log_sink.info(f"[EvolutionAgent] 🛠 Found existing code for repair: {tool_name}")
+                        except Exception as e:
+                            self.log_sink.warning(f"[EvolutionAgent] Could not retrieve source for {tool_name}: {e}")
+
+                tool_code = self._generate_tool_code(gap, research_result, previous_errors=errors, existing_code=existing_code)
                 
                 if not tool_code:
                     errors.append("LLM failed to generate valid Python output.")
                     continue
                 
+                # --- Recorder: generated code ---
+                if self.recorder and run_id:
+                    try:
+                        self.recorder.record_generated_code(run_id, tool_code.get("code", ""), attempt + 1)
+                    except Exception:
+                        pass
+
                 test_passed, test_output = self._test_tool_code(tool_code)
+
+                # --- Recorder: test result ---
+                if self.recorder and run_id:
+                    try:
+                        self.recorder.record_test_result(run_id, attempt + 1, test_passed, test_output)
+                    except Exception:
+                        pass
                 
                 if test_passed:
                     self.log_sink.info(f"[EvolutionAgent] ✅ Tool verification passed on attempt {attempt+1}")
@@ -187,45 +280,32 @@ class EvolutionAgent:
                     self.log_sink.warning(f"[EvolutionAgent] Tool test failed (Attempt {attempt+1}): {test_output}")
                     errors.append(test_output)
             
-            if not tool_code or errors and not test_passed:
+            if not tool_code or (errors and not test_passed):
                 self.log_sink.error(f"[EvolutionAgent] Failed to evolve tool after {max_retries} attempts. Giving up.")
                 gap["status"] = "dismissed"
+                if self.recorder and run_id:
+                    self.recorder.finalize_run(run_id, "dismissed", f"Failed after {max_retries} attempts")
                 return
             
-            # Step 4: Deploy based on approval mode
-            if self.approval_mode == "autonomous":
-                self._deploy_tool(tool_code, gap)
-                gap["status"] = "solved"
-            elif self.approval_mode == "sandboxed":
-                self.pending_tools.append({
-                    "gap": gap,
-                    "code": tool_code,
-                    "test_output": test_output,
-                    "created_at": datetime.utcnow().isoformat() + "Z",
-                    "sandbox_until": time.time() + 86400,  # 24 hours
-                })
-                gap["status"] = "pending_approval"
-                self.log_sink.info(
-                    "[EvolutionAgent] 📋 Tool queued for sandboxed testing: %s",
-                    tool_code.get("name")
-                )
-            else:  # supervised
-                self.pending_tools.append({
-                    "gap": gap,
-                    "code": tool_code,
-                    "test_output": test_output,
-                    "created_at": datetime.utcnow().isoformat() + "Z",
-                })
-                gap["status"] = "pending_approval"
-                self.log_sink.info(
-                    "[EvolutionAgent] 🔔 Tool awaiting human approval: %s",
-                    tool_code.get("name")
-                )
+            # Step 4: Deploy to QUARANTINE (all modes go through quarantine now)
+            self._deploy_tool(tool_code, gap, test_output=test_output)
+            gap["status"] = "quarantined"
+
+            # --- Recorder: finalize ---
+            if self.recorder and run_id:
+                try:
+                    self.recorder.finalize_run(run_id, "quarantined", f"Tool '{tool_name_hint}' quarantined successfully")
+                except Exception:
+                    pass
         
         except Exception as e:
             self.log_sink.error("[EvolutionAgent] Evolution cycle failed: %s", e)
             gap["status"] = "dismissed"
+            if self.recorder and run_id:
+                self.recorder.finalize_run(run_id, "dismissed", f"Exception: {e}")
             traceback.print_exc()
+        finally:
+            self._persist_state()
     
     def _research_solution(self, gap: Dict) -> Optional[Dict]:
         """
@@ -269,11 +349,15 @@ class EvolutionAgent:
         
         return {"source": "none", "intent": clean_desc, "results": []}
     
-    def _generate_tool_code(self, gap: Dict, research: Dict, previous_errors: List[str] = None) -> Optional[Dict]:
+    def _generate_tool_code(self, gap: Dict, research: Dict, previous_errors: List[str] = None, existing_code: str = "") -> Optional[Dict]:
         """
-        Generate Python code for a new tool based on research using Ollama.
+        Generate Python code for a new tool or repair an existing one.
         """
+        is_repair = gap["description"].startswith("REPAIR:")
         tool_name = self._sanitize_tool_name(gap["description"])
+        if is_repair and gap.get("attempted_tool"):
+            tool_name = gap["attempted_tool"]
+
         intent = research.get("intent", gap["description"])
         context_snippets = "\n".join([str(r) for r in research.get("results", [])[:3]])
         
@@ -281,9 +365,29 @@ class EvolutionAgent:
         if previous_errors:
             error_context = "\n\nPREVIOUS VERSIONS FAILED WITH ERRORS:\n" + "\n".join([f"- {e}" for e in previous_errors]) + "\n\nPLEASE FIX THE CODE TO AVOID THESE ERRORS."
         
+        repair_context = ""
+        if is_repair and existing_code:
+            repair_context = f"""
+### EXISTING CODE TO REPAIR:
+```python
+{existing_code}
+```
+FAILURE REASON/CONTEXT:
+{gap.get('context', 'Unknown error')}
+{gap.get('failure_reason', '')}
+
+INSTRUCTIONS FOR REPAIR:
+1. Preserve the existing functionality but fix the bug.
+2. If it's a syntax error, fix the formatting.
+3. If it's a logic error (e.g., missing imports, wrong API endpoint), update the logic.
+4. Keep the function signature compatible if possible.
+"""
+
         prompt = f"""
-You are an expert Python tool generator for an AI agent.
-Your task is to write a complete, self-contained Python function that creates a tool to: "{intent}".
+You are an expert Python tool generator and debugger for an AI agent.
+Your task is to write a complete, self-contained Python function that creates or repairs a tool to: "{intent}".
+
+{repair_context}
 
 CONTEXT FROM WEB SEARCH:
 {context_snippets}
@@ -296,7 +400,7 @@ REQUIREMENTS:
 4. Libraries: You can use `requests`, `json`, `datetime`, `random`, `math`, `bs4`, `urllib`.
 5. Error Handling: Wrap EVERYTHING in try/except blocks. Return `success: False` on error.
 6. Documentation: specific docstring describing what it does.
-7. CRITICAL: PRIORITIZE FREE / NO-AUTH APIs. Use Open-Meteo for weather. Use public news RSS feeds if possible.
+7. CRITICAL: PRIORITIZE FREE / NO-AUTH APIs. Use Open-Meteo for weather.
 8. IMPORTS: All imports MUST be inside the function definition. Do not use top-level imports.
 
 OUTPUT FORMAT:
@@ -305,27 +409,17 @@ Do NOT use Markdown code blocks (no ```python ... ```).
 Do NOT include any explanations or text outside the code.
 Include the `TOOL_METADATA` dictionary at the end.
 The dictionary MUST contain "name", "description", "parameters", and "category".
-
-EXAMPLE:
-def get_current_time(**kwargs):
-    import datetime
-    try:
-        return {{"success": True, "message": "Time fetched", "data": {{"time": str(datetime.datetime.now())}}}}
-    except Exception as e:
-        return {{"success": False, "message": str(e), "data": {{}}}}
-
-TOOL_METADATA = {{
-    "name": "get_current_time",
-    "description": "Returns current server time",
-    "parameters": {{}},
-    "category": "utility"
-}}
 """
         
         try:
-            import ollama
-            response = ollama.chat(model='mistral-nemo', messages=[{'role': 'user', 'content': prompt}])
-            code = response['message']['content']
+            if self.llm and hasattr(self.llm, "generate_text"):
+                self.log_sink.info("[EvolutionAgent] Using configured LLM integration for code generation")
+                code = self.llm.generate_text(prompt, temperature=0.2)
+            else:
+                self.log_sink.info("[EvolutionAgent] No LLM provided; falling back to hardcoded mistral-nemo")
+                import ollama
+                response = ollama.chat(model='mistral-nemo', messages=[{'role': 'user', 'content': prompt}])
+                code = response['message']['content']
             
             # Clean up markdown code blocks if the LLM adds them
             code = code.replace("```python", "").replace("```", "").strip()
@@ -386,8 +480,52 @@ TOOL_METADATA = {{
         try:
             with open(test_file, "w") as f:
                 f.write(code)
-                # Call the detected function name
-                f.write(f"\n\n# Test\nif __name__ == '__main__':\n    import json\n    result = {actual_name}()\n    print(json.dumps(result))\n")
+                # Call the detected function name but safely extract sample args if any
+                f.write(f'''
+# Test Runner
+if __name__ == '__main__':
+    import json
+    
+    # Check if TOOL_METADATA dictates any specific parameters (flexible extraction)
+    test_kwargs = {{}}
+    try:
+        if "parameters" in TOOL_METADATA:
+            params = TOOL_METADATA["parameters"]
+            
+            # Case 1: parameters is a flat dict with "required" list (OpenAI style)
+            if isinstance(params.get("required"), list):
+                req_names = params["required"]
+            else:
+                # Case 2: parameters matches keys, and "required": True is inside the spec
+                req_names = []
+                for p_name, p_spec in params.items():
+                    if isinstance(p_spec, dict) and p_spec.get("required") is True:
+                        req_names.append(p_name)
+                    elif p_name == "properties": # Case 3: nested in properties
+                        for sub_name, sub_spec in p_spec.items():
+                             if isinstance(sub_spec, dict) and sub_spec.get("required") is True:
+                                 req_names.append(sub_name)
+
+            for r in req_names:
+                r_lower = r.lower()
+                if any(x in r_lower for x in ["url", "host", "domain"]):
+                    test_kwargs[r] = "scanme.nmap.org"
+                elif "ip" in r_lower:
+                    test_kwargs[r] = "45.33.32.156"
+                elif "path" in r_lower or "file" in r_lower:
+                    test_kwargs[r] = "/tmp/test_file.txt"
+                else:
+                    test_kwargs[r] = "test_value"
+    except Exception:
+        pass
+        
+    try:
+        result = {actual_name}(**test_kwargs)
+        print(json.dumps(result))
+    except TypeError as e:
+        # Fallback if signature mismatch
+        print(json.dumps({{"success": False, "message": f"Sandbox Test Signature Error: {{e}}" }}))
+''')
             
             # Syntax check
             with open(test_file, "r") as f:
@@ -419,39 +557,107 @@ TOOL_METADATA = {{
             if os.path.exists(test_file):
                 os.remove(test_file)
     
-    def _deploy_tool(self, tool_code: Dict, gap: Dict):
+    def _deploy_tool(self, tool_code: Dict, gap: Dict, test_output: str = ""):
         """
-        Deploy the new tool to the tool registry.
+        Deploy a new tool to the QUARANTINE directory with a provenance manifest.
+
+        Tools are NOT immediately available to agents. They must be promoted
+        from quarantine/ to active/ via ``promote_tool_from_quarantine()``.
+        In ``autonomous`` approval mode with ``allow_evolution_deploy`` the
+        promotion happens automatically after sandbox tests pass.
         """
         tool_name = tool_code.get("name")
         code = tool_code.get("code")
-        
-        # Save to evolved_tools directory
-        evolved_dir = os.path.join(
+
+        # --- Derive directories ---
+        base_dir = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
-            "evolved_tools"
+            "evolved_tools",
         )
-        os.makedirs(evolved_dir, exist_ok=True)
-        
-        tool_file = os.path.join(evolved_dir, f"{tool_name}.py")
+        quarantine_dir = os.path.join(base_dir, "quarantine")
+        os.makedirs(quarantine_dir, exist_ok=True)
+
+        # --- Write tool source ---
+        tool_file = os.path.join(quarantine_dir, f"{tool_name}.py")
         with open(tool_file, "w") as f:
             f.write(code)
-        
-        # Record evolution
+
+        # --- Detect required capabilities from code ---
+        detected_caps = []
+        code_lower = (code or "").lower()
+        if any(kw in code_lower for kw in ["requests.get", "requests.post", "urllib", "http"]):
+            detected_caps.append("net_outbound")
+        if any(kw in code_lower for kw in ["open(", "os.write", "pathlib"]):
+            detected_caps.append("file_write")
+        if any(kw in code_lower for kw in ["subprocess", "os.system", "os.popen"]):
+            detected_caps.append("shell_write")
+        risk = "caution" if detected_caps else "safe"
+        if "shell_write" in detected_caps:
+            risk = "destructive"
+
+        # --- Collect source URLs from research ---
+        source_urls = []
+        research = tool_code.get("_research") or {}
+        for r in research.get("results", []):
+            if isinstance(r, dict) and r.get("url"):
+                source_urls.append(r["url"])
+            elif isinstance(r, str) and r.startswith("http"):
+                source_urls.append(r)
+
+        # --- Build manifest ---
+        manifest = {
+            "tool_name": tool_name,
+            "description": gap.get("description", ""),
+            "gap_id": gap.get("id"),
+            "source_directive": gap.get("context", ""),
+            "source_urls": source_urls[:10],
+            "risk_profile": risk,
+            "detected_capabilities": detected_caps,
+            "test_results": {
+                "passed": True,
+                "output": (test_output or "")[:2000],
+            },
+            "author_agent": gap.get("source_agent", "EvolutionAgent"),
+            "approval_status": "quarantined",
+            "created_at": datetime.utcnow().isoformat() + "Z",
+            "promoted_at": None,
+        }
+        manifest_file = os.path.join(quarantine_dir, f"{tool_name}.manifest.json")
+        with open(manifest_file, "w") as f:
+            json.dump(manifest, f, indent=2)
+
+        # --- Record in evolution history ---
         self.evolution_history.append({
             "tool_name": tool_name,
             "gap_id": gap["id"],
             "description": gap["description"],
-            "deployed_at": datetime.utcnow().isoformat() + "Z",
+            "quarantined_at": datetime.utcnow().isoformat() + "Z",
             "file_path": tool_file,
+            "manifest_path": manifest_file,
+            "status": "quarantined",
         })
-        
+
         self.log_sink.info(
-            "[EvolutionAgent] 🧬 EVOLVED: New tool '%s' deployed! I can now: %s",
-            tool_name, gap["description"],
-            extra={"event_type": "SYSTEM_EVOLUTION", "source": "EvolutionAgent", "description": f"Evolved tool: {tool_name}"}
+            "[EvolutionAgent] 🧬 QUARANTINED: Tool '%s' staged for review. Risk=%s, Caps=%s",
+            tool_name, risk, detected_caps,
         )
-        
+        self._persist_state()
+
+        # --- Auto-promote if allowed ---
+        allow_auto = (
+            self.approval_mode == "autonomous"
+            and os.environ.get("CVA_ALLOW_EVOLUTION_DEPLOY", "0") == "1"
+        )
+        if allow_auto:
+            self.log_sink.info("[EvolutionAgent] 🚀 Auto-promoting '%s' (autonomous + allow_evolution_deploy=1)", tool_name)
+            self.promote_tool_from_quarantine(tool_name)
+        else:
+            self.log_sink.info(
+                "[EvolutionAgent] 📋 Tool '%s' awaiting promotion (approval_mode=%s). "
+                "Call promote_tool_from_quarantine('%s') or approve via API.",
+                tool_name, self.approval_mode, tool_name,
+            )
+
         # Announce to memory
         if self.memetic_kernel and hasattr(self.memetic_kernel, "add_memory"):
             self.memetic_kernel.add_memory(
@@ -459,10 +665,71 @@ TOOL_METADATA = {{
                     "type": "Evolution",
                     "tool_name": tool_name,
                     "capability": gap["description"],
-                    "message": f"I evolved and gained a new capability: {gap['description']}"
+                    "status": "quarantined",
+                    "risk": risk,
+                    "message": f"I evolved and staged a new capability: {gap['description']}",
                 },
                 memory_type="EvolutionEvent",
             )
+
+    # ------------------------------------------------------------------
+    # QUARANTINE → ACTIVE PROMOTION
+    # ------------------------------------------------------------------
+
+    def promote_tool_from_quarantine(self, tool_name: str) -> bool:
+        """Move a quarantined tool into active/ and reload the registry."""
+        import shutil
+
+        base_dir = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "evolved_tools",
+        )
+        q_dir = os.path.join(base_dir, "quarantine")
+        a_dir = os.path.join(base_dir, "active")
+        os.makedirs(a_dir, exist_ok=True)
+
+        src_py = os.path.join(q_dir, f"{tool_name}.py")
+        src_mf = os.path.join(q_dir, f"{tool_name}.manifest.json")
+
+        if not os.path.isfile(src_py):
+            self.log_sink.error("[EvolutionAgent] Cannot promote '%s': file not found in quarantine.", tool_name)
+            return False
+
+        # Update manifest
+        if os.path.isfile(src_mf):
+            try:
+                with open(src_mf, "r") as f:
+                    mf = json.load(f)
+                mf["approval_status"] = "promoted"
+                mf["promoted_at"] = datetime.utcnow().isoformat() + "Z"
+                with open(src_mf, "w") as f:
+                    json.dump(mf, f, indent=2)
+            except Exception as exc:
+                self.log_sink.warning("[EvolutionAgent] Manifest update failed: %s", exc)
+
+        # Move files
+        shutil.move(src_py, os.path.join(a_dir, f"{tool_name}.py"))
+        if os.path.isfile(src_mf):
+            shutil.move(src_mf, os.path.join(a_dir, f"{tool_name}.manifest.json"))
+
+        self.log_sink.info(
+            "[EvolutionAgent] ✅ PROMOTED: Tool '%s' moved to active/. Reloading registry.",
+            tool_name,
+        )
+
+        # Reload the registry so the tool becomes callable
+        if self.tool_registry and hasattr(self.tool_registry, "load_evolved_tools"):
+            self.tool_registry.load_evolved_tools()
+
+        # Update history entry
+        for entry in reversed(self.evolution_history):
+            if entry.get("tool_name") == tool_name:
+                entry["status"] = "promoted"
+                entry["promoted_at"] = datetime.utcnow().isoformat() + "Z"
+                break
+        
+        self._persist_state()
+        return True
     
     # =========================================================================
     # APPROVAL INTERFACE
@@ -479,6 +746,7 @@ TOOL_METADATA = {{
                 self._deploy_tool(pending["code"], pending["gap"])
                 pending["gap"]["status"] = "solved"
                 self.pending_tools.remove(pending)
+                self._persist_state()
                 return True
         return False
     
@@ -488,6 +756,7 @@ TOOL_METADATA = {{
             if pending["code"]["name"] == tool_name:
                 pending["gap"]["status"] = "dismissed"
                 self.pending_tools.remove(pending)
+                self._persist_state()
                 return True
         return False
     

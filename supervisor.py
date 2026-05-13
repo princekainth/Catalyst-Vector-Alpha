@@ -119,7 +119,7 @@ class CognitiveSupervisor:
             except Exception as e:
                 # Cognitive loop crashed!
                 self.crash_count += 1
-                loop_count = self.cva.swarm_state.get("cycle_count", 0)
+                loop_count = getattr(self.cva, "swarm_state", {}).get("cycle_count", 0)
                 
                 crash_info = self._log_crash(e, loop_count)
                 

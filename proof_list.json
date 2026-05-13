@@ -1,0 +1,98 @@
+{
+    "data": [
+        {
+            "audit_refs": [],
+            "classification": "Application crash detected in demo workload",
+            "created_at": "2026-05-13T20:38:54.348174+00:00",
+            "evidence": "Pod crashloop-demo-7d8ccc979b-5fkhs is failing with issues: ['CrashLoopBackOff']",
+            "id": "inc_c789eecc",
+            "incident_type": "CrashLoopBackOff",
+            "namespace": "cva-demo",
+            "pod": "test-pod",
+            "recommended_args_redacted": null,
+            "recommended_tool": "k8s_rollout_restart",
+            "resolved_at": null,
+            "risk": "DESTRUCTIVE",
+            "severity": "CRITICAL",
+            "status": "GATED",
+            "trace_id": "trc_cf037e0ee70747daa638410e01013ae5",
+            "transitions": [
+                {
+                    "from": "NONE",
+                    "timestamp": "2026-05-13T20:38:54.348174+00:00",
+                    "to": "OPEN"
+                },
+                {
+                    "from": "OPEN",
+                    "timestamp": "2026-05-13T20:54:53.856496+00:00",
+                    "to": "GATED"
+                }
+            ],
+            "updated_at": "2026-05-13T20:54:53.856503+00:00",
+            "workload": "crashloop-demo"
+        },
+        {
+            "audit_refs": [],
+            "classification": "Main container exited with 1",
+            "created_at": "2026-05-13T20:33:24.644991+00:00",
+            "evidence": "CrashLoop detected\n[Resolution] Manual resolution verified",
+            "id": "inc_d010f771",
+            "incident_type": "CrashLoopBackOff",
+            "namespace": "cva-demo",
+            "pod": "demo-pod-123",
+            "recommended_args_redacted": null,
+            "recommended_tool": null,
+            "resolved_at": "2026-05-13T20:33:24.728676+00:00",
+            "risk": "SAFE",
+            "severity": "CRITICAL",
+            "status": "RESOLVED",
+            "trace_id": null,
+            "transitions": [
+                {
+                    "from": "NONE",
+                    "timestamp": "2026-05-13T20:33:24.644991+00:00",
+                    "to": "OPEN"
+                },
+                {
+                    "from": "OPEN",
+                    "timestamp": "2026-05-13T20:33:24.728663+00:00",
+                    "to": "RESOLVED"
+                }
+            ],
+            "updated_at": "2026-05-13T20:33:24.728673+00:00",
+            "workload": "crashloop-demo"
+        },
+        {
+            "audit_refs": [],
+            "classification": "Invalid image tag used in deployment",
+            "created_at": "2026-05-13T17:39:12.335221+00:00",
+            "evidence": "Back-off pulling image\n[Resolution] Remediation verified by demo worker",
+            "id": "inc_235155c5",
+            "incident_type": "ImagePullBackOff",
+            "namespace": "default",
+            "pod": null,
+            "recommended_args_redacted": null,
+            "recommended_tool": "k8s_patch_deployment_image",
+            "resolved_at": "2026-05-13T17:39:12.424347+00:00",
+            "risk": "DESTRUCTIVE",
+            "severity": "CRITICAL",
+            "status": "RESOLVED",
+            "trace_id": "trc_test_123",
+            "transitions": [
+                {
+                    "from": "NONE",
+                    "timestamp": "2026-05-13T17:39:12.335221+00:00",
+                    "to": "OPEN"
+                },
+                {
+                    "from": "GATED",
+                    "timestamp": "2026-05-13T17:39:12.424329+00:00",
+                    "to": "RESOLVED"
+                }
+            ],
+            "updated_at": "2026-05-13T17:39:12.424342+00:00",
+            "workload": "web-fe"
+        }
+    ],
+    "status": "ok"
+}

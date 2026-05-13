@@ -18,10 +18,9 @@ persistence_data/
 *.db
 .chromadb/
 
-# Test & sandbox
+# Test & sandbox (only sandbox scripts, NOT test files)
 baseline_*.json
 baseline_*.csv
-test_*.py
 sandbox_*.py
 
 # Results / artifacts
@@ -37,11 +36,15 @@ config/
 credentials.json
 token.json
 
+# Large binaries & dumps
 minikube-linux-amd64
-backups_test/
+*.sql
+*.backup
+
+# Backup dirs
 backups_test/
 
-# runtime artifacts / caches
+# Runtime artifacts / caches
 **/interest_cache.json
 **/*.cache
 **/.cva/**
@@ -49,3 +52,4 @@ backups_test/
 **/backups/**
 **/__pycache__/
 **/*.pyc
+

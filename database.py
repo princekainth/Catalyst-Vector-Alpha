@@ -4,7 +4,7 @@ import os
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 import logging
-from db_postgres import get_db_connection, execute_query
+from db_postgres import get_db_connection, execute_query, close_pool
 
 logger = logging.getLogger("CatalystLogger")
 
@@ -117,6 +117,9 @@ class CVADatabase:
                     WHERE task_id = %s
                 ''', (embedding, task_id))
         except Exception as e:
+            err_str = str(e)
+            if "column \"task_embedding\" of relation \"task_history\" does not exist" in err_str:
+                return # Silence log if the column just isn't there
             logger.warning(f"Failed to generate task embedding: {e}")
     
     def get_recent_tasks(self, limit: int = 50, agent_name: Optional[str] = None) -> List[Dict]:
@@ -286,6 +289,13 @@ class CVADatabase:
 
     def record_dynamic_agent_task(self, agent_id: str, task: Dict, result: Dict):
         """Record task execution by dynamic agent."""
+        # Ensure agent exists in agent_state to satisfy foreign key constraint
+        execute_query('''
+            INSERT INTO agent_state (agent_name, state_json) 
+            VALUES (%s, %s)
+            ON CONFLICT (agent_name) DO NOTHING
+        ''', (agent_id, json.dumps({"role": "dynamic_agent"})))
+        
         execute_query('''
             INSERT INTO task_history 
             (task_id, agent_name, task_description, outcome, started_at, completed_at, metadata_json)
@@ -343,6 +353,9 @@ class CVADatabase:
             return filtered_rows
             
         except Exception as e:
+            err_str = str(e)
+            if "column \"task_embedding\" does not exist" in err_str:
+                return self._get_recent_tasks_fallback(agent_name, limit)
             logger.warning(f"Semantic search failed: {e}, falling back to recent tasks")
             return self._get_recent_tasks_fallback(agent_name, limit)
 
@@ -450,28 +463,31 @@ class CVADatabase:
                 
                 return cur.fetchall()
 
-    def create_metrics_table(self):
-        """Create table for tracking system metrics (PostgreSQL)."""
+    def save_evolution_state(self, gaps: List[Dict], history: List[Dict], pending: List[Dict]) -> None:
+        """Save the state of the Evolution Agent."""
+        state = {
+            "capability_gaps": gaps,
+            "evolution_history": history,
+            "pending_tools": pending,
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }
+        self.save_system_state("evolution_agent_state", state)
+
+    def load_evolution_state(self) -> Dict[str, List]:
+        """Load the state of the Evolution Agent."""
+        state = self.load_system_state("evolution_agent_state", default={})
+        return {
+            "capability_gaps": state.get("capability_gaps", []),
+            "evolution_history": state.get("evolution_history", []),
+            "pending_tools": state.get("pending_tools", [])
+        }
+
+    def shutdown(self) -> None:
+        """Release database resources."""
         try:
-            execute_query('''
-                CREATE TABLE IF NOT EXISTS metrics (
-                    id SERIAL PRIMARY KEY,
-                    timestamp TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                    metric_type VARCHAR(50) NOT NULL,
-                    agent_name VARCHAR(100),
-                    tool_name VARCHAR(100),
-                    mission_type VARCHAR(50),
-                    value FLOAT,
-                    metadata JSONB
-                )
-            ''')
-            # Create indexes separately
-            execute_query('CREATE INDEX IF NOT EXISTS idx_metrics_timestamp ON metrics(timestamp)')
-            execute_query('CREATE INDEX IF NOT EXISTS idx_metrics_type ON metrics(metric_type)')
-            execute_query('CREATE INDEX IF NOT EXISTS idx_metrics_agent ON metrics(agent_name)')
-            execute_query('CREATE INDEX IF NOT EXISTS idx_metrics_tool ON metrics(tool_name)')
+            close_pool()
         except Exception as e:
-            logger.error(f"Failed to create metrics table: {e}")
+            print(f"Error shutting down database: {e}")
 
 # Global database instance
 cva_db = CVADatabase()

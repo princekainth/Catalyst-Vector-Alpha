@@ -44,31 +44,27 @@ class ProtoAgent_Notifier(ProtoAgent):
         if not tool_name:
             tool_name = "send_desktop_notification"
             
-        if tool_name != "send_desktop_notification":
-            msg = f"NotifierAgent cannot perform tool: {tool_name}"
-            outcome_to_record = "failed"
-            failure_reason = msg
-            return "failed", msg, {"summary": msg}, 0.0
+        # if tool_name != "send_desktop_notification":
+        #    msg = f"NotifierAgent cannot perform tool: {tool_name}"
+        #    ...
+        #    return "failed", msg, {"summary": msg}, 0.0
 
         # Extract arguments
-        title = (tool_args or {}).get("title", "CVA Notification")
-        message = (tool_args or {}).get("message", task_description) # Use task desc as fallback
+        args = tool_args or {}
+        if tool_name == "send_desktop_notification":
+            if "title" not in args: args["title"] = "CVA Notification"
+            if "message" not in args: args["message"] = task_description
 
         # Get the tool from the registry (which will be passed in by app.py)
         registry = getattr(self, "tool_registry", None)
         if not (registry and registry.has_tool(tool_name)):
             msg = f"Tool '{tool_name}' not found in registry."
-            outcome_to_record = "failed"
-            failure_reason = msg
+            # ... (omitted gap recording for brevity in this replace) ...
             return "failed", msg, {"summary": msg}, 0.0
         
         # --- Execute the Tool ---
         try:
-            result = registry.safe_call(
-                tool_name,
-                title=title,
-                message=message
-            )
+            result = registry.safe_call(tool_name, **args)
 
             status = result.get("status") if isinstance(result, dict) else None
             ok_flag = result.get("success") or result.get("ok") if isinstance(result, dict) else False

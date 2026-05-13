@@ -1,0 +1,19 @@
+{
+  "tool_name": "get_current_price_of",
+  "description": "Get the current price of Bitcoin",
+  "gap_id": "gap-1771819377947",
+  "source_directive": "Task: User wants to know the live price of Bitcoin.",
+  "source_urls": [],
+  "risk_profile": "caution",
+  "detected_capabilities": [
+    "net_outbound"
+  ],
+  "test_results": {
+    "passed": true,
+    "output": "{\"success\": true, \"message\": \"Bitcoin price fetched\", \"data\": {\"price\": \"64943.375\"}}\n"
+  },
+  "author_agent": null,
+  "approval_status": "promoted",
+  "created_at": "2026-02-23T04:03:07.848969Z",
+  "promoted_at": "2026-02-23T04:17:08.006228Z"
+}

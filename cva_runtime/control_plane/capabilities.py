@@ -22,6 +22,8 @@ class Capability(str, Enum):
     LOGS_READ = "logs_read"
     LLM_CALL = "llm_call"
     APPROVAL_OVERRIDE = "approval_override"
+    SYSTEM_READ = "system_read"
+    SYSTEM_WRITE = "system_write"
 
 
 class ToolRisk(str, Enum):
@@ -51,6 +53,60 @@ DEFAULT_TOOL_PROFILES: Dict[str, ToolProfile] = {
         risk=ToolRisk.SAFE,
         resources_touched=("kubernetes", "metrics"),
     ),
+    "k8s_get_pod_logs": ToolProfile(
+        name="k8s_get_pod_logs",
+        required_caps=_caps(Capability.K8S_READ, Capability.LOGS_READ),
+        risk=ToolRisk.SAFE,
+        resources_touched=("kubernetes",),
+    ),
+    "k8s_get_pod_status": ToolProfile(
+        name="k8s_get_pod_status",
+        required_caps=_caps(Capability.K8S_READ),
+        risk=ToolRisk.SAFE,
+        resources_touched=("kubernetes",),
+    ),
+    "k8s_describe_pod": ToolProfile(
+        name="k8s_describe_pod",
+        required_caps=_caps(Capability.K8S_READ),
+        risk=ToolRisk.SAFE,
+        resources_touched=("kubernetes",),
+    ),
+    "k8s_rollout_restart": ToolProfile(
+        name="k8s_rollout_restart",
+        required_caps=_caps(Capability.K8S_WRITE),
+        risk=ToolRisk.DESTRUCTIVE,
+        resources_touched=("kubernetes",),
+    ),
+    "k8s_patch_deployment_env": ToolProfile(
+        name="k8s_patch_deployment_env",
+        required_caps=_caps(Capability.K8S_WRITE),
+        risk=ToolRisk.DESTRUCTIVE,
+        resources_touched=("kubernetes",),
+    ),
+    "k8s_patch_resource_limits": ToolProfile(
+        name="k8s_patch_resource_limits",
+        required_caps=_caps(Capability.K8S_WRITE),
+        risk=ToolRisk.DESTRUCTIVE,
+        resources_touched=("kubernetes",),
+    ),
+    "k8s_patch_deployment_image": ToolProfile(
+        name="k8s_patch_deployment_image",
+        required_caps=_caps(Capability.K8S_WRITE),
+        risk=ToolRisk.DESTRUCTIVE,
+        resources_touched=("kubernetes", "deployment"),
+    ),
+    "k8s_patch_probe": ToolProfile(
+        name="k8s_patch_probe",
+        required_caps=_caps(Capability.K8S_WRITE),
+        risk=ToolRisk.DESTRUCTIVE,
+        resources_touched=("kubernetes", "deployment"),
+    ),
+    "k8s_rollout_undo": ToolProfile(
+        name="k8s_rollout_undo",
+        required_caps=_caps(Capability.K8S_WRITE),
+        risk=ToolRisk.DESTRUCTIVE,
+        resources_touched=("kubernetes", "deployment"),
+    ),
     "get_pod_status": ToolProfile(
         name="get_pod_status",
         required_caps=_caps(Capability.K8S_READ),
@@ -59,6 +115,48 @@ DEFAULT_TOOL_PROFILES: Dict[str, ToolProfile] = {
     ),
     "watch_k8s_events": ToolProfile(
         name="watch_k8s_events",
+        required_caps=_caps(Capability.K8S_READ, Capability.LOGS_READ),
+        risk=ToolRisk.CAUTION,
+        resources_touched=("kubernetes", "logs"),
+    ),
+    "system_get_disk_usage": ToolProfile(
+        name="system_get_disk_usage",
+        required_caps=_caps(Capability.SYSTEM_READ),
+        risk=ToolRisk.SAFE,
+        resources_touched=("system", "disk"),
+    ),
+    "system_get_memory_usage": ToolProfile(
+        name="system_get_memory_usage",
+        required_caps=_caps(Capability.SYSTEM_READ),
+        risk=ToolRisk.SAFE,
+        resources_touched=("system", "memory"),
+    ),
+    "system_get_cpu_load": ToolProfile(
+        name="system_get_cpu_load",
+        required_caps=_caps(Capability.SYSTEM_READ),
+        risk=ToolRisk.SAFE,
+        resources_touched=("system", "cpu"),
+    ),
+    "system_check_port": ToolProfile(
+        name="system_check_port",
+        required_caps=_caps(Capability.SYSTEM_READ),
+        risk=ToolRisk.SAFE,
+        resources_touched=("system", "network"),
+    ),
+    "system_tail_log_file": ToolProfile(
+        name="system_tail_log_file",
+        required_caps=_caps(Capability.SYSTEM_READ, Capability.LOGS_READ),
+        risk=ToolRisk.SAFE,
+        resources_touched=("system", "logs"),
+    ),
+    "system_restart_allowed_service": ToolProfile(
+        name="system_restart_allowed_service",
+        required_caps=_caps(Capability.SYSTEM_WRITE),
+        risk=ToolRisk.DESTRUCTIVE,
+        resources_touched=("system", "services"),
+    ),
+    "watch_k8s_audit_events": ToolProfile(
+        name="watch_k8s_audit_events",
         required_caps=_caps(Capability.K8S_READ, Capability.LOGS_READ),
         risk=ToolRisk.CAUTION,
         resources_touched=("kubernetes", "logs"),
@@ -117,6 +215,33 @@ DEFAULT_TOOL_PROFILES: Dict[str, ToolProfile] = {
         required_caps=_caps(Capability.FILE_WRITE),
         risk=ToolRisk.DESTRUCTIVE,
         resources_touched=("filesystem",),
+    ),
+    "register_evolved_tool": ToolProfile(
+        name="register_evolved_tool",
+        required_caps=_caps(Capability.FILE_WRITE, Capability.SHELL_WRITE),
+        risk=ToolRisk.DESTRUCTIVE,
+        resources_touched=("runtime", "filesystem"),
+    ),
+    "disk_usage": ToolProfile(
+        name="disk_usage",
+        required_caps=_caps(Capability.SHELL_READ, Capability.FILE_READ),
+        risk=ToolRisk.SAFE,
+        resources_touched=("filesystem",),
+    ),
+    "analyze_text_sentiment": ToolProfile(
+        name="analyze_text_sentiment",
+        required_caps=_caps(Capability.LLM_CALL),
+        risk=ToolRisk.SAFE,
+    ),
+    "send_desktop_notification": ToolProfile(
+        name="send_desktop_notification",
+        required_caps=_caps(Capability.NET_OUTBOUND),
+        risk=ToolRisk.SAFE,
+    ),
+    "send_email": ToolProfile(
+        name="send_email",
+        required_caps=_caps(Capability.NET_OUTBOUND),
+        risk=ToolRisk.SAFE,
     ),
 }
 

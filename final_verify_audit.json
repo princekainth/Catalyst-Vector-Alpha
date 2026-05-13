@@ -1,0 +1,1087 @@
+{
+    "logs": [
+        {
+            "agent_id": "system",
+            "args_hash": "222aee332d813bffc6c2e19242efbb73aa3750c6849143dc387fc21c8d8817ca",
+            "decision": "POLICY_DECISION",
+            "extra": {
+                "allow": false,
+                "approval": {
+                    "reason": "no approval token provided",
+                    "token_present": false,
+                    "valid": false
+                },
+                "required_caps": [
+                    "k8s_write"
+                ],
+                "requires_approval": false,
+                "risk": "destructive"
+            },
+            "latency_ms": 0,
+            "reason": "agent 'system' lacks capabilities: k8s_write",
+            "result_status": "deny",
+            "timestamp": 1778705496.389549,
+            "tool": "k8s_rollout_restart",
+            "trace_id": "trc_f22824d8220b47b696fd15bb4b27a931"
+        },
+        {
+            "agent_id": "system",
+            "args_hash": "222aee332d813bffc6c2e19242efbb73aa3750c6849143dc387fc21c8d8817ca",
+            "decision": "POLICY_DECISION",
+            "extra": {
+                "allow": false,
+                "approval": {
+                    "reason": "no approval token provided",
+                    "token_present": false,
+                    "valid": false
+                },
+                "required_caps": [
+                    "k8s_write"
+                ],
+                "requires_approval": false,
+                "risk": "destructive"
+            },
+            "latency_ms": 0,
+            "reason": "agent 'system' lacks capabilities: k8s_write",
+            "result_status": "deny",
+            "timestamp": 1778705525.1650374,
+            "tool": "k8s_rollout_restart",
+            "trace_id": "trc_afa88dc9b4f346c3b8cd639eba50b2a3"
+        },
+        {
+            "agent_id": "system",
+            "args_hash": "222aee332d813bffc6c2e19242efbb73aa3750c6849143dc387fc21c8d8817ca",
+            "decision": "POLICY_DECISION",
+            "extra": {
+                "allow": false,
+                "approval": {
+                    "reason": "no approval token provided",
+                    "token_present": false,
+                    "valid": false
+                },
+                "required_caps": [
+                    "k8s_write"
+                ],
+                "requires_approval": false,
+                "risk": "destructive"
+            },
+            "latency_ms": 0,
+            "reason": "agent 'system' lacks capabilities: k8s_write",
+            "result_status": "deny",
+            "timestamp": 1778705554.1450095,
+            "tool": "k8s_rollout_restart",
+            "trace_id": "trc_ee607faaf5074705a3f4e4ecc1be41a9"
+        },
+        {
+            "agent_id": "system",
+            "args_hash": "222aee332d813bffc6c2e19242efbb73aa3750c6849143dc387fc21c8d8817ca",
+            "decision": "POLICY_DECISION",
+            "extra": {
+                "allow": false,
+                "approval": {
+                    "reason": "no approval token provided",
+                    "token_present": false,
+                    "valid": false
+                },
+                "required_caps": [
+                    "k8s_write"
+                ],
+                "requires_approval": false,
+                "risk": "destructive"
+            },
+            "latency_ms": 0,
+            "reason": "agent 'system' lacks capabilities: k8s_write",
+            "result_status": "deny",
+            "timestamp": 1778705579.8017776,
+            "tool": "k8s_rollout_restart",
+            "trace_id": "trc_249f413929ca41d686401cd6cbfa629f"
+        },
+        {
+            "agent_id": "system",
+            "args_hash": "222aee332d813bffc6c2e19242efbb73aa3750c6849143dc387fc21c8d8817ca",
+            "decision": "POLICY_DECISION",
+            "extra": {
+                "allow": false,
+                "approval": {
+                    "reason": "no approval token provided",
+                    "token_present": false,
+                    "valid": false
+                },
+                "required_caps": [
+                    "k8s_write"
+                ],
+                "requires_approval": false,
+                "risk": "destructive"
+            },
+            "latency_ms": 0,
+            "reason": "agent 'system' lacks capabilities: k8s_write",
+            "result_status": "deny",
+            "timestamp": 1778705604.3239875,
+            "tool": "k8s_rollout_restart",
+            "trace_id": "trc_8c7efa9a8c604972814b36c210e74f2f"
+        },
+        {
+            "agent_id": "system",
+            "args_hash": "222aee332d813bffc6c2e19242efbb73aa3750c6849143dc387fc21c8d8817ca",
+            "decision": "POLICY_DECISION",
+            "extra": {
+                "allow": false,
+                "approval": {
+                    "reason": "no approval token provided",
+                    "token_present": false,
+                    "valid": false
+                },
+                "required_caps": [
+                    "k8s_write"
+                ],
+                "requires_approval": false,
+                "risk": "destructive"
+            },
+            "latency_ms": 0,
+            "reason": "agent 'system' lacks capabilities: k8s_write",
+            "result_status": "deny",
+            "timestamp": 1778705644.7658527,
+            "tool": "k8s_rollout_restart",
+            "trace_id": "trc_8ed1c58c99974f628ed753d751ed4b2f"
+        },
+        {
+            "agent_id": "system",
+            "args_hash": "222aee332d813bffc6c2e19242efbb73aa3750c6849143dc387fc21c8d8817ca",
+            "decision": "POLICY_DECISION",
+            "extra": {
+                "allow": false,
+                "approval": {
+                    "reason": "no approval token provided",
+                    "token_present": false,
+                    "valid": false
+                },
+                "required_caps": [
+                    "k8s_write"
+                ],
+                "requires_approval": true,
+                "risk": "destructive"
+            },
+            "latency_ms": 0,
+            "reason": "destructive action requires manual approval",
+            "result_status": "approval_required",
+            "timestamp": 1778705693.8562005,
+            "tool": "k8s_rollout_restart",
+            "trace_id": "trc_cf037e0ee70747daa638410e01013ae5"
+        },
+        {
+            "agent_id": "system",
+            "args_hash": "222aee332d813bffc6c2e19242efbb73aa3750c6849143dc387fc21c8d8817ca",
+            "decision": "POLICY_DECISION",
+            "extra": {
+                "allow": false,
+                "approval": {
+                    "reason": "no approval token provided",
+                    "token_present": false,
+                    "valid": false
+                },
+                "required_caps": [
+                    "k8s_write"
+                ],
+                "requires_approval": true,
+                "risk": "destructive"
+            },
+            "latency_ms": 0,
+            "reason": "destructive action requires manual approval",
+            "result_status": "approval_required",
+            "timestamp": 1778705726.7026644,
+            "tool": "k8s_rollout_restart",
+            "trace_id": "trc_86a21b0903304a588a8318b4a053f9c8"
+        },
+        {
+            "agent_id": "system",
+            "args_hash": "222aee332d813bffc6c2e19242efbb73aa3750c6849143dc387fc21c8d8817ca",
+            "decision": "POLICY_DECISION",
+            "extra": {
+                "allow": false,
+                "approval": {
+                    "reason": "no approval token provided",
+                    "token_present": false,
+                    "valid": false
+                },
+                "required_caps": [
+                    "k8s_write"
+                ],
+                "requires_approval": true,
+                "risk": "destructive"
+            },
+            "latency_ms": 0,
+            "reason": "destructive action requires manual approval",
+            "result_status": "approval_required",
+            "timestamp": 1778705771.2472925,
+            "tool": "k8s_rollout_restart",
+            "trace_id": "trc_c269434b7fbc492a98efac1ced4abd96"
+        },
+        {
+            "agent_id": "system",
+            "args_hash": "222aee332d813bffc6c2e19242efbb73aa3750c6849143dc387fc21c8d8817ca",
+            "decision": "POLICY_DECISION",
+            "extra": {
+                "allow": false,
+                "approval": {
+                    "reason": "no approval token provided",
+                    "token_present": false,
+                    "valid": false
+                },
+                "required_caps": [
+                    "k8s_write"
+                ],
+                "requires_approval": true,
+                "risk": "destructive"
+            },
+            "latency_ms": 0,
+            "reason": "destructive action requires manual approval",
+            "result_status": "approval_required",
+            "timestamp": 1778705880.9041536,
+            "tool": "k8s_rollout_restart",
+            "trace_id": "trc_681297f6c17d4791aace87e752e9c960"
+        },
+        {
+            "agent_id": "system",
+            "args_hash": "0599f8f2b7569c57671eadc0aebe7ec9130cf987cff063f0741c8a86df50fe27",
+            "decision": "POLICY_DECISION",
+            "extra": {
+                "allow": false,
+                "approval": {
+                    "reason": "approval token not found or expired",
+                    "token_present": true,
+                    "valid": false
+                },
+                "required_caps": [
+                    "k8s_write"
+                ],
+                "requires_approval": true,
+                "risk": "destructive"
+            },
+            "latency_ms": 0,
+            "reason": "invalid approval token: approval token not found or expired",
+            "result_status": "deny",
+            "timestamp": 1778705880.925683,
+            "tool": "k8s_rollout_restart",
+            "trace_id": "trc_24dd6d442fca41d2a4056482bb191d1d"
+        },
+        {
+            "agent_id": "system",
+            "args_hash": "222aee332d813bffc6c2e19242efbb73aa3750c6849143dc387fc21c8d8817ca",
+            "decision": "POLICY_DECISION",
+            "extra": {
+                "allow": false,
+                "approval": {
+                    "reason": "no approval token provided",
+                    "token_present": false,
+                    "valid": false
+                },
+                "required_caps": [
+                    "k8s_write"
+                ],
+                "requires_approval": true,
+                "risk": "destructive"
+            },
+            "latency_ms": 0,
+            "reason": "destructive action requires manual approval",
+            "result_status": "approval_required",
+            "timestamp": 1778705880.951538,
+            "tool": "k8s_rollout_restart",
+            "trace_id": "trc_99e8f7c0907044b89120eb8037cf66e2"
+        },
+        {
+            "agent_id": "system",
+            "args_hash": "70b7a5672f54b4517d3d2a2e1658cc71f40fc20522659d4462db197e301ec420",
+            "decision": "POLICY_DECISION",
+            "extra": {
+                "allow": false,
+                "approval": {
+                    "reason": "no approval token provided",
+                    "token_present": false,
+                    "valid": false
+                },
+                "required_caps": [
+                    "k8s_write"
+                ],
+                "requires_approval": true,
+                "risk": "destructive"
+            },
+            "latency_ms": 0,
+            "reason": "destructive action requires manual approval",
+            "result_status": "approval_required",
+            "timestamp": 1778705881.001259,
+            "tool": "k8s_rollout_restart",
+            "trace_id": "trc_4667b583a84043d5999fbf41b6d670c9"
+        },
+        {
+            "agent_id": "system",
+            "args_hash": "222aee332d813bffc6c2e19242efbb73aa3750c6849143dc387fc21c8d8817ca",
+            "decision": "POLICY_DECISION",
+            "extra": {
+                "allow": false,
+                "approval": {
+                    "reason": "no approval token provided",
+                    "token_present": false,
+                    "valid": false
+                },
+                "required_caps": [
+                    "k8s_write"
+                ],
+                "requires_approval": true,
+                "risk": "destructive"
+            },
+            "latency_ms": 0,
+            "reason": "destructive action requires manual approval",
+            "result_status": "approval_required",
+            "timestamp": 1778705928.4186885,
+            "tool": "k8s_rollout_restart",
+            "trace_id": "trc_1d00f876bcb747dfa4934f6291eb0116"
+        },
+        {
+            "agent_id": "system",
+            "args_hash": "5db81f0f15204d4bf4f6e5cf853cace83d643721e81db5794e8fe607f0e2ae18",
+            "decision": "POLICY_DECISION",
+            "extra": {
+                "allow": false,
+                "approval": {
+                    "reason": "approval token not found or expired",
+                    "token_present": true,
+                    "valid": false
+                },
+                "required_caps": [
+                    "k8s_write"
+                ],
+                "requires_approval": true,
+                "risk": "destructive"
+            },
+            "latency_ms": 0,
+            "reason": "invalid approval token: approval token not found or expired",
+            "result_status": "deny",
+            "timestamp": 1778705928.441441,
+            "tool": "k8s_rollout_restart",
+            "trace_id": "trc_0dc4d0e5ffb344fa9e50e4fc98e436bf"
+        },
+        {
+            "agent_id": "system",
+            "args_hash": "222aee332d813bffc6c2e19242efbb73aa3750c6849143dc387fc21c8d8817ca",
+            "decision": "POLICY_DECISION",
+            "extra": {
+                "allow": false,
+                "approval": {
+                    "reason": "no approval token provided",
+                    "token_present": false,
+                    "valid": false
+                },
+                "required_caps": [
+                    "k8s_write"
+                ],
+                "requires_approval": true,
+                "risk": "destructive"
+            },
+            "latency_ms": 0,
+            "reason": "destructive action requires manual approval",
+            "result_status": "approval_required",
+            "timestamp": 1778705928.4674184,
+            "tool": "k8s_rollout_restart",
+            "trace_id": "trc_1daa017309694c64a8ce63e2a7e93410"
+        },
+        {
+            "agent_id": "system",
+            "args_hash": "70b7a5672f54b4517d3d2a2e1658cc71f40fc20522659d4462db197e301ec420",
+            "decision": "POLICY_DECISION",
+            "extra": {
+                "allow": false,
+                "approval": {
+                    "reason": "no approval token provided",
+                    "token_present": false,
+                    "valid": false
+                },
+                "required_caps": [
+                    "k8s_write"
+                ],
+                "requires_approval": true,
+                "risk": "destructive"
+            },
+            "latency_ms": 0,
+            "reason": "destructive action requires manual approval",
+            "result_status": "approval_required",
+            "timestamp": 1778705928.5155532,
+            "tool": "k8s_rollout_restart",
+            "trace_id": "trc_89fefead4b7e4d5ebb0ab85c944889ac"
+        },
+        {
+            "agent_id": "system",
+            "args_hash": "222aee332d813bffc6c2e19242efbb73aa3750c6849143dc387fc21c8d8817ca",
+            "decision": "POLICY_DECISION",
+            "extra": {
+                "allow": false,
+                "approval": {
+                    "reason": "no approval token provided",
+                    "token_present": false,
+                    "valid": false
+                },
+                "required_caps": [
+                    "k8s_write"
+                ],
+                "requires_approval": true,
+                "risk": "destructive"
+            },
+            "latency_ms": 0,
+            "reason": "destructive action requires manual approval",
+            "result_status": "approval_required",
+            "timestamp": 1778705948.520938,
+            "tool": "k8s_rollout_restart",
+            "trace_id": "trc_8c2d9adeadee4c398a37c805f1d3d527"
+        },
+        {
+            "agent_id": "system",
+            "args_hash": "222aee332d813bffc6c2e19242efbb73aa3750c6849143dc387fc21c8d8817ca",
+            "decision": "POLICY_DECISION",
+            "extra": {
+                "allow": false,
+                "approval": {
+                    "reason": "no approval token provided",
+                    "token_present": false,
+                    "valid": false
+                },
+                "required_caps": [
+                    "k8s_write"
+                ],
+                "requires_approval": true,
+                "risk": "destructive"
+            },
+            "latency_ms": 0,
+            "reason": "destructive action requires manual approval",
+            "result_status": "approval_required",
+            "timestamp": 1778705971.5693228,
+            "tool": "k8s_rollout_restart",
+            "trace_id": "trc_4233a26ad6674e76a4374b87242b18ca"
+        },
+        {
+            "agent_id": "system",
+            "args_hash": "5db81f0f15204d4bf4f6e5cf853cace83d643721e81db5794e8fe607f0e2ae18",
+            "decision": "POLICY_DECISION",
+            "extra": {
+                "allow": false,
+                "approval": {
+                    "reason": "approval token not found or expired",
+                    "token_present": true,
+                    "valid": false
+                },
+                "required_caps": [
+                    "k8s_write"
+                ],
+                "requires_approval": true,
+                "risk": "destructive"
+            },
+            "latency_ms": 0,
+            "reason": "invalid approval token: approval token not found or expired",
+            "result_status": "deny",
+            "timestamp": 1778705971.5941725,
+            "tool": "k8s_rollout_restart",
+            "trace_id": "trc_ae2daa9a757e409bbde1f845a140cea4"
+        },
+        {
+            "agent_id": "system",
+            "args_hash": "222aee332d813bffc6c2e19242efbb73aa3750c6849143dc387fc21c8d8817ca",
+            "decision": "POLICY_DECISION",
+            "extra": {
+                "allow": false,
+                "approval": {
+                    "reason": "no approval token provided",
+                    "token_present": false,
+                    "valid": false
+                },
+                "required_caps": [
+                    "k8s_write"
+                ],
+                "requires_approval": true,
+                "risk": "destructive"
+            },
+            "latency_ms": 0,
+            "reason": "destructive action requires manual approval",
+            "result_status": "approval_required",
+            "timestamp": 1778705971.619022,
+            "tool": "k8s_rollout_restart",
+            "trace_id": "trc_6cbbff07e64542c3a257670830e291f1"
+        },
+        {
+            "agent_id": "system",
+            "args_hash": "70d191462491502794035f43787a52808c76a916990a181bd3ccc78b03566f10",
+            "decision": "POLICY_DECISION",
+            "extra": {
+                "allow": false,
+                "approval": {
+                    "reason": "approval token trace mismatch",
+                    "token_present": true,
+                    "valid": false
+                },
+                "required_caps": [
+                    "k8s_write"
+                ],
+                "requires_approval": true,
+                "risk": "destructive"
+            },
+            "latency_ms": 0,
+            "reason": "invalid approval token: approval token trace mismatch",
+            "result_status": "deny",
+            "timestamp": 1778705971.6677887,
+            "tool": "k8s_rollout_restart",
+            "trace_id": "trc_d966a21f6cc24d5abadef83d4bdb8de3"
+        },
+        {
+            "agent_id": "system",
+            "args_hash": "222aee332d813bffc6c2e19242efbb73aa3750c6849143dc387fc21c8d8817ca",
+            "decision": "POLICY_DECISION",
+            "extra": {
+                "allow": false,
+                "approval": {
+                    "reason": "no approval token provided",
+                    "token_present": false,
+                    "valid": false
+                },
+                "required_caps": [
+                    "k8s_write"
+                ],
+                "requires_approval": true,
+                "risk": "destructive"
+            },
+            "latency_ms": 0,
+            "reason": "destructive action requires manual approval",
+            "result_status": "approval_required",
+            "timestamp": 1778705993.0361326,
+            "tool": "k8s_rollout_restart",
+            "trace_id": "trc_c710f3a7ee3649bcb5f90be41567c965"
+        },
+        {
+            "agent_id": "system",
+            "args_hash": "daed1e7bc244bb3975887faca1c1b36b76271325b389dec8ab663b3d31c83e50",
+            "decision": "POLICY_DECISION",
+            "extra": {
+                "allow": true,
+                "approval": {
+                    "reason": "approval token valid",
+                    "token_present": true,
+                    "valid": true
+                },
+                "required_caps": [
+                    "k8s_write"
+                ],
+                "requires_approval": false,
+                "risk": "destructive"
+            },
+            "latency_ms": 0,
+            "reason": "approved token accepted",
+            "result_status": "allow",
+            "timestamp": 1778705993.082797,
+            "tool": "k8s_rollout_restart",
+            "trace_id": "trc_c710f3a7ee3649bcb5f90be41567c965"
+        },
+        {
+            "agent_id": "system",
+            "args_hash": "daed1e7bc244bb3975887faca1c1b36b76271325b389dec8ab663b3d31c83e50",
+            "decision": "TOOL_EXEC_START",
+            "extra": {
+                "risk": "destructive"
+            },
+            "latency_ms": 0,
+            "reason": "execution started",
+            "result_status": "start",
+            "timestamp": 1778705993.0829346,
+            "tool": "k8s_rollout_restart",
+            "trace_id": "trc_c710f3a7ee3649bcb5f90be41567c965"
+        },
+        {
+            "agent_id": "system",
+            "args_hash": "daed1e7bc244bb3975887faca1c1b36b76271325b389dec8ab663b3d31c83e50",
+            "decision": "TOOL_EXEC_RESULT",
+            "extra": {
+                "result_type": "dict"
+            },
+            "latency_ms": 163,
+            "reason": "execution completed",
+            "result_status": "ok",
+            "timestamp": 1778705993.2466943,
+            "tool": "k8s_rollout_restart",
+            "trace_id": "trc_c710f3a7ee3649bcb5f90be41567c965"
+        },
+        {
+            "agent_id": "dashboard_operator",
+            "args_hash": "c2a8930a43a067cd4f325b5961dfc1b74b37c0eb129e804eb21cba1e65406dd2",
+            "decision": "POLICY_DECISION",
+            "extra": {
+                "allow": false,
+                "approval": {
+                    "reason": "no approval token provided",
+                    "token_present": false,
+                    "valid": false
+                },
+                "required_caps": [
+                    "k8s_write"
+                ],
+                "requires_approval": true,
+                "risk": "destructive"
+            },
+            "latency_ms": 0,
+            "reason": "destructive action requires manual approval",
+            "result_status": "approval_required",
+            "timestamp": 1778706138.4459376,
+            "tool": "k8s_rollout_restart",
+            "trace_id": "trc_4efeafc6a1ec4610b1056d950fa8e2b8"
+        },
+        {
+            "agent_id": "dashboard_operator",
+            "args_hash": "c2a8930a43a067cd4f325b5961dfc1b74b37c0eb129e804eb21cba1e65406dd2",
+            "decision": "POLICY_DECISION",
+            "extra": {
+                "allow": false,
+                "approval": {
+                    "reason": "no approval token provided",
+                    "token_present": false,
+                    "valid": false
+                },
+                "required_caps": [
+                    "k8s_write"
+                ],
+                "requires_approval": true,
+                "risk": "destructive"
+            },
+            "latency_ms": 0,
+            "reason": "destructive action requires manual approval",
+            "result_status": "approval_required",
+            "timestamp": 1778706138.4663846,
+            "tool": "k8s_rollout_restart",
+            "trace_id": "trc_bae8d93ef5d54dc28c2a4afe06413a78"
+        },
+        {
+            "agent_id": "dashboard_operator",
+            "args_hash": "d9a99fe391ad7a04291c35a7a172873f893fe2c7ccde546ff5e91e694b35cf78",
+            "decision": "POLICY_DECISION",
+            "extra": {
+                "allow": true,
+                "approval": {
+                    "reason": "approval token valid",
+                    "token_present": true,
+                    "valid": true
+                },
+                "required_caps": [
+                    "k8s_write"
+                ],
+                "requires_approval": false,
+                "risk": "destructive"
+            },
+            "latency_ms": 0,
+            "reason": "approved token accepted",
+            "result_status": "allow",
+            "timestamp": 1778706138.5116029,
+            "tool": "k8s_rollout_restart",
+            "trace_id": "trc_bae8d93ef5d54dc28c2a4afe06413a78"
+        },
+        {
+            "agent_id": "dashboard_operator",
+            "args_hash": "d9a99fe391ad7a04291c35a7a172873f893fe2c7ccde546ff5e91e694b35cf78",
+            "decision": "TOOL_EXEC_START",
+            "extra": {
+                "risk": "destructive"
+            },
+            "latency_ms": 0,
+            "reason": "execution started",
+            "result_status": "start",
+            "timestamp": 1778706138.51171,
+            "tool": "k8s_rollout_restart",
+            "trace_id": "trc_bae8d93ef5d54dc28c2a4afe06413a78"
+        },
+        {
+            "agent_id": "dashboard_operator",
+            "args_hash": "d9a99fe391ad7a04291c35a7a172873f893fe2c7ccde546ff5e91e694b35cf78",
+            "decision": "TOOL_EXEC_RESULT",
+            "extra": {
+                "result_type": "dict"
+            },
+            "latency_ms": 166,
+            "reason": "execution completed",
+            "result_status": "ok",
+            "timestamp": 1778706138.6781034,
+            "tool": "k8s_rollout_restart",
+            "trace_id": "trc_bae8d93ef5d54dc28c2a4afe06413a78"
+        },
+        {
+            "agent_id": "dashboard_operator",
+            "args_hash": "d08b794fc1184ded46620293034bdd5d0c7480d64e9fc7f70b50b8efd5a2b6e1",
+            "decision": "POLICY_DECISION",
+            "extra": {
+                "allow": false,
+                "approval": {
+                    "reason": "no approval token provided",
+                    "token_present": false,
+                    "valid": false
+                },
+                "required_caps": [
+                    "system_write"
+                ],
+                "requires_approval": false,
+                "risk": "destructive"
+            },
+            "latency_ms": 0,
+            "reason": "agent 'dashboard_operator' lacks capabilities: system_write",
+            "result_status": "deny",
+            "timestamp": 1778706138.691594,
+            "tool": "system_restart_allowed_service",
+            "trace_id": "trc_b24666c2c9ce47a89f20f7362565a9f5"
+        },
+        {
+            "agent_id": "dashboard_operator",
+            "args_hash": "c2a8930a43a067cd4f325b5961dfc1b74b37c0eb129e804eb21cba1e65406dd2",
+            "decision": "POLICY_DECISION",
+            "extra": {
+                "allow": false,
+                "approval": {
+                    "reason": "no approval token provided",
+                    "token_present": false,
+                    "valid": false
+                },
+                "required_caps": [
+                    "k8s_write"
+                ],
+                "requires_approval": true,
+                "risk": "destructive"
+            },
+            "latency_ms": 0,
+            "reason": "destructive action requires manual approval",
+            "result_status": "approval_required",
+            "timestamp": 1778706240.0298007,
+            "tool": "k8s_rollout_restart",
+            "trace_id": "trc_6c09f6d1c37d478aae13cb6a703155ef"
+        },
+        {
+            "agent_id": "dashboard_operator",
+            "args_hash": "c2a8930a43a067cd4f325b5961dfc1b74b37c0eb129e804eb21cba1e65406dd2",
+            "decision": "POLICY_DECISION",
+            "extra": {
+                "allow": false,
+                "approval": {
+                    "reason": "no approval token provided",
+                    "token_present": false,
+                    "valid": false
+                },
+                "required_caps": [
+                    "k8s_write"
+                ],
+                "requires_approval": true,
+                "risk": "destructive"
+            },
+            "latency_ms": 0,
+            "reason": "destructive action requires manual approval",
+            "result_status": "approval_required",
+            "timestamp": 1778706240.049801,
+            "tool": "k8s_rollout_restart",
+            "trace_id": "trc_0589d85066364db3add8847843401b29"
+        },
+        {
+            "agent_id": "dashboard_operator",
+            "args_hash": "31aeaa15a3f1b83e4efa36070da30e89eec0bd1b3d4a2b11dc75b2ecf4ce3058",
+            "decision": "POLICY_DECISION",
+            "extra": {
+                "allow": true,
+                "approval": {
+                    "reason": "approval token valid",
+                    "token_present": true,
+                    "valid": true
+                },
+                "required_caps": [
+                    "k8s_write"
+                ],
+                "requires_approval": false,
+                "risk": "destructive"
+            },
+            "latency_ms": 0,
+            "reason": "approved token accepted",
+            "result_status": "allow",
+            "timestamp": 1778706240.0950963,
+            "tool": "k8s_rollout_restart",
+            "trace_id": "trc_0589d85066364db3add8847843401b29"
+        },
+        {
+            "agent_id": "dashboard_operator",
+            "args_hash": "31aeaa15a3f1b83e4efa36070da30e89eec0bd1b3d4a2b11dc75b2ecf4ce3058",
+            "decision": "TOOL_EXEC_START",
+            "extra": {
+                "risk": "destructive"
+            },
+            "latency_ms": 0,
+            "reason": "execution started",
+            "result_status": "start",
+            "timestamp": 1778706240.095207,
+            "tool": "k8s_rollout_restart",
+            "trace_id": "trc_0589d85066364db3add8847843401b29"
+        },
+        {
+            "agent_id": "dashboard_operator",
+            "args_hash": "31aeaa15a3f1b83e4efa36070da30e89eec0bd1b3d4a2b11dc75b2ecf4ce3058",
+            "decision": "TOOL_EXEC_RESULT",
+            "extra": {
+                "result_type": "dict"
+            },
+            "latency_ms": 161,
+            "reason": "execution completed",
+            "result_status": "ok",
+            "timestamp": 1778706240.2564354,
+            "tool": "k8s_rollout_restart",
+            "trace_id": "trc_0589d85066364db3add8847843401b29"
+        },
+        {
+            "agent_id": "dashboard_operator",
+            "args_hash": "d08b794fc1184ded46620293034bdd5d0c7480d64e9fc7f70b50b8efd5a2b6e1",
+            "decision": "POLICY_DECISION",
+            "extra": {
+                "allow": false,
+                "approval": {
+                    "reason": "no approval token provided",
+                    "token_present": false,
+                    "valid": false
+                },
+                "required_caps": [
+                    "system_write"
+                ],
+                "requires_approval": false,
+                "risk": "destructive"
+            },
+            "latency_ms": 0,
+            "reason": "agent 'dashboard_operator' lacks capabilities: system_write",
+            "result_status": "deny",
+            "timestamp": 1778706240.2714863,
+            "tool": "system_restart_allowed_service",
+            "trace_id": "trc_b54882fb140c4b48bcff93073b099f52"
+        },
+        {
+            "agent_id": "dashboard_operator",
+            "args_hash": "942208ca1336b67eef6903677f17fd4820255d6afe722abd76f60b475e45c648",
+            "decision": "POLICY_DECISION",
+            "extra": {
+                "allow": false,
+                "approval": {
+                    "reason": "no approval token provided",
+                    "token_present": false,
+                    "valid": false
+                },
+                "required_caps": [
+                    "file_read",
+                    "shell_read"
+                ],
+                "requires_approval": false,
+                "risk": "safe"
+            },
+            "latency_ms": 0,
+            "reason": "agent 'dashboard_operator' lacks capabilities: file_read, shell_read",
+            "result_status": "deny",
+            "timestamp": 1778706240.2991557,
+            "tool": "disk_usage",
+            "trace_id": "trc_6d9cc017ff8c4be4891aa3fbf3f259da"
+        },
+        {
+            "agent_id": "dashboard_operator",
+            "args_hash": "c2a8930a43a067cd4f325b5961dfc1b74b37c0eb129e804eb21cba1e65406dd2",
+            "decision": "POLICY_DECISION",
+            "extra": {
+                "allow": false,
+                "approval": {
+                    "reason": "no approval token provided",
+                    "token_present": false,
+                    "valid": false
+                },
+                "required_caps": [
+                    "k8s_write"
+                ],
+                "requires_approval": true,
+                "risk": "destructive"
+            },
+            "latency_ms": 0,
+            "reason": "destructive action requires manual approval",
+            "result_status": "approval_required",
+            "timestamp": 1778707347.332121,
+            "tool": "k8s_rollout_restart",
+            "trace_id": "trc_181a61aae50e4164be29a62929ade0a5"
+        },
+        {
+            "agent_id": "demo_observer",
+            "args_hash": "bbdaa08f3aa06a56a3cb7871f764e7e00c03b59b589c24c643afea77c5d183f0",
+            "decision": "POLICY_DECISION",
+            "extra": {
+                "allow": true,
+                "approval": {
+                    "reason": "no approval token provided",
+                    "token_present": false,
+                    "valid": false
+                },
+                "required_caps": [
+                    "k8s_read"
+                ],
+                "requires_approval": false,
+                "risk": "safe"
+            },
+            "latency_ms": 0,
+            "reason": "allowed",
+            "result_status": "allow",
+            "timestamp": 1778707531.4926949,
+            "tool": "get_pod_status",
+            "trace_id": "trc_2d146fc2e81f49929ebc3239a1a459e6"
+        },
+        {
+            "agent_id": "demo_observer",
+            "args_hash": "bbdaa08f3aa06a56a3cb7871f764e7e00c03b59b589c24c643afea77c5d183f0",
+            "decision": "TOOL_EXEC_START",
+            "extra": {
+                "risk": "safe"
+            },
+            "latency_ms": 0,
+            "reason": "execution started",
+            "result_status": "start",
+            "timestamp": 1778707531.4928346,
+            "tool": "get_pod_status",
+            "trace_id": "trc_2d146fc2e81f49929ebc3239a1a459e6"
+        },
+        {
+            "agent_id": "demo_observer",
+            "args_hash": "bbdaa08f3aa06a56a3cb7871f764e7e00c03b59b589c24c643afea77c5d183f0",
+            "decision": "TOOL_EXEC_RESULT",
+            "extra": {
+                "result_type": "dict"
+            },
+            "latency_ms": 128,
+            "reason": "execution completed",
+            "result_status": "ok",
+            "timestamp": 1778707531.6213143,
+            "tool": "get_pod_status",
+            "trace_id": "trc_2d146fc2e81f49929ebc3239a1a459e6"
+        },
+        {
+            "agent_id": "demo_observer",
+            "args_hash": "4e02d967b20f1ea6eb60c2c35982a6431cdb473d67f7c957859ebfe29b1b07b6",
+            "decision": "POLICY_DECISION",
+            "extra": {
+                "allow": true,
+                "approval": {
+                    "reason": "no approval token provided",
+                    "token_present": false,
+                    "valid": false
+                },
+                "required_caps": [
+                    "k8s_read",
+                    "logs_read"
+                ],
+                "requires_approval": false,
+                "risk": "safe"
+            },
+            "latency_ms": 0,
+            "reason": "allowed",
+            "result_status": "allow",
+            "timestamp": 1778707531.6248484,
+            "tool": "k8s_get_pod_logs",
+            "trace_id": "trc_c5ab3ee52f46451a863ae22e6afaa7c5"
+        },
+        {
+            "agent_id": "demo_observer",
+            "args_hash": "4e02d967b20f1ea6eb60c2c35982a6431cdb473d67f7c957859ebfe29b1b07b6",
+            "decision": "TOOL_EXEC_START",
+            "extra": {
+                "risk": "safe"
+            },
+            "latency_ms": 0,
+            "reason": "execution started",
+            "result_status": "start",
+            "timestamp": 1778707531.6249385,
+            "tool": "k8s_get_pod_logs",
+            "trace_id": "trc_c5ab3ee52f46451a863ae22e6afaa7c5"
+        },
+        {
+            "agent_id": "demo_observer",
+            "args_hash": "4e02d967b20f1ea6eb60c2c35982a6431cdb473d67f7c957859ebfe29b1b07b6",
+            "decision": "TOOL_EXEC_RESULT",
+            "extra": {
+                "result_type": "dict"
+            },
+            "latency_ms": 137,
+            "reason": "execution completed",
+            "result_status": "ok",
+            "timestamp": 1778707531.762727,
+            "tool": "k8s_get_pod_logs",
+            "trace_id": "trc_c5ab3ee52f46451a863ae22e6afaa7c5"
+        },
+        {
+            "agent_id": "demo_worker",
+            "args_hash": "3fcfefef2318fae727867f007b5720d481cfa2ff20d1cad6360d747b09cd5688",
+            "decision": "POLICY_DECISION",
+            "extra": {
+                "allow": false,
+                "approval": {
+                    "reason": "no approval token provided",
+                    "token_present": false,
+                    "valid": false
+                },
+                "required_caps": [
+                    "k8s_write"
+                ],
+                "requires_approval": true,
+                "risk": "destructive"
+            },
+            "latency_ms": 0,
+            "reason": "destructive action requires manual approval",
+            "result_status": "approval_required",
+            "timestamp": 1778707531.7630074,
+            "tool": "k8s_rollout_restart",
+            "trace_id": "trc_91b3f7ca19f64bae90ae4a1fb9e2dfc2"
+        },
+        {
+            "agent_id": "demo_worker",
+            "args_hash": "fd4bd7472438fc1e82c6580f84470561d62e67740bc492917f57e30854732f48",
+            "decision": "POLICY_DECISION",
+            "extra": {
+                "allow": true,
+                "approval": {
+                    "reason": "approval token valid",
+                    "token_present": true,
+                    "valid": true
+                },
+                "required_caps": [
+                    "k8s_write"
+                ],
+                "requires_approval": false,
+                "risk": "destructive"
+            },
+            "latency_ms": 0,
+            "reason": "approved token accepted",
+            "result_status": "allow",
+            "timestamp": 1778707531.7632172,
+            "tool": "k8s_rollout_restart",
+            "trace_id": "trc_91b3f7ca19f64bae90ae4a1fb9e2dfc2"
+        },
+        {
+            "agent_id": "demo_worker",
+            "args_hash": "fd4bd7472438fc1e82c6580f84470561d62e67740bc492917f57e30854732f48",
+            "decision": "TOOL_EXEC_START",
+            "extra": {
+                "risk": "destructive"
+            },
+            "latency_ms": 0,
+            "reason": "execution started",
+            "result_status": "start",
+            "timestamp": 1778707531.7633023,
+            "tool": "k8s_rollout_restart",
+            "trace_id": "trc_91b3f7ca19f64bae90ae4a1fb9e2dfc2"
+        },
+        {
+            "agent_id": "demo_worker",
+            "args_hash": "fd4bd7472438fc1e82c6580f84470561d62e67740bc492917f57e30854732f48",
+            "decision": "TOOL_EXEC_RESULT",
+            "extra": {
+                "result_type": "dict"
+            },
+            "latency_ms": 137,
+            "reason": "execution completed",
+            "result_status": "ok",
+            "timestamp": 1778707531.9013426,
+            "tool": "k8s_rollout_restart",
+            "trace_id": "trc_91b3f7ca19f64bae90ae4a1fb9e2dfc2"
+        }
+    ],
+    "ok": true
+}

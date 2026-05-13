@@ -6,9 +6,14 @@ import AgentSummary from '../components/AgentSummary';
 import RecentTasks from '../components/RecentTasks';
 import MetricsOverview from '../components/MetricsOverview';
 import PendingApprovals from '../components/PendingApprovals';
-import { getSystemHealth, getAgentsStatus, getMetrics, getTaskHistory, getPendingPlans } from '../api';
+import CommandInput from '../components/CommandInput';
+import IncidentCapabilityPanel from '../components/IncidentCapabilityPanel';
+import { getSystemHealth, getAgentsStatus, getMetrics, getTaskHistory, getPendingPlans, executeCommand } from '../api';
+
+import IncidentFeed from '../components/IncidentFeed';
 
 function DashboardPage() {
+  // ... existing state ...
   const [systemHealth, setSystemHealth] = useState(null);
   const [agentsStatus, setAgentsStatus] = useState(null);
   const [metrics, setMetrics] = useState(null);
@@ -17,14 +22,15 @@ function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [submittingCommand, setSubmittingCommand] = useState(false);
   const [snackbarOpen, setSnackbarOpen] = useState(false);
   const [snackbarMessage, setSnackbarMessage] = useState('');
 
   const fetchData = async () => {
     try {
-      setLoading(true);
+      setRefreshing(true);
       setError(null);
-      
+
       const [healthRes, agentsRes, metricsRes, tasksRes, plansRes] = await Promise.all([
         getSystemHealth(),
         getAgentsStatus(),
@@ -38,7 +44,7 @@ function DashboardPage() {
       setMetrics(metricsRes.data || metricsRes);
       setTaskHistory(tasksRes.data || tasksRes.recent || []);
       setPendingPlans(plansRes.data || plansRes);
-      
+
     } catch (err) {
       setError(err.message || 'Failed to fetch dashboard data');
       setSnackbarMessage('Error loading dashboard data');
@@ -51,21 +57,35 @@ function DashboardPage() {
 
   useEffect(() => {
     fetchData();
-    
+
     const interval = setInterval(() => {
       fetchData();
-    }, 60000); // Refresh every minute
+    }, 30000); // Refresh every 30s
 
     return () => clearInterval(interval);
   }, []);
 
   const handleRefresh = () => {
-    setRefreshing(true);
     fetchData();
   };
 
   const handleCloseSnackbar = () => {
     setSnackbarOpen(false);
+  };
+
+  const handleExecuteCommand = async (commandText) => {
+    setSubmittingCommand(true);
+    try {
+      const result = await executeCommand(commandText);
+      setSnackbarMessage(`Command submitted successfully (Task ID: ${result.task_id.substring(0, 8)}...)`);
+      setSnackbarOpen(true);
+      setTimeout(fetchData, 1000);
+    } catch (err) {
+      setSnackbarMessage(`Error submitting command: ${err.message}`);
+      setSnackbarOpen(true);
+    } finally {
+      setSubmittingCommand(false);
+    }
   };
 
   if (loading && !systemHealth) {
@@ -79,16 +99,18 @@ function DashboardPage() {
   return (
     <Box>
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-        <Typography variant="h4" gutterBottom>
-          Catalyst Vector Alpha Dashboard
-        </Typography>
+        <Box>
+          <Typography variant="h4" fontWeight="bold">CVA Cloud Dashboard</Typography>
+          <Typography variant="subtitle2" color="text.secondary">AI SRE Agent with Approval-Gated Remediation</Typography>
+        </Box>
         <Button
-          variant="outlined"
+          variant="contained"
           startIcon={<RefreshIcon />}
           onClick={handleRefresh}
           disabled={refreshing}
+          sx={{ borderRadius: 2 }}
         >
-          {refreshing ? 'Refreshing...' : 'Refresh Data'}
+          {refreshing ? 'Syncing...' : 'Sync Now'}
         </Button>
       </Box>
 
@@ -101,16 +123,16 @@ function DashboardPage() {
       <Grid container spacing={3}>
         {/* System Status */}
         <Grid item xs={12} md={6} lg={4}>
-          <SystemStatusCard 
-            health={systemHealth} 
-            agents={agentsStatus} 
+          <SystemStatusCard
+            health={systemHealth}
+            agents={agentsStatus}
             metrics={metrics}
           />
         </Grid>
 
-        {/* Agent Summary */}
+        {/* Live Incident Feed */}
         <Grid item xs={12} md={6} lg={4}>
-          <AgentSummary agents={agentsStatus} />
+          <IncidentFeed />
         </Grid>
 
         {/* Metrics Overview */}
@@ -118,19 +140,37 @@ function DashboardPage() {
           <MetricsOverview metrics={metrics} />
         </Grid>
 
-        {/* Recent Tasks */}
-        <Grid item xs={12} md={6}>
-          <RecentTasks tasks={taskHistory} />
+        {/* Command Center */}
+        <Grid item xs={12}>
+           <CommandInput
+            onExecuteCommand={handleExecuteCommand}
+            isSubmitting={submittingCommand}
+          />
         </Grid>
 
-        {/* Pending Approvals */}
+        {/* Remediation Gate */}
         <Grid item xs={12} md={6}>
-          <PendingApprovals 
-            plans={pendingPlans} 
+          <PendingApprovals
+            plans={pendingPlans}
             onRefresh={fetchData}
             setSnackbarMessage={setSnackbarMessage}
             setSnackbarOpen={setSnackbarOpen}
           />
+        </Grid>
+
+        {/* Recent Tasks */}
+        <Grid item xs={12} md={6}>
+          <RecentTasks tasks={taskHistory} />
+        </Grid>
+        
+        {/* Intelligence Coverage / Supported Incidents */}
+        <Grid item xs={12} md={6}>
+          <IncidentCapabilityPanel />
+        </Grid>
+
+        {/* Agent Inventory */}
+        <Grid item xs={12} md={6}>
+          <AgentSummary agents={agentsStatus} />
         </Grid>
       </Grid>
 

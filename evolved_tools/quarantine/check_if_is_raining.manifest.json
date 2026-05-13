@@ -1,0 +1,19 @@
+{
+  "tool_name": "check_if_is_raining",
+  "description": "Check if it is raining in Tokyo",
+  "gap_id": "gap-1771816409712",
+  "source_directive": "Task: Check if it is raining in Tokyo",
+  "source_urls": [],
+  "risk_profile": "caution",
+  "detected_capabilities": [
+    "net_outbound"
+  ],
+  "test_results": {
+    "passed": true,
+    "output": "{\"success\": true, \"message\": \"Weather data fetched\", \"data\": {\"is_raining\": false}}\n"
+  },
+  "author_agent": null,
+  "approval_status": "quarantined",
+  "created_at": "2026-02-23T03:13:41.706604Z",
+  "promoted_at": null
+}

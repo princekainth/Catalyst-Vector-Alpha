@@ -2,119 +2,87 @@ import axios from 'axios';
 
 const api = axios.create({
   baseURL: process.env.REACT_APP_API_URL || 'http://localhost:5000/api',
-  timeout: 10000,
-  headers: {
-    'Content-Type': 'application/json',
-  },
+  timeout: 15000,
+  headers: { 'Content-Type': 'application/json' },
 });
 
-// Add request interceptor for authentication
 api.interceptors.request.use(
   (config) => {
     const token = localStorage.getItem('cva_token');
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
-    }
+    if (token) config.headers.Authorization = `Bearer ${token}`;
     return config;
   },
-  (error) => {
-    return Promise.reject(error);
-  }
+  (error) => Promise.reject(error)
 );
 
-// Add response interceptor for error handling
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response) {
-      // Handle specific error statuses
-      if (error.response.status === 401) {
-        // Handle unauthorized access
-        window.location.href = '/login';
-      }
-    }
+    if (error.response?.status === 401) window.location.href = '/login';
     return Promise.reject(error);
   }
 );
 
-export const getSystemHealth = async () => {
-  try {
-    const response = await api.get('/health/detailed');
-    return response.data;
-  } catch (error) {
-    console.error('Error fetching system health:', error);
-    throw error;
-  }
-};
+// ─── Health & System ───────────────────────────────
+export const getSystemHealth = () => api.get('/health/detailed').then(r => r.data);
+export const getMetrics = () => api.get('/metrics/stats').then(r => r.data);
+export const getMetricsTrends = () => api.get('/metrics/trends').then(r => r.data);
+export const getSystemMetrics = () => api.get('/system_metrics').then(r => r.data);
+export const getDashboardSummary = () => api.get('/dashboard_summary').then(r => r.data);
+export const getDiagnostics = () => api.get('/diagnostics').then(r => r.data);
+export const getToolBreakers = () => api.get('/tool_breakers').then(r => r.data);
+export const pauseSystem = () => api.post('/pause').then(r => r.data);
+export const unpauseSystem = () => api.post('/unpause').then(r => r.data);
+export const runSelfTest = () => api.post('/self_test').then(r => r.data);
 
-export const getAgentsStatus = async () => {
-  try {
-    const response = await api.get('/agents');
-    return response.data;
-  } catch (error) {
-    console.error('Error fetching agents status:', error);
-    throw error;
-  }
-};
+// ─── Agents ────────────────────────────────────────
+export const getAgentsStatus = () => api.get('/agents').then(r => r.data);
+export const getAgent = (name) => api.get(`/agents/${name}`).then(r => r.data);
+export const restartAgent = (name) => api.post(`/agents/${name}/restart`).then(r => r.data);
+export const getFactoryStatus = () => api.get('/agents/factory').then(r => r.data);
+export const spawnAgent = (purpose, context = {}, ttl_hours = 24) =>
+  api.post('/agents/spawn', { purpose, context, ttl_hours }).then(r => r.data);
+export const killAgent = (agent_id) => api.post(`/agents/kill/${agent_id}`).then(r => r.data);
+export const assignAgentTask = (agent_id, task) =>
+  api.post('/agents/task', { agent_id, task }).then(r => r.data);
+export const getSemanticToolSuggestions = (purpose) =>
+  api.post('/agents/semantic-tools', { purpose }).then(r => r.data);
 
-export const getMetrics = async () => {
-  try {
-    const response = await api.get('/metrics/stats');
-    return response.data;
-  } catch (error) {
-    console.error('Error fetching metrics:', error);
-    throw error;
-  }
-};
+// ─── Tasks ─────────────────────────────────────────
+export const getTaskHistory = () => api.get('/task_history').then(r => r.data);
+export const getTaskStatus = (task_id) => api.get(`/catalyst/task_status/${task_id}`).then(r => r.data);
+export const executeCommand = (command) => api.post('/command', { command }).then(r => r.data);
+export const getTasks = () => api.get('/tasks').then(r => r.data);
+export const getAuditLogs = () => api.get('/audit/logs').then(r => r.data);
 
-export const getTaskHistory = async () => {
-  try {
-    const response = await api.get('/task_history');
-    return response.data;
-  } catch (error) {
-    console.error('Error fetching task history:', error);
-    throw error;
-  }
-};
+// ─── Evolution ─────────────────────────────────────
+export const getEvolutionStatus = () => api.get('/evolution/status').then(r => r.data);
+export const approveEvolution = (tool_name, notes = '') =>
+  api.post('/evolution/approve', { tool_name, notes }).then(r => r.data);
+export const reportCapabilityGap = (gap_description, failed_task) =>
+  api.post('/evolution/report-gap', { gap_description, failed_task }).then(r => r.data);
 
-export const executeCommand = async (command) => {
-  try {
-    const response = await api.post('/command', { command });
-    return response.data;
-  } catch (error) {
-    console.error('Error executing command:', error);
-    throw error;
-  }
-};
+// ─── Tools ─────────────────────────────────────────
+export const executeTool = (tool_name, tool_args = {}, agent_id = 'dashboard') =>
+  api.post('/tools/execute', { tool_name, tool_args, agent_id }).then(r => r.data);
 
-export const spawnAgent = async (purpose, context = {}) => {
-  try {
-    const response = await api.post('/agents/spawn', { purpose, context });
-    return response.data;
-  } catch (error) {
-    console.error('Error spawning agent:', error);
-    throw error;
-  }
-};
+// ─── Plans & Approvals ─────────────────────────────
+export const getPendingPlans = () => api.get('/catalyst/plans').then(r => r.data);
+export const approvePlan = (planData) => api.post('/approve', planData).then(r => r.data);
+export const getPending = () => api.get('/pending').then(r => r.data);
 
-export const getPendingPlans = async () => {
-  try {
-    const response = await api.get('/catalyst/plans');
-    return response.data;
-  } catch (error) {
-    console.error('Error fetching pending plans:', error);
-    throw error;
-  }
-};
+// ─── Organism / Prometheus ─────────────────────────
+export const getOrganismStatus = () => api.get('/organism/status').then(r => r.data);
+export const promQuery = (query, time) =>
+  api.get('/prom/query', { params: { query, time } }).then(r => r.data);
 
-export const approvePlan = async (planData) => {
-  try {
-    const response = await api.post('/approve', planData);
-    return response.data;
-  } catch (error) {
-    console.error('Error approving plan:', error);
-    throw error;
-  }
-};
+// ─── Incidents ─────────────────────────────────────
+export const getIncidents = () => api.get('/incidents').then(r => r.data);
+export const getIncident = (id) => api.get(`/incidents/${id}`).then(r => r.data);
+export const resolveIncident = (id, reason = 'manual') => 
+  api.post(`/incidents/${id}/resolve`, { reason }).then(r => r.data);
+
+// ─── Misc ──────────────────────────────────────────
+export const getLatestInsight = () => api.get('/latest_insight').then(r => r.data);
 
 export default api;

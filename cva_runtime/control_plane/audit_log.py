@@ -25,6 +25,9 @@ REDACT_KEYS = {
     "authorization",
     "bearer",
     "credentials",
+    "env_value",
+    "value",
+    "env_val",
 }
 
 
