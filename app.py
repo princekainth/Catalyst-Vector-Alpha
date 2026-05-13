@@ -41,7 +41,7 @@ if APP_ROOT not in sys.path:
     sys.path.insert(0, APP_ROOT)
 
 # --- Third-Party --------------------------------------------------------------
-from flask import Flask, jsonify, render_template, request, send_file, make_response
+from flask import Flask, jsonify, render_template, request, send_file, make_response, send_from_directory
 from flask_cors import CORS
 
 # --- Project Imports (fail fast with message) ---------------------------------
@@ -84,7 +84,48 @@ ui_lock = Lock()
 # Minimal pending plan store (task_id -> plan)
 # Expected keys: task_id, status, action, namespace, deployment, replicas, ts, approval_token
 plan_store: Dict[str, Dict[str, Any]] = {}
-plan_lock = Lock()
+plan_lock = threading.Lock()
+
+PLAN_PERSISTENCE_PATH = "./.cva/plans/pending_plans.jsonl"
+
+def persist_plan(plan: Dict[str, Any]):
+    """Appends a metadata-only snapshot of a plan to disk."""
+    try:
+        os.makedirs(os.path.dirname(PLAN_PERSISTENCE_PATH), exist_ok=True)
+        # Narrow allowlist of safe metadata fields
+        safe_fields = {
+            "task_id", "trace_id", "status", "action", "tool_name",
+            "namespace", "deployment", "workload", "risk", "rationale",
+            "created_at", "updated_at", "ts", "args_hash", "args_redacted"
+        }
+        snapshot = {k: v for k, v in plan.items() if k in safe_fields}
+        
+        with open(PLAN_PERSISTENCE_PATH, "a") as f:
+            f.write(json.dumps(snapshot) + "\n")
+    except Exception as e:
+        logger.error(f"Failed to persist plan: {e}")
+
+def rehydrate_plans():
+    """Loads pending plan metadata from disk on startup."""
+    if not os.path.exists(PLAN_PERSISTENCE_PATH):
+        return
+    try:
+        count = 0
+        with open(PLAN_PERSISTENCE_PATH, "r") as f:
+            for line in f:
+                if not line.strip(): continue
+                plan = json.loads(line)
+                tid = plan.get("task_id") or plan.get("trace_id")
+                if tid:
+                    # Only rehydrate if it was still pending
+                    if plan.get("status") in ["awaiting_approval", "awaiting_approval_rehydrated"]:
+                        plan["status"] = "awaiting_approval_rehydrated"
+                        with plan_lock:
+                            plan_store[tid] = plan
+                        count += 1
+        logger.info(f"Rehydrated {count} pending plans from disk.")
+    except Exception as e:
+        logger.error(f"Failed to rehydrate plans: {e}")
 
 # Protect agent instance access from Flask threads
 agent_instances_lock = Lock()
@@ -279,7 +320,7 @@ def save_pending_scale_plan(plan: Dict[str, Any]) -> Dict[str, Any]:
 
 def latest_pending_scale_plan() -> Optional[Dict[str, Any]]:
     with plan_lock:
-        pending = [p for p in plan_store.values() if p.get("status") == "awaiting_approval"]
+        pending = [p for p in plan_store.values() if p.get("status") in ["awaiting_approval", "awaiting_approval_rehydrated"]]
     if not pending:
         return None
     return max(pending, key=lambda x: x.get("ts", 0.0))
@@ -350,7 +391,11 @@ def save_pending_action(approval_res: Dict[str, Any], original_args: Dict[str, A
     
     with plan_lock:
         plan_store[trace_id] = plan
-    logger.info(f"Registered pending action in store: {tool_name} (Trace: {trace_id})")
+    
+    # Phase 7D: Persist metadata to disk
+    persist_plan(plan)
+    
+    logger.info(f"Registered and persisted pending action: {tool_name} (Trace: {trace_id})")
 
 # Register callback with registry moved to __main__
 
@@ -601,30 +646,22 @@ def api_dashboard_summary():
 
 @app.route('/')
 def index():
-    response = make_response(render_template('index.html'))
-    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
-    response.headers['Pragma'] = 'no-cache'
-    response.headers['Expires'] = '0'
-    return response
+    """Serves the main React dashboard from build directory."""
+    return send_from_directory('dashboard/build', 'index.html')
 
-# Dashboard route - serves the React app
 @app.route('/dashboard')
 def dashboard():
-    response = make_response(render_template('index.html'))
-    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
-    response.headers['Pragma'] = 'no-cache'
-    response.headers['Expires'] = '0'
-    return response
+    """Serves the main React dashboard from build directory."""
+    return send_from_directory('dashboard/build', 'index.html')
 
-# Dashboard diagnostics page
+@app.route('/static/<path:path>')
+def serve_static(path):
+    """Serves static assets for the React dashboard."""
+    return send_from_directory('dashboard/build/static', path)
+
 @app.route('/dashboard-diagnostics')
 def dashboard_diagnostics():
     return send_file('test_dashboard.html')
-
-# Simple dashboard test page
-@app.route('/simple-dashboard')
-def simple_dashboard():
-    return send_file('dashboard/simple/index.html')
 
 # --- Routes: Commands & Tasks -------------------------------------------------
 @app.route('/api/command', methods=['POST'])
@@ -1062,7 +1099,7 @@ def list_pending_plans():
                 "task_id", "status", "action", "namespace", "deployment", "replicas", "ts", "approval_token", "rationale"
             }}
             for p in plan_store.values()
-            if p.get("status") == "awaiting_approval"
+            if p.get("status") in ["awaiting_approval", "awaiting_approval_rehydrated"]
         ]
     return jsonify({"status": "ok", "data": items, "meta": {"count": len(items), "ts": time.time()}}), 200
 
@@ -1120,8 +1157,18 @@ def api_post_approve():
     with plan_lock:
         plan = plan_store.get(task_id)
     
-    if not plan or plan.get("status") != "awaiting_approval":
+    if not plan:
         return jsonify({"ok": False, "error": f"No pending action found for ID {task_id}"}), 404
+
+    # Phase 7D: Guard against execution of rehydrated plans missing raw args
+    if plan.get("status") == "awaiting_approval_rehydrated" and "original_args" not in plan:
+        return jsonify({
+            "ok": False, 
+            "error": "Plan metadata restored, but execution arguments must be regenerated. Please re-trigger the remediation from the incident feed."
+        }), 412 # Precondition Failed
+
+    if plan.get("status") not in ["awaiting_approval", "awaiting_approval_rehydrated"]:
+        return jsonify({"ok": False, "error": f"Plan {task_id} is not in a states that can be approved (Current: {plan.get('status')})"}), 400
 
     # Issue a real cryptographic token bound to this trace
     from cva_runtime.control_plane.approvals import issue_approval_token
@@ -1157,16 +1204,40 @@ def api_post_approve():
 
 @app.get('/api/audit/logs')
 def api_get_audit_logs():
-    """Returns the last 50 redacted audit records."""
+    """
+    Returns audit records with optional filtering.
+    Params: trace_id, tool, exclude_tools (comma-separated)
+    """
     audit_path = os.getenv("CVA_AUDIT_LOG_PATH", "./.cva/audit/actions.jsonl")
     if not os.path.exists(audit_path):
         return jsonify({"ok": True, "logs": []})
     
+    trace_id_filter = request.args.get("trace_id")
+    tool_filter = request.args.get("tool")
+    exclude_tools = request.args.get("exclude_tools", "").split(",")
+    exclude_tools = [t.strip() for t in exclude_tools if t.strip()]
+    
     try:
+        logs = []
         with open(audit_path, "r") as f:
-            lines = f.readlines()[-50:]
-            logs = [json.loads(l) for l in lines if l.strip()]
-        return jsonify({"ok": True, "logs": logs})
+            # We still limit to last ~200 lines for performance, then filter
+            lines = f.readlines()[-200:]
+            for line in lines:
+                if not line.strip(): continue
+                log = json.loads(line)
+                
+                # Apply filters
+                if trace_id_filter and log.get("trace_id") != trace_id_filter:
+                    continue
+                if tool_filter and log.get("tool") != tool_filter:
+                    continue
+                if log.get("tool") in exclude_tools:
+                    continue
+                    
+                logs.append(log)
+                
+        # Return last 50 matches
+        return jsonify({"ok": True, "logs": logs[-50:]})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
@@ -1718,6 +1789,9 @@ def generate_health_recommendations(score, resources):
     return recommendations
 
 if __name__ == '__main__':
+    # Phase 7D: Rehydrate plans from disk
+    rehydrate_plans()
+    
     # Register callback with registry
     try:
         tool_registry.pending_callback = save_pending_action

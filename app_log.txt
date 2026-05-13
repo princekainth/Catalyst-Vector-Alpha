@@ -1,11 +1,11 @@
 Prometheus init failed (PROMETHEUS_URL not set) — using Null metrics client.
 ✅ Logging enabled: Console + File (logs/catalyst.log)
-[17:25:06] [INFO] Registered save_pending_action as tool_registry.pending_callback
-[17:25:06] [INFO] [app.py] GmailAgent is DISABLED (Set CVA_ENABLE_GMAIL_AGENT=1 to enable).
-[17:25:06] [INFO] Initializing Catalyst Vector Alpha components...
+[17:41:53] [INFO] Registered save_pending_action as tool_registry.pending_callback
+[17:41:53] [INFO] [app.py] GmailAgent is DISABLED (Set CVA_ENABLE_GMAIL_AGENT=1 to enable).
+[17:41:53] [INFO] Initializing Catalyst Vector Alpha components...
 INFO:waitress:Serving on http://0.0.0.0:5000
 INFO:httpx:HTTP Request: GET http://localhost:11434/api/tags "HTTP/1.1 200 OK"
-2026-05-13 17:25:06,405 [INFO] OllamaLLMIntegration: Connected to Ollama at http://localhost:11434 (chat=mistral-nemo, embed=mxbai-embed-large)
+2026-05-13 17:41:53,217 [INFO] OllamaLLMIntegration: Connected to Ollama at http://localhost:11434 (chat=mistral-nemo, embed=mxbai-embed-large)
 INFO:OllamaLLMIntegration:Connected to Ollama at http://localhost:11434 (chat=mistral-nemo, embed=mxbai-embed-large)
 
 ==============================================================
@@ -14,145 +14,202 @@ Dashboard available at: http://127.0.0.1:5000/
 Debug tasks at:        http://127.0.0.1:5000/api/debug/tasks
 ==============================================================
 
-[17:25:06] [INFO] MemeticKernel for System_Kernel initialized 'memories' deque (maxlen=100). Initial count: 0
+[17:41:53] [INFO] MemeticKernel for System_Kernel initialized 'memories' deque (maxlen=100). Initial count: 0
 INFO:chromadb.telemetry.product.posthog:Anonymized telemetry enabled. See                     https://docs.trychroma.com/telemetry for more information.
-[17:25:06] [INFO] Connected to ChromaDB for System_Kernel. Collection: 'agent-system-kernel-memories'.
+[17:41:53] [INFO] Connected to ChromaDB for System_Kernel. Collection: 'agent-system-kernel-memories'.
 [World Model] Initialized with default state.
-[17:25:06] [INFO] Loaded ISL schema from isl_schema.yaml
-[17:25:06] [INFO] Loading Ollama embedding model for semantic tool matching...
-[17:25:06] [INFO] Loaded 76 tool embeddings from cache
-[17:25:06] [INFO] Semantic tool matching ready (76 tools embedded)
-[17:25:06] [INFO] AgentFactory initialized
-[17:25:06] [INFO] Guardian Agent initialized
-[17:25:06] [INFO] [SwarmHealthMonitor] initialized. JSONL=persistence_data/logs/swarm_activity.jsonl
-[17:25:06] [INFO] [K8sStudent] Disabled - agents will focus on diverse missions
-[17:25:06] [INFO] [Curiosity] Gate closed: event_gate_active
-[17:25:06] [INFO] [Curiosity] 🧠 Started - exploring every 300s
-[17:25:06] [INFO] [Curiosity] Started idle-time learning loop
-[17:25:06] [WARNING] [SelfHealing] failed to start: 'CatalystVectorAlpha' object has no attribute 'evolution_agent'
-[17:25:06] [INFO] [System] Resource Usage: CPU 0.0%, Memory 49.3%
-[17:25:06] [INFO] {"timestamp": "2026-05-13T21:25:06Z", "event_type": "SYSTEM_INITIALIZATION", "source": "CatalystVectorAlpha", "description": "Catalyst Vector Alpha system is starting its core initialization.", "details": {"persistence_dir": "persistence_data", "isl_schema": "isl_schema.yaml", "cpu_usage": 0.0, "memory_usage": 49.3}}
-[17:25:06] [INFO] Successfully loaded ISL Schema: isl_schema.yaml
-[17:25:06] [INFO] [IP-Integration] The Eidos Protocol System is initiating, demonstrating the Gemini™ wordmark in its functionality.
-[17:25:06] [INFO] 🚑 [REVIVAL] Initiating swarm-wide metabolic stabilization...
-[17:25:06] [INFO] ✨ [REVIVAL] Successfully stabilized 0 agents.
-[17:25:06] [INFO] [System] Resource Usage: CPU 0.0%, Memory 49.3%
-[17:25:06] [INFO] {"timestamp": "2026-05-13T21:25:06Z", "event_type": "SYSTEM_STABILIZATION", "source": "Orchestrator", "description": "Automated metabolic stabilization performed. 0 agents revived.", "details": {"cpu_usage": 0.0, "memory_usage": 49.3}}
-[17:25:06] [INFO] Catalyst Vector Alpha system is starting its cognitive loop...
+[17:41:53] [INFO] Loaded ISL schema from isl_schema.yaml
+[17:41:53] [INFO] Loading Ollama embedding model for semantic tool matching...
+[17:41:53] [INFO] Loaded 76 tool embeddings from cache
+[17:41:53] [INFO] Semantic tool matching ready (76 tools embedded)
+[17:41:53] [INFO] AgentFactory initialized
+[17:41:53] [INFO] Guardian Agent initialized
+[17:41:53] [INFO] [SwarmHealthMonitor] initialized. JSONL=persistence_data/logs/swarm_activity.jsonl
+[17:41:53] [INFO] [K8sStudent] Disabled - agents will focus on diverse missions
+[17:41:53] [INFO] [Curiosity] Gate closed: event_gate_active
+[17:41:53] [INFO] [Curiosity] 🧠 Started - exploring every 300s
+[17:41:53] [INFO] [Curiosity] Started idle-time learning loop
+[17:41:53] [WARNING] [SelfHealing] failed to start: 'CatalystVectorAlpha' object has no attribute 'evolution_agent'
+[17:41:53] [INFO] [System] Resource Usage: CPU 0.0%, Memory 50.3%
+[17:41:53] [INFO] {"timestamp": "2026-05-13T21:41:53Z", "event_type": "SYSTEM_INITIALIZATION", "source": "CatalystVectorAlpha", "description": "Catalyst Vector Alpha system is starting its core initialization.", "details": {"persistence_dir": "persistence_data", "isl_schema": "isl_schema.yaml", "cpu_usage": 0.0, "memory_usage": 50.3}}
+[17:41:53] [INFO] Successfully loaded ISL Schema: isl_schema.yaml
+[17:41:53] [INFO] [IP-Integration] The Eidos Protocol System is initiating, demonstrating the Gemini™ wordmark in its functionality.
+[17:41:53] [INFO] 🚑 [REVIVAL] Initiating swarm-wide metabolic stabilization...
+[17:41:53] [INFO] ✨ [REVIVAL] Successfully stabilized 0 agents.
+[17:41:53] [INFO] [System] Resource Usage: CPU 0.0%, Memory 50.3%
+[17:41:53] [INFO] {"timestamp": "2026-05-13T21:41:53Z", "event_type": "SYSTEM_STABILIZATION", "source": "Orchestrator", "description": "Automated metabolic stabilization performed. 0 agents revived.", "details": {"cpu_usage": 0.0, "memory_usage": 50.3}}
+[17:41:53] [INFO] Catalyst Vector Alpha system is starting its cognitive loop...
 🛡️  Supervisor: Starting supervised cognitive loop
-[17:25:06] [INFO] 🛡️  Supervisor: Starting supervised cognitive loop
+[17:41:53] [INFO] 🛡️  Supervisor: Starting supervised cognitive loop
 ✅ Supervisor: Cognitive loop running normally
-[17:25:06] [INFO] ✅ Supervisor: Cognitive loop running normally
-[17:25:06] [INFO] Catalyst Vector Alpha - Autonomous Swarm Intelligence Starting...
-[17:25:06] [INFO] [System] Resource Usage: CPU 5.8%, Memory 49.3%
-[17:25:06] [INFO] {"timestamp": "2026-05-13T21:25:06Z", "event_type": "SYSTEM_STARTUP", "source": "CatalystVectorAlpha", "description": "System initiated, starting cognitive loop.", "details": {"cpu_usage": 5.8, "memory_usage": 49.3}}
-[17:25:06] [INFO] --- Loading or Creating Swarm State ---
-[17:25:06] [INFO] [System] Resource Usage: CPU 0.0%, Memory 49.3%
-[17:25:06] [INFO] {"timestamp": "2026-05-13T21:25:06Z", "event_type": "SYSTEM_STATE_NEW", "source": "CatalystVectorAlpha", "description": "No state file found. Creating a fresh swarm.", "details": {"cpu_usage": 0.0, "memory_usage": 49.3}}
-[17:25:06] [INFO] Initializing fresh swarm state with default agents...
+[17:41:53] [INFO] ✅ Supervisor: Cognitive loop running normally
+[17:41:53] [INFO] Catalyst Vector Alpha - Autonomous Swarm Intelligence Starting...
+[17:41:53] [INFO] [System] Resource Usage: CPU 6.7%, Memory 50.3%
+[17:41:53] [INFO] {"timestamp": "2026-05-13T21:41:53Z", "event_type": "SYSTEM_STARTUP", "source": "CatalystVectorAlpha", "description": "System initiated, starting cognitive loop.", "details": {"cpu_usage": 6.7, "memory_usage": 50.3}}
+[17:41:53] [INFO] --- Loading or Creating Swarm State ---
+[17:41:53] [INFO] [System] Resource Usage: CPU 25.0%, Memory 50.3%
+[17:41:53] [INFO] {"timestamp": "2026-05-13T21:41:53Z", "event_type": "SYSTEM_STATE_NEW", "source": "CatalystVectorAlpha", "description": "No state file found. Creating a fresh swarm.", "details": {"cpu_usage": 25.0, "memory_usage": 50.3}}
+[17:41:53] [INFO] Initializing fresh swarm state with default agents...
 INFO:httpx:HTTP Request: POST http://localhost:11434/api/chat "HTTP/1.1 200 OK"
-[17:25:07] [INFO] MemeticKernel for ProtoAgent_Planner_instance_1 initialized 'memories' deque (maxlen=100). Initial count: 0
-[17:25:07] [INFO] Connected to ChromaDB for ProtoAgent_Planner_instance_1. Collection: 'agent-protoagent-planner-instance-1-memories'.
-[17:25:07] [INFO] [ProtoAgent_Planner_instance_1] Initializing Shared Memory...
-[17:25:07] [INFO] Planner agent 'ProtoAgent_Planner_instance_1' initialized (needs_bootstrap=False).
+[17:41:54] [INFO] MemeticKernel for ProtoAgent_Planner_instance_1 initialized 'memories' deque (maxlen=100). Initial count: 0
+[17:41:54] [INFO] Connected to ChromaDB for ProtoAgent_Planner_instance_1. Collection: 'agent-protoagent-planner-instance-1-memories'.
+[17:41:54] [INFO] [ProtoAgent_Planner_instance_1] Initializing Shared Memory...
+[17:41:54] [INFO] Planner agent 'ProtoAgent_Planner_instance_1' initialized (needs_bootstrap=False).
 INFO:httpx:HTTP Request: POST http://localhost:11434/api/chat "HTTP/1.1 200 OK"
   [MemeticKernel] ProtoAgent_Planner_instance_1: Stored PlannerInitialization memory.
-[17:25:08] [INFO] MemeticKernel for ProtoAgent_Observer_instance_1 initialized 'memories' deque (maxlen=100). Initial count: 0
-[17:25:08] [INFO] Connected to ChromaDB for ProtoAgent_Observer_instance_1. Collection: 'agent-protoagent-observer-instance-1-memories'.
+[17:41:54] [INFO] MemeticKernel for ProtoAgent_Observer_instance_1 initialized 'memories' deque (maxlen=100). Initial count: 0
+[17:41:54] [INFO] Connected to ChromaDB for ProtoAgent_Observer_instance_1. Collection: 'agent-protoagent-observer-instance-1-memories'.
 INFO:httpx:HTTP Request: POST http://localhost:11434/api/chat "HTTP/1.1 200 OK"
-[17:25:08] [INFO] MemeticKernel for ProtoAgent_Security_instance_1 initialized 'memories' deque (maxlen=100). Initial count: 0
-[17:25:08] [INFO] Connected to ChromaDB for ProtoAgent_Security_instance_1. Collection: 'agent-protoagent-security-instance-1-memories'.
+[17:41:55] [INFO] MemeticKernel for ProtoAgent_Security_instance_1 initialized 'memories' deque (maxlen=100). Initial count: 0
+[17:41:55] [INFO] Connected to ChromaDB for ProtoAgent_Security_instance_1. Collection: 'agent-protoagent-security-instance-1-memories'.
 INFO:httpx:HTTP Request: POST http://localhost:11434/api/chat "HTTP/1.1 200 OK"
-[17:25:08] [INFO] MemeticKernel for ProtoAgent_Worker_instance_1 initialized 'memories' deque (maxlen=100). Initial count: 0
-[17:25:08] [INFO] Connected to ChromaDB for ProtoAgent_Worker_instance_1. Collection: 'agent-protoagent-worker-instance-1-memories'.
+[17:41:55] [INFO] MemeticKernel for ProtoAgent_Worker_instance_1 initialized 'memories' deque (maxlen=100). Initial count: 0
+[17:41:55] [INFO] Connected to ChromaDB for ProtoAgent_Worker_instance_1. Collection: 'agent-protoagent-worker-instance-1-memories'.
 INFO:httpx:HTTP Request: POST http://localhost:11434/api/chat "HTTP/1.1 200 OK"
-[17:25:09] [INFO] MemeticKernel for ProtoAgent_Notifier_instance_1 initialized 'memories' deque (maxlen=100). Initial count: 0
-[17:25:09] [INFO] Connected to ChromaDB for ProtoAgent_Notifier_instance_1. Collection: 'agent-protoagent-notifier-instance-1-memories'.
-[17:25:09] [INFO] ✅ Loaded 5 agents: ['ProtoAgent_Planner_instance_1', 'ProtoAgent_Observer_instance_1', 'ProtoAgent_Security_instance_1', 'ProtoAgent_Worker_instance_1', 'ProtoAgent_Notifier_instance_1']
-[17:25:09] [INFO] [System] Resource Usage: CPU 10.4%, Memory 49.3%
-[17:25:09] [INFO] {"timestamp": "2026-05-13T21:25:09Z", "event_type": "AGENTS_INSTANTIATED", "source": "CatalystVectorAlpha", "description": "Rehydrated live agent instances.", "details": {"agents": ["ProtoAgent_Planner_instance_1", "ProtoAgent_Observer_instance_1", "ProtoAgent_Security_instance_1", "ProtoAgent_Worker_instance_1", "ProtoAgent_Notifier_instance_1"], "cpu_usage": 10.4, "memory_usage": 49.3}}
-[17:25:09] [INFO] --- Saving current system state ---
-[17:25:09] [INFO] [System] Resource Usage: CPU 0.0%, Memory 49.3%
-[17:25:09] [INFO] {"timestamp": "2026-05-13T21:25:09Z", "event_type": "SYSTEM_SAVE_SUCCESS", "source": "CatalystVectorAlpha", "description": "Overall swarm state saved to database.", "details": {"file": "persistence_data/cva.db", "cpu_usage": 0.0, "memory_usage": 49.3}}
-[17:25:09] [INFO] --- System state saved ---
-[17:25:09] [INFO] [System] Resource Usage: CPU 0.0%, Memory 49.3%
-[17:25:09] [INFO] {"timestamp": "2026-05-13T21:25:09Z", "event_type": "SYSTEM_STATE_CREATED", "source": "CatalystVectorAlpha", "description": "Swarm state initialized with default agents.", "details": {"agents": ["ProtoAgent_Planner_instance_1", "ProtoAgent_Observer_instance_1", "ProtoAgent_Security_instance_1", "ProtoAgent_Worker_instance_1", "ProtoAgent_Notifier_instance_1"], "cpu_usage": 0.0, "memory_usage": 49.3}}
-[17:25:09] [INFO] Swarm state initialized with 5 agents
-[17:25:09] [INFO] --- State Initialized. Swarm contains 5 agents. ---
-[17:25:09] [INFO] --- Entering Continuous Cognitive Loop ---
-[17:25:09] [INFO] Processing Agent: ProtoAgent_Planner_instance_1
-[17:25:09] [INFO] [EventGate] ✅ System healthy - IDLE MODE
-[17:25:09] [INFO] [Planner] 😴 System healthy - skipping idle synthesis (cycle #1)
+[17:41:55] [INFO] MemeticKernel for ProtoAgent_Notifier_instance_1 initialized 'memories' deque (maxlen=100). Initial count: 0
+[17:41:55] [INFO] Connected to ChromaDB for ProtoAgent_Notifier_instance_1. Collection: 'agent-protoagent-notifier-instance-1-memories'.
+[17:41:55] [INFO] ✅ Loaded 5 agents: ['ProtoAgent_Planner_instance_1', 'ProtoAgent_Observer_instance_1', 'ProtoAgent_Security_instance_1', 'ProtoAgent_Worker_instance_1', 'ProtoAgent_Notifier_instance_1']
+[17:41:55] [INFO] [System] Resource Usage: CPU 11.1%, Memory 50.4%
+[17:41:55] [INFO] {"timestamp": "2026-05-13T21:41:55Z", "event_type": "AGENTS_INSTANTIATED", "source": "CatalystVectorAlpha", "description": "Rehydrated live agent instances.", "details": {"agents": ["ProtoAgent_Planner_instance_1", "ProtoAgent_Observer_instance_1", "ProtoAgent_Security_instance_1", "ProtoAgent_Worker_instance_1", "ProtoAgent_Notifier_instance_1"], "cpu_usage": 11.1, "memory_usage": 50.4}}
+[17:41:55] [INFO] --- Saving current system state ---
+[17:41:55] [INFO] [System] Resource Usage: CPU 66.7%, Memory 50.4%
+[17:41:55] [INFO] {"timestamp": "2026-05-13T21:41:55Z", "event_type": "SYSTEM_SAVE_SUCCESS", "source": "CatalystVectorAlpha", "description": "Overall swarm state saved to database.", "details": {"file": "persistence_data/cva.db", "cpu_usage": 66.7, "memory_usage": 50.4}}
+[17:41:55] [INFO] --- System state saved ---
+[17:41:55] [INFO] [System] Resource Usage: CPU 0.0%, Memory 50.4%
+[17:41:55] [INFO] {"timestamp": "2026-05-13T21:41:55Z", "event_type": "SYSTEM_STATE_CREATED", "source": "CatalystVectorAlpha", "description": "Swarm state initialized with default agents.", "details": {"agents": ["ProtoAgent_Planner_instance_1", "ProtoAgent_Observer_instance_1", "ProtoAgent_Security_instance_1", "ProtoAgent_Worker_instance_1", "ProtoAgent_Notifier_instance_1"], "cpu_usage": 0.0, "memory_usage": 50.4}}
+[17:41:55] [INFO] Swarm state initialized with 5 agents
+[17:41:55] [INFO] --- State Initialized. Swarm contains 5 agents. ---
+[17:41:55] [INFO] --- Entering Continuous Cognitive Loop ---
+[17:41:55] [INFO] Processing Agent: ProtoAgent_Planner_instance_1
+[17:41:55] [INFO] [EventGate] ✅ System healthy - IDLE MODE
+[17:41:55] [INFO] [Planner] 😴 System healthy - skipping idle synthesis (cycle #1)
   [MemeticKernel] ProtoAgent_Planner_instance_1: Stored TaskOutcome memory.
-[17:25:09] [INFO] {"timestamp": "2026-05-13T21:25:09Z", "event_type": "TASK_PERFORMED", "source": "ProtoAgent_Planner_instance_1", "description": "Task 'No specific intent' idle in 0.00s.", "details": {"task_id": "task_1778707509_70096", "outcome": "idle", "execution_time": 0.0012977123260498047, "task_type": "GenericTask"}}
+[17:41:55] [INFO] {"timestamp": "2026-05-13T21:41:55Z", "event_type": "TASK_PERFORMED", "source": "ProtoAgent_Planner_instance_1", "description": "Task 'No specific intent' idle in 0.00s.", "details": {"task_id": "task_1778708515_05300", "outcome": "idle", "execution_time": 0.0013740062713623047, "task_type": "GenericTask"}}
 INFO:httpx:HTTP Request: POST http://localhost:11434/api/embeddings "HTTP/1.1 200 OK"
-[17:25:09] [INFO] [ProtoAgent_Planner_instance_1] ⚡ Gained 0.5 Energy. Current: 100.0
-[17:25:09] [INFO] Processing Agent: ProtoAgent_Observer_instance_1
+[17:41:55] [INFO] [ProtoAgent_Planner_instance_1] ⚡ Gained 0.5 Energy. Current: 100.0
+[17:41:55] [INFO] Processing Agent: ProtoAgent_Observer_instance_1
   [MemeticKernel] ProtoAgent_Observer_instance_1: Stored TaskOutcome memory.
-[17:25:09] [INFO] {"timestamp": "2026-05-13T21:25:09Z", "event_type": "TASK_PERFORMED", "source": "ProtoAgent_Observer_instance_1", "description": "Task 'No specific intent' idle in 0.00s.", "details": {"task_id": "task_1778707509_42446", "outcome": "idle", "execution_time": 3.504753112792969e-05, "task_type": "GenericTask"}}
+[17:41:55] [INFO] {"timestamp": "2026-05-13T21:41:55Z", "event_type": "TASK_PERFORMED", "source": "ProtoAgent_Observer_instance_1", "description": "Task 'No specific intent' idle in 0.00s.", "details": {"task_id": "task_1778708515_51246", "outcome": "idle", "execution_time": 3.790855407714844e-05, "task_type": "GenericTask"}}
 INFO:httpx:HTTP Request: POST http://localhost:11434/api/embeddings "HTTP/1.1 200 OK"
-[17:25:09] [INFO] [ProtoAgent_Observer_instance_1] ⚡ Gained 0.5 Energy. Current: 100.0
-[17:25:09] [INFO] Processing Agent: ProtoAgent_Security_instance_1
+[17:41:55] [INFO] [ProtoAgent_Observer_instance_1] ⚡ Gained 0.5 Energy. Current: 100.0
+[17:41:55] [INFO] Processing Agent: ProtoAgent_Security_instance_1
   [MemeticKernel] ProtoAgent_Security_instance_1: Stored TaskOutcome memory.
-[17:25:09] [INFO] {"timestamp": "2026-05-13T21:25:09Z", "event_type": "TASK_PERFORMED", "source": "ProtoAgent_Security_instance_1", "description": "Task 'No specific intent' idle in 0.00s.", "details": {"task_id": "task_1778707509_93303", "outcome": "idle", "execution_time": 2.956390380859375e-05, "task_type": "GenericTask"}}
+[17:41:55] [INFO] {"timestamp": "2026-05-13T21:41:55Z", "event_type": "TASK_PERFORMED", "source": "ProtoAgent_Security_instance_1", "description": "Task 'No specific intent' idle in 0.00s.", "details": {"task_id": "task_1778708515_30492", "outcome": "idle", "execution_time": 3.123283386230469e-05, "task_type": "GenericTask"}}
 INFO:httpx:HTTP Request: POST http://localhost:11434/api/embeddings "HTTP/1.1 200 OK"
-[17:25:09] [INFO] [ProtoAgent_Security_instance_1] ⚡ Gained 0.5 Energy. Current: 100.0
-[17:25:09] [INFO] Processing Agent: ProtoAgent_Worker_instance_1
+[17:41:55] [INFO] [ProtoAgent_Security_instance_1] ⚡ Gained 0.5 Energy. Current: 100.0
+[17:41:55] [INFO] Processing Agent: ProtoAgent_Worker_instance_1
   [MemeticKernel] ProtoAgent_Worker_instance_1: Stored TaskOutcome memory.
-[17:25:09] [INFO] {"timestamp": "2026-05-13T21:25:09Z", "event_type": "TASK_PERFORMED", "source": "ProtoAgent_Worker_instance_1", "description": "Task 'No specific intent' idle in 0.00s.", "details": {"task_id": "task_1778707509_75777", "outcome": "idle", "execution_time": 3.147125244140625e-05, "task_type": "GenericTask"}}
+[17:41:55] [INFO] {"timestamp": "2026-05-13T21:41:55Z", "event_type": "TASK_PERFORMED", "source": "ProtoAgent_Worker_instance_1", "description": "Task 'No specific intent' idle in 0.00s.", "details": {"task_id": "task_1778708515_13183", "outcome": "idle", "execution_time": 3.123283386230469e-05, "task_type": "GenericTask"}}
 INFO:httpx:HTTP Request: POST http://localhost:11434/api/embeddings "HTTP/1.1 200 OK"
-[17:25:09] [INFO] [ProtoAgent_Worker_instance_1] ⚡ Gained 0.5 Energy. Current: 100.0
-[17:25:09] [INFO] Processing Agent: ProtoAgent_Notifier_instance_1
-[17:25:09] [INFO] [ProtoAgent_Notifier_instance_1] ⚡ Gained 12.0 Energy. Current: 100.0
-[17:25:19] [INFO] Processing Agent: ProtoAgent_Planner_instance_1
-[17:25:19] [INFO] [EventGate] ✅ System healthy - IDLE MODE
-[17:25:19] [INFO] [Planner] 😴 System healthy - skipping idle synthesis (cycle #2)
+[17:41:55] [INFO] [ProtoAgent_Worker_instance_1] ⚡ Gained 0.5 Energy. Current: 100.0
+[17:41:55] [INFO] Processing Agent: ProtoAgent_Notifier_instance_1
+[17:41:55] [INFO] [ProtoAgent_Notifier_instance_1] ⚡ Gained 12.0 Energy. Current: 100.0
+[17:42:04] [INFO] [API] Executing tool 'k8s_rollout_restart' with args {'deployment': 'crashloop-demo', 'namespace': 'cva-demo'}
+[17:42:04] [INFO] Registered and persisted pending action: k8s_rollout_restart (Trace: trc_7f2ed213197440b291301962aec83a56)
+Prometheus init failed (PROMETHEUS_URL not set) — using Null metrics client.
+✅ Logging enabled: Console + File (logs/catalyst.log)
+[17:42:10] [INFO] Rehydrated 1 pending plans from disk.
+[17:42:10] [INFO] Registered save_pending_action as tool_registry.pending_callback
+[17:42:10] [INFO] [app.py] GmailAgent is DISABLED (Set CVA_ENABLE_GMAIL_AGENT=1 to enable).
+[17:42:10] [INFO] Initializing Catalyst Vector Alpha components...
+INFO:waitress:Serving on http://0.0.0.0:5000
+INFO:httpx:HTTP Request: GET http://localhost:11434/api/tags "HTTP/1.1 200 OK"
+2026-05-13 17:42:10,132 [INFO] OllamaLLMIntegration: Connected to Ollama at http://localhost:11434 (chat=mistral-nemo, embed=mxbai-embed-large)
+INFO:OllamaLLMIntegration:Connected to Ollama at http://localhost:11434 (chat=mistral-nemo, embed=mxbai-embed-large)
+
+==============================================================
+Starting Flask web server for Catalyst Vector Alpha Dashboard...
+Dashboard available at: http://127.0.0.1:5000/
+Debug tasks at:        http://127.0.0.1:5000/api/debug/tasks
+==============================================================
+
+[17:42:10] [INFO] MemeticKernel for System_Kernel initialized 'memories' deque (maxlen=100). Initial count: 0
+INFO:chromadb.telemetry.product.posthog:Anonymized telemetry enabled. See                     https://docs.trychroma.com/telemetry for more information.
+[17:42:10] [INFO] Connected to ChromaDB for System_Kernel. Collection: 'agent-system-kernel-memories'.
+[World Model] Initialized with default state.
+[17:42:10] [INFO] Loaded ISL schema from isl_schema.yaml
+[17:42:10] [INFO] Loading Ollama embedding model for semantic tool matching...
+[17:42:10] [INFO] Loaded 76 tool embeddings from cache
+[17:42:10] [INFO] Semantic tool matching ready (76 tools embedded)
+[17:42:10] [INFO] AgentFactory initialized
+[17:42:10] [INFO] Guardian Agent initialized
+[17:42:10] [INFO] [SwarmHealthMonitor] initialized. JSONL=persistence_data/logs/swarm_activity.jsonl
+[17:42:10] [INFO] [K8sStudent] Disabled - agents will focus on diverse missions
+[17:42:10] [INFO] [Curiosity] Gate closed: event_gate_active
+[17:42:10] [INFO] [Curiosity] 🧠 Started - exploring every 300s
+[17:42:10] [INFO] [Curiosity] Started idle-time learning loop
+[17:42:10] [WARNING] [SelfHealing] failed to start: 'CatalystVectorAlpha' object has no attribute 'evolution_agent'
+[17:42:10] [INFO] [System] Resource Usage: CPU 0.0%, Memory 50.4%
+[17:42:10] [INFO] {"timestamp": "2026-05-13T21:42:10Z", "event_type": "SYSTEM_INITIALIZATION", "source": "CatalystVectorAlpha", "description": "Catalyst Vector Alpha system is starting its core initialization.", "details": {"persistence_dir": "persistence_data", "isl_schema": "isl_schema.yaml", "cpu_usage": 0.0, "memory_usage": 50.4}}
+[17:42:10] [INFO] Successfully loaded ISL Schema: isl_schema.yaml
+[17:42:10] [INFO] [IP-Integration] The Eidos Protocol System is initiating, demonstrating the Gemini™ wordmark in its functionality.
+[17:42:10] [INFO] 🚑 [REVIVAL] Initiating swarm-wide metabolic stabilization...
+[17:42:10] [INFO] ✨ [REVIVAL] Successfully stabilized 0 agents.
+[17:42:10] [INFO] [System] Resource Usage: CPU 66.7%, Memory 50.4%
+[17:42:10] [INFO] {"timestamp": "2026-05-13T21:42:10Z", "event_type": "SYSTEM_STABILIZATION", "source": "Orchestrator", "description": "Automated metabolic stabilization performed. 0 agents revived.", "details": {"cpu_usage": 66.7, "memory_usage": 50.4}}
+[17:42:10] [INFO] Catalyst Vector Alpha system is starting its cognitive loop...
+🛡️  Supervisor: Starting supervised cognitive loop
+[17:42:10] [INFO] 🛡️  Supervisor: Starting supervised cognitive loop
+✅ Supervisor: Cognitive loop running normally
+[17:42:10] [INFO] ✅ Supervisor: Cognitive loop running normally
+[17:42:10] [INFO] Catalyst Vector Alpha - Autonomous Swarm Intelligence Starting...
+[17:42:10] [INFO] [System] Resource Usage: CPU 9.6%, Memory 50.4%
+[17:42:10] [INFO] {"timestamp": "2026-05-13T21:42:10Z", "event_type": "SYSTEM_STARTUP", "source": "CatalystVectorAlpha", "description": "System initiated, starting cognitive loop.", "details": {"cpu_usage": 9.6, "memory_usage": 50.4}}
+[17:42:10] [INFO] --- Loading or Creating Swarm State ---
+[17:42:10] [INFO] [System] Resource Usage: CPU 0.0%, Memory 50.4%
+[17:42:10] [INFO] {"timestamp": "2026-05-13T21:42:10Z", "event_type": "SYSTEM_STATE_NEW", "source": "CatalystVectorAlpha", "description": "No state file found. Creating a fresh swarm.", "details": {"cpu_usage": 0.0, "memory_usage": 50.4}}
+[17:42:10] [INFO] Initializing fresh swarm state with default agents...
+INFO:httpx:HTTP Request: POST http://localhost:11434/api/chat "HTTP/1.1 200 OK"
+[17:42:11] [INFO] MemeticKernel for ProtoAgent_Planner_instance_1 initialized 'memories' deque (maxlen=100). Initial count: 0
+[17:42:11] [INFO] Connected to ChromaDB for ProtoAgent_Planner_instance_1. Collection: 'agent-protoagent-planner-instance-1-memories'.
+[17:42:11] [INFO] [ProtoAgent_Planner_instance_1] Initializing Shared Memory...
+[17:42:11] [INFO] Planner agent 'ProtoAgent_Planner_instance_1' initialized (needs_bootstrap=False).
+INFO:httpx:HTTP Request: POST http://localhost:11434/api/chat "HTTP/1.1 200 OK"
+  [MemeticKernel] ProtoAgent_Planner_instance_1: Stored PlannerInitialization memory.
+[17:42:13] [INFO] MemeticKernel for ProtoAgent_Observer_instance_1 initialized 'memories' deque (maxlen=100). Initial count: 0
+[17:42:13] [INFO] Connected to ChromaDB for ProtoAgent_Observer_instance_1. Collection: 'agent-protoagent-observer-instance-1-memories'.
+INFO:httpx:HTTP Request: POST http://localhost:11434/api/chat "HTTP/1.1 200 OK"
+[17:42:14] [INFO] MemeticKernel for ProtoAgent_Security_instance_1 initialized 'memories' deque (maxlen=100). Initial count: 0
+[17:42:14] [INFO] Connected to ChromaDB for ProtoAgent_Security_instance_1. Collection: 'agent-protoagent-security-instance-1-memories'.
+INFO:httpx:HTTP Request: POST http://localhost:11434/api/chat "HTTP/1.1 200 OK"
+[17:42:14] [INFO] MemeticKernel for ProtoAgent_Worker_instance_1 initialized 'memories' deque (maxlen=100). Initial count: 0
+[17:42:14] [INFO] Connected to ChromaDB for ProtoAgent_Worker_instance_1. Collection: 'agent-protoagent-worker-instance-1-memories'.
+INFO:httpx:HTTP Request: POST http://localhost:11434/api/chat "HTTP/1.1 200 OK"
+[17:42:14] [INFO] MemeticKernel for ProtoAgent_Notifier_instance_1 initialized 'memories' deque (maxlen=100). Initial count: 0
+[17:42:14] [INFO] Connected to ChromaDB for ProtoAgent_Notifier_instance_1. Collection: 'agent-protoagent-notifier-instance-1-memories'.
+[17:42:14] [INFO] ✅ Loaded 5 agents: ['ProtoAgent_Planner_instance_1', 'ProtoAgent_Observer_instance_1', 'ProtoAgent_Security_instance_1', 'ProtoAgent_Worker_instance_1', 'ProtoAgent_Notifier_instance_1']
+[17:42:14] [INFO] [System] Resource Usage: CPU 11.6%, Memory 50.9%
+[17:42:14] [INFO] {"timestamp": "2026-05-13T21:42:14Z", "event_type": "AGENTS_INSTANTIATED", "source": "CatalystVectorAlpha", "description": "Rehydrated live agent instances.", "details": {"agents": ["ProtoAgent_Planner_instance_1", "ProtoAgent_Observer_instance_1", "ProtoAgent_Security_instance_1", "ProtoAgent_Worker_instance_1", "ProtoAgent_Notifier_instance_1"], "cpu_usage": 11.6, "memory_usage": 50.9}}
+[17:42:14] [INFO] --- Saving current system state ---
+[17:42:14] [INFO] [System] Resource Usage: CPU 16.7%, Memory 50.9%
+[17:42:14] [INFO] {"timestamp": "2026-05-13T21:42:14Z", "event_type": "SYSTEM_SAVE_SUCCESS", "source": "CatalystVectorAlpha", "description": "Overall swarm state saved to database.", "details": {"file": "persistence_data/cva.db", "cpu_usage": 16.7, "memory_usage": 50.9}}
+[17:42:14] [INFO] --- System state saved ---
+[17:42:14] [INFO] [System] Resource Usage: CPU 0.0%, Memory 50.9%
+[17:42:14] [INFO] {"timestamp": "2026-05-13T21:42:14Z", "event_type": "SYSTEM_STATE_CREATED", "source": "CatalystVectorAlpha", "description": "Swarm state initialized with default agents.", "details": {"agents": ["ProtoAgent_Planner_instance_1", "ProtoAgent_Observer_instance_1", "ProtoAgent_Security_instance_1", "ProtoAgent_Worker_instance_1", "ProtoAgent_Notifier_instance_1"], "cpu_usage": 0.0, "memory_usage": 50.9}}
+[17:42:14] [INFO] Swarm state initialized with 5 agents
+[17:42:14] [INFO] --- State Initialized. Swarm contains 5 agents. ---
+[17:42:14] [INFO] --- Entering Continuous Cognitive Loop ---
+[17:42:14] [INFO] Processing Agent: ProtoAgent_Planner_instance_1
+[17:42:14] [INFO] [EventGate] ✅ System healthy - IDLE MODE
+[17:42:14] [INFO] [Planner] 😴 System healthy - skipping idle synthesis (cycle #1)
   [MemeticKernel] ProtoAgent_Planner_instance_1: Stored TaskOutcome memory.
-[17:25:19] [INFO] {"timestamp": "2026-05-13T21:25:19Z", "event_type": "TASK_PERFORMED", "source": "ProtoAgent_Planner_instance_1", "description": "Task 'No specific intent' idle in 0.00s.", "details": {"task_id": "task_1778707519_70096", "outcome": "idle", "execution_time": 0.0015435218811035156, "task_type": "GenericTask"}}
+[17:42:14] [INFO] {"timestamp": "2026-05-13T21:42:14Z", "event_type": "TASK_PERFORMED", "source": "ProtoAgent_Planner_instance_1", "description": "Task 'No specific intent' idle in 0.00s.", "details": {"task_id": "task_1778708534_31376", "outcome": "idle", "execution_time": 0.0013663768768310547, "task_type": "GenericTask"}}
 INFO:httpx:HTTP Request: POST http://localhost:11434/api/embeddings "HTTP/1.1 200 OK"
-[17:25:19] [INFO] [ProtoAgent_Planner_instance_1] ⚡ Gained 0.5 Energy. Current: 100.0
-[17:25:19] [INFO] Processing Agent: ProtoAgent_Observer_instance_1
+[17:42:14] [INFO] [ProtoAgent_Planner_instance_1] ⚡ Gained 0.5 Energy. Current: 100.0
+[17:42:14] [INFO] Processing Agent: ProtoAgent_Observer_instance_1
   [MemeticKernel] ProtoAgent_Observer_instance_1: Stored TaskOutcome memory.
-[17:25:19] [INFO] {"timestamp": "2026-05-13T21:25:19Z", "event_type": "TASK_PERFORMED", "source": "ProtoAgent_Observer_instance_1", "description": "Task 'No specific intent' idle in 0.00s.", "details": {"task_id": "task_1778707519_42446", "outcome": "idle", "execution_time": 3.600120544433594e-05, "task_type": "GenericTask"}}
+[17:42:14] [INFO] {"timestamp": "2026-05-13T21:42:14Z", "event_type": "TASK_PERFORMED", "source": "ProtoAgent_Observer_instance_1", "description": "Task 'No specific intent' idle in 0.00s.", "details": {"task_id": "task_1778708534_39107", "outcome": "idle", "execution_time": 3.910064697265625e-05, "task_type": "GenericTask"}}
 INFO:httpx:HTTP Request: POST http://localhost:11434/api/embeddings "HTTP/1.1 200 OK"
-[17:25:19] [INFO] [ProtoAgent_Observer_instance_1] ⚡ Gained 0.5 Energy. Current: 100.0
-[17:25:19] [INFO] Processing Agent: ProtoAgent_Security_instance_1
+[17:42:14] [INFO] [ProtoAgent_Observer_instance_1] ⚡ Gained 0.5 Energy. Current: 100.0
+[17:42:14] [INFO] Processing Agent: ProtoAgent_Security_instance_1
   [MemeticKernel] ProtoAgent_Security_instance_1: Stored TaskOutcome memory.
-[17:25:19] [INFO] {"timestamp": "2026-05-13T21:25:19Z", "event_type": "TASK_PERFORMED", "source": "ProtoAgent_Security_instance_1", "description": "Task 'No specific intent' idle in 0.00s.", "details": {"task_id": "task_1778707519_93303", "outcome": "idle", "execution_time": 3.0517578125e-05, "task_type": "GenericTask"}}
+[17:42:14] [INFO] {"timestamp": "2026-05-13T21:42:14Z", "event_type": "TASK_PERFORMED", "source": "ProtoAgent_Security_instance_1", "description": "Task 'No specific intent' idle in 0.00s.", "details": {"task_id": "task_1778708534_95862", "outcome": "idle", "execution_time": 3.075599670410156e-05, "task_type": "GenericTask"}}
 INFO:httpx:HTTP Request: POST http://localhost:11434/api/embeddings "HTTP/1.1 200 OK"
-[17:25:19] [INFO] [ProtoAgent_Security_instance_1] ⚡ Gained 0.5 Energy. Current: 100.0
-[17:25:19] [INFO] Processing Agent: ProtoAgent_Worker_instance_1
+[17:42:14] [INFO] [ProtoAgent_Security_instance_1] ⚡ Gained 0.5 Energy. Current: 100.0
+[17:42:14] [INFO] Processing Agent: ProtoAgent_Worker_instance_1
   [MemeticKernel] ProtoAgent_Worker_instance_1: Stored TaskOutcome memory.
-[17:25:19] [INFO] {"timestamp": "2026-05-13T21:25:19Z", "event_type": "TASK_PERFORMED", "source": "ProtoAgent_Worker_instance_1", "description": "Task 'No specific intent' idle in 0.00s.", "details": {"task_id": "task_1778707519_75777", "outcome": "idle", "execution_time": 2.8133392333984375e-05, "task_type": "GenericTask"}}
+[17:42:14] [INFO] {"timestamp": "2026-05-13T21:42:14Z", "event_type": "TASK_PERFORMED", "source": "ProtoAgent_Worker_instance_1", "description": "Task 'No specific intent' idle in 0.00s.", "details": {"task_id": "task_1778708534_91482", "outcome": "idle", "execution_time": 3.0994415283203125e-05, "task_type": "GenericTask"}}
 INFO:httpx:HTTP Request: POST http://localhost:11434/api/embeddings "HTTP/1.1 200 OK"
-[17:25:19] [INFO] [ProtoAgent_Worker_instance_1] ⚡ Gained 0.5 Energy. Current: 100.0
-[17:25:19] [INFO] Processing Agent: ProtoAgent_Notifier_instance_1
-[17:25:19] [INFO] [ProtoAgent_Notifier_instance_1] ⚡ Gained 12.0 Energy. Current: 100.0
-[17:25:29] [INFO] Processing Agent: ProtoAgent_Planner_instance_1
-[17:25:29] [INFO] [EventGate] ✅ System healthy - IDLE MODE
-[17:25:29] [INFO] [Planner] 😴 System healthy - skipping idle synthesis (cycle #3)
-  [MemeticKernel] ProtoAgent_Planner_instance_1: Stored TaskOutcome memory.
-[17:25:29] [INFO] {"timestamp": "2026-05-13T21:25:29Z", "event_type": "TASK_PERFORMED", "source": "ProtoAgent_Planner_instance_1", "description": "Task 'No specific intent' idle in 0.00s.", "details": {"task_id": "task_1778707529_70096", "outcome": "idle", "execution_time": 0.0013439655303955078, "task_type": "GenericTask"}}
-INFO:httpx:HTTP Request: POST http://localhost:11434/api/embeddings "HTTP/1.1 200 OK"
-[17:25:29] [INFO] [ProtoAgent_Planner_instance_1] ⚡ Gained 0.5 Energy. Current: 100.0
-[17:25:29] [INFO] Processing Agent: ProtoAgent_Observer_instance_1
-  [MemeticKernel] ProtoAgent_Observer_instance_1: Stored TaskOutcome memory.
-[17:25:29] [INFO] {"timestamp": "2026-05-13T21:25:29Z", "event_type": "TASK_PERFORMED", "source": "ProtoAgent_Observer_instance_1", "description": "Task 'No specific intent' idle in 0.00s.", "details": {"task_id": "task_1778707529_42446", "outcome": "idle", "execution_time": 2.6702880859375e-05, "task_type": "GenericTask"}}
-INFO:httpx:HTTP Request: POST http://localhost:11434/api/embeddings "HTTP/1.1 200 OK"
-[17:25:29] [INFO] [ProtoAgent_Observer_instance_1] ⚡ Gained 0.5 Energy. Current: 100.0
-[17:25:29] [INFO] Processing Agent: ProtoAgent_Security_instance_1
-  [MemeticKernel] ProtoAgent_Security_instance_1: Stored TaskOutcome memory.
-[17:25:29] [INFO] {"timestamp": "2026-05-13T21:25:29Z", "event_type": "TASK_PERFORMED", "source": "ProtoAgent_Security_instance_1", "description": "Task 'No specific intent' idle in 0.00s.", "details": {"task_id": "task_1778707529_93303", "outcome": "idle", "execution_time": 2.574920654296875e-05, "task_type": "GenericTask"}}
-INFO:httpx:HTTP Request: POST http://localhost:11434/api/embeddings "HTTP/1.1 200 OK"
-[17:25:29] [INFO] [ProtoAgent_Security_instance_1] ⚡ Gained 0.5 Energy. Current: 100.0
-[17:25:29] [INFO] Processing Agent: ProtoAgent_Worker_instance_1
-  [MemeticKernel] ProtoAgent_Worker_instance_1: Stored TaskOutcome memory.
-[17:25:29] [INFO] {"timestamp": "2026-05-13T21:25:29Z", "event_type": "TASK_PERFORMED", "source": "ProtoAgent_Worker_instance_1", "description": "Task 'No specific intent' idle in 0.00s.", "details": {"task_id": "task_1778707529_75777", "outcome": "idle", "execution_time": 2.7894973754882812e-05, "task_type": "GenericTask"}}
-INFO:httpx:HTTP Request: POST http://localhost:11434/api/embeddings "HTTP/1.1 200 OK"
-[17:25:29] [INFO] [ProtoAgent_Worker_instance_1] ⚡ Gained 0.5 Energy. Current: 100.0
-[17:25:29] [INFO] Processing Agent: ProtoAgent_Notifier_instance_1
-[17:25:29] [INFO] [ProtoAgent_Notifier_instance_1] ⚡ Gained 12.0 Energy. Current: 100.0
-[17:25:29] [INFO] --- Saving current system state ---
-[17:25:29] [INFO] [System] Resource Usage: CPU 8.2%, Memory 50.4%
-[17:25:29] [INFO] {"timestamp": "2026-05-13T21:25:29Z", "event_type": "SYSTEM_SAVE_SUCCESS", "source": "CatalystVectorAlpha", "description": "Overall swarm state saved to database.", "details": {"file": "persistence_data/cva.db", "cpu_usage": 8.2, "memory_usage": 50.4}}
-[17:25:29] [INFO] --- System state saved ---
+[17:42:14] [INFO] [ProtoAgent_Worker_instance_1] ⚡ Gained 0.5 Energy. Current: 100.0
+[17:42:14] [INFO] Processing Agent: ProtoAgent_Notifier_instance_1
+[17:42:14] [INFO] [ProtoAgent_Notifier_instance_1] ⚡ Gained 12.0 Energy. Current: 100.0
