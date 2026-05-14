@@ -24,6 +24,8 @@ class Capability(str, Enum):
     APPROVAL_OVERRIDE = "approval_override"
     SYSTEM_READ = "system_read"
     SYSTEM_WRITE = "system_write"
+    DESKTOP_READ = "desktop_read"
+    DESKTOP_WRITE = "desktop_write"
 
 
 class ToolRisk(str, Enum):
@@ -242,6 +244,66 @@ DEFAULT_TOOL_PROFILES: Dict[str, ToolProfile] = {
         name="send_email",
         required_caps=_caps(Capability.NET_OUTBOUND),
         risk=ToolRisk.SAFE,
+    ),
+    "desktop_list_windows": ToolProfile(
+        name="desktop_list_windows",
+        required_caps=_caps(Capability.DESKTOP_READ),
+        risk=ToolRisk.SAFE,
+        resources_touched=("desktop",),
+    ),
+    "desktop_get_window_details": ToolProfile(
+        name="desktop_get_window_details",
+        required_caps=_caps(Capability.DESKTOP_READ),
+        risk=ToolRisk.SAFE,
+        resources_touched=("desktop",),
+    ),
+    "desktop_take_screenshot": ToolProfile(
+        name="desktop_take_screenshot",
+        required_caps=_caps(Capability.DESKTOP_READ),
+        risk=ToolRisk.CAUTION,
+        resources_touched=("desktop",),
+    ),
+    "desktop_create_note": ToolProfile(
+        name="desktop_create_note",
+        required_caps=_caps(Capability.DESKTOP_WRITE),
+        risk=ToolRisk.CAUTION,
+        resources_touched=("filesystem",),
+    ),
+    "desktop_create_folder": ToolProfile(
+        name="desktop_create_folder",
+        required_caps=_caps(Capability.DESKTOP_WRITE),
+        risk=ToolRisk.CAUTION,
+        resources_touched=("filesystem",),
+    ),
+    "desktop_write_text_file": ToolProfile(
+        name="desktop_write_text_file",
+        required_caps=_caps(Capability.DESKTOP_WRITE),
+        risk=ToolRisk.CAUTION,
+        resources_touched=("filesystem",),
+    ),
+    "desktop_move_file": ToolProfile(
+        name="desktop_move_file",
+        required_caps=_caps(Capability.DESKTOP_DESTRUCTIVE),
+        risk=ToolRisk.DESTRUCTIVE,
+        resources_touched=("filesystem",),
+    ),
+    "desktop_rename_file": ToolProfile(
+        name="desktop_rename_file",
+        required_caps=_caps(Capability.DESKTOP_DESTRUCTIVE),
+        risk=ToolRisk.DESTRUCTIVE,
+        resources_touched=("filesystem",),
+    ),
+    "desktop_delete_file": ToolProfile(
+        name="desktop_delete_file",
+        required_caps=_caps(Capability.DESKTOP_DESTRUCTIVE),
+        risk=ToolRisk.DESTRUCTIVE,
+        resources_touched=("filesystem",),
+    ),
+    "desktop_modify_text_file": ToolProfile(
+        name="desktop_modify_text_file",
+        required_caps=_caps(Capability.DESKTOP_DESTRUCTIVE),
+        risk=ToolRisk.DESTRUCTIVE,
+        resources_touched=("filesystem",),
     ),
 }
 

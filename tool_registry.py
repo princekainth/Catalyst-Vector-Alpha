@@ -25,6 +25,8 @@ from tool_types import Tool, derive_task_type, validate_role_task_assignment
 from config_manager import get_config
 import tools
 import tools_system
+from cva_runtime.control_plane.desktop_adapter import DesktopAdapter
+from cva_runtime.control_plane.desktop_hands import DesktopHands
 
 # Optional sandbox_toolsmith (graceful fallback for environments without it)
 try:
@@ -555,6 +557,15 @@ class ToolRegistry:
         self.load_evolved_tools()
         self._default_reasoner_llm = None
         self._tool_executor = None
+        
+        # --- Capability Loader (Phase 1: Skill Model) ---
+        try:
+            from cva_runtime.control_plane.capability_loader import CapabilityLoader
+            self.capability_loader = CapabilityLoader()
+            self.capability_loader.load_all()
+        except ImportError:
+            log.warning("[ToolRegistry] CapabilityLoader not available.")
+            self.capability_loader = None
 
     def set_evolution_agent(self, agent: Any) -> None:
         """Inject the EvolutionAgent instance to enable self-healing."""
@@ -568,6 +579,35 @@ class ToolRegistry:
 
             self._tool_executor = ToolExecutor(registry=self)
         return self._tool_executor
+
+    def _get_desktop_adapter(self) -> DesktopAdapter:
+        if not hasattr(self, "_desktop_adapter"):
+            self._desktop_adapter = DesktopAdapter()
+        return self._desktop_adapter
+
+    def _get_desktop_hands(self) -> DesktopHands:
+        if not hasattr(self, "_desktop_adapter_hands"):
+            self._desktop_adapter_hands = DesktopHands()
+        return self._desktop_adapter_hands
+
+    def _safe_desktop_screenshot(self, path: str, window_id: Optional[str] = None) -> Dict[str, Any]:
+        """Validated screenshot wrapper."""
+        # Final safety check before execution
+        if ".." in path:
+            return {"status": "error", "error": "Path traversal not allowed."}
+        
+        allowed_dirs = ["scratch/", ".cva/screenshots/"]
+        if not any(path.startswith(d) for d in allowed_dirs):
+            return {"status": "error", "error": f"Path must start with one of {allowed_dirs}"}
+
+        # Ensure directory exists
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        
+        success = self._get_desktop_adapter().take_screenshot(path, window_id)
+        if success:
+            return {"status": "ok", "path": path, "summary": f"Screenshot saved to {path}"}
+        else:
+            return {"status": "error", "error": "Failed to capture screenshot. Check display connection."}
 
     def _llm_reason_defaults(self, tool: Tool, args: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
@@ -845,6 +885,122 @@ Do NOT include keys that are not in MissingKeys. Do NOT repeat provided args."""
                 task_type="Observation",
                 roles_allowed={"Observer", "Planner", "Worker"},
             ),
+
+            # --- Desktop Adapter (Phase 2: Read-Only v0.1) ---
+            Tool(
+                "desktop_list_windows",
+                "Lists all open window titles and IDs in the current X11 session. Use this to discover active applications.",
+                {"type": "object", "properties": {}, "required": []},
+                lambda **kw: self._get_desktop_adapter().get_windows(),
+                task_type="Observation",
+                roles_allowed={"Observer", "Planner"},
+            ),
+
+            Tool(
+                "desktop_get_window_details",
+                "Get geometry (x, y, width, height) for a specific window by its ID (e.g. 0x123456).",
+                {"type": "object", "properties": {"window_id": {"type": "string"}}, "required": ["window_id"]},
+                lambda **kw: self._get_desktop_adapter().get_window_details(kw["window_id"]),
+                task_type="Observation",
+                roles_allowed={"Observer", "Planner"},
+            ),
+
+            Tool(
+                "desktop_take_screenshot",
+                "Capture a screenshot of the root desktop or a specific window. Path must be in 'scratch/' or '.cva/screenshots/'.",
+                {
+                    "type": "object", 
+                    "properties": {
+                        "path": {"type": "string", "default": "scratch/desktop.xwd"},
+                        "window_id": {"type": "string", "description": "Optional specific window ID."}
+                    }, 
+                    "required": []
+                },
+                lambda **kw: self._safe_desktop_screenshot(kw.get("path", "scratch/desktop.xwd"), kw.get("window_id")),
+                task_type="Observation",
+                roles_allowed={"Observer", "Planner"},
+                validator=lambda a: (
+                    not a.get("path") or (
+                        not ".." in a.get("path") and 
+                        (a.get("path").startswith("scratch/") or a.get("path").startswith(".cva/screenshots/"))
+                    )
+                )
+            ),
+            # --- Desktop Hands (Phase 2: Actuation v0.1) ---
+            Tool(
+                "desktop_create_note",
+                "Create a markdown note on the desktop or documents folder. Path must be in allowed roots.",
+                {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]},
+                lambda **kw: self._get_desktop_hands().write_text_file(kw["path"], kw["content"]),
+                task_type="Actuation",
+                roles_allowed={"Planner", "Worker"},
+            ),
+
+            Tool(
+                "desktop_create_folder",
+                "Create a new directory in allowed roots.",
+                {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
+                lambda **kw: self._get_desktop_hands().create_folder(kw["path"]),
+                task_type="Actuation",
+                roles_allowed={"Planner", "Worker"},
+            ),
+
+            Tool(
+                "desktop_write_text_file",
+                "Write a plain text file to allowed roots.",
+                {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]},
+                lambda **kw: self._get_desktop_hands().write_text_file(kw["path"], kw["content"]),
+                task_type="Actuation",
+                roles_allowed={"Planner", "Worker"},
+            ),
+
+            Tool(
+                "desktop_move_file",
+                "Move a file or folder from source to destination. ALWAYS requires approval.",
+                {"type": "object", "properties": {"source": {"type": "string"}, "destination": {"type": "string"}}, "required": ["source", "destination"]},
+                lambda **kw: (
+                    {"status": "awaiting_approval", "action": "desktop_move_file", "source": kw["source"], "destination": kw["destination"]}
+                    if APPROVAL_MODE != "auto"
+                    else self._get_desktop_hands().move_file(kw["source"], kw["destination"])
+                ),
+                task_type="Actuation",
+                roles_allowed={"Worker"},
+            ),
+
+            Tool(
+                "desktop_delete_file",
+                "Delete a file or folder. ALWAYS requires approval.",
+                {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
+                lambda **kw: (
+                    {"status": "awaiting_approval", "action": "desktop_delete_file", "path": kw["path"]}
+                    if APPROVAL_MODE != "auto"
+                    else self._get_desktop_hands().delete_file(kw["path"])
+                ),
+                task_type="Actuation",
+                roles_allowed={"Worker"},
+            ),
+
+            Tool(
+                "desktop_modify_text_file",
+                "Patch a text file using search and replace. ALWAYS requires approval.",
+                {
+                    "type": "object", 
+                    "properties": {
+                        "path": {"type": "string"}, 
+                        "search": {"type": "string"}, 
+                        "replace": {"type": "string"}
+                    }, 
+                    "required": ["path", "search", "replace"]
+                },
+                lambda **kw: (
+                    {"status": "awaiting_approval", "action": "desktop_modify_text_file", "path": kw["path"], "search": kw["search"], "replace": kw["replace"]}
+                    if APPROVAL_MODE != "auto"
+                    else self._get_desktop_hands().patch_text_file(kw["path"], kw["search"], kw["replace"])
+                ),
+                task_type="Actuation",
+                roles_allowed={"Worker"},
+            ),
+
             Tool(
                 "system_restart_allowed_service",
                 "Restart an authorized service listed in CVA_ALLOWED_SERVICES.",
